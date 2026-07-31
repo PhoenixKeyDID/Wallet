@@ -48,8 +48,20 @@ export function parseAcctXvk(input: string): Bip32PublicKey {
   return Bip32PublicKey.fromBytes(bytes);
 }
 
+/** Highest soft (non-hardened) derivation index. `acct_xvk` is a public key, so
+ *  only soft children exist; anything ≥ 2³¹ is a hardened index that CANNOT be
+ *  derived from a public key. */
+export const MAX_SOFT_INDEX = 0x7fffffff;
+
 /** 28-byte blake2b-224 key-hash (hex) of the soft-derived child at chain/index. */
-function keyHashAt(xvk: Bip32PublicKey, chain: number, index: number): string {
+export function keyHashAt(xvk: Bip32PublicKey, chain: number, index: number): string {
+  // Fail with a clear message rather than letting the library throw an opaque
+  // "can not derive hardened public key" for an out-of-range index.
+  for (const n of [chain, index]) {
+    if (!Number.isInteger(n) || n < 0 || n > MAX_SOFT_INDEX) {
+      throw new Error(`derivation index ${n} out of range (0..${MAX_SOFT_INDEX}, soft only)`);
+    }
+  }
   return toHex(xvk.derive(chain).derive(index).toPublicKey().hash());
 }
 

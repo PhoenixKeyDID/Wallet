@@ -64,6 +64,10 @@ export function WatchOnlyPanel() {
       <div className="rounded-brand border border-border-soft bg-bg1 p-5 space-y-3">
         <p className="text-sm text-text-dim">{t("watch_intro")}</p>
         <p className="text-xs text-amber-brand">⚠ {t("never_paste_seed")}</p>
+        {/* A standalone watch-only view has no connected wallet to check the key
+            against, so warn explicitly: addresses derived from someone else's
+            key receive into THEIR wallet, not yours. */}
+        <p className="text-xs text-amber-brand">⚠ {t("watch_paste_own_only")}</p>
         <label className="block">
           <span className="text-xs text-text-hint">{t("acct_xvk_label")}</span>
           <textarea

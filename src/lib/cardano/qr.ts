@@ -13,7 +13,16 @@
  *
  * Frame text format (one QR each), pipe-delimited so it is human-inspectable:
  *   PHXAIR|<v>|<kind>|<seq>|<total>|<id>|<b64url-chunk>
+ *
+ * INTEGRITY: for an `unsigned-tx` transfer the `<id>` is NOT a free label — it
+ * is `frameId(payload)` = `blake2b_256(payload)` truncated to 8 hex chars. The
+ * receiver recomputes it after reassembling and rejects the payload on any
+ * mismatch, so an injected or reordered chunk cannot assemble into a DIFFERENT
+ * transaction than the one the sender framed. `witness` frames reuse that same
+ * id only to correlate the reply (a witness is verified by the ledger, not by
+ * this tag), so their id is not self-checked.
  */
+import { blake2b256, toHex } from "./hash";
 
 const MAGIC = "PHXAIR";
 const VERSION = 1;
@@ -44,11 +53,17 @@ function b64urlDecode(s: string): Uint8Array {
   return out;
 }
 
+/** Integrity tag for a payload: first 8 hex chars of its blake2b-256 hash. */
+export function frameId(payload: Uint8Array): string {
+  return toHex(blake2b256(payload)).slice(0, 8);
+}
+
 /**
- * Split a CBOR payload into QR frames. `id` should be a short, unique-per-
- * transfer tag (e.g. first 8 hex of the tx-body hash). `chunkBytes` bounds each
- * frame's raw payload so the encoded QR stays comfortably scannable (~700 bytes
- * → medium QR at ECC-M).
+ * Split a CBOR payload into QR frames. For an `unsigned-tx` transfer `id` MUST
+ * equal `frameId(payload)` (the integrity binding — see the module header); for
+ * a `witness` transfer it is the correlation tag echoing the unsigned-tx's id.
+ * `chunkBytes` bounds each frame's raw payload so the encoded QR stays
+ * comfortably scannable (~700 bytes → medium QR at ECC-M).
  */
 export function encodeFrames(
   payload: Uint8Array,
@@ -57,6 +72,9 @@ export function encodeFrames(
   chunkBytes = 700,
 ): string[] {
   if (!/^[0-9a-zA-Z]{1,16}$/.test(id)) throw new Error("air-gap id must be 1–16 alphanumerics");
+  if (kind === "unsigned-tx" && id !== frameId(payload)) {
+    throw new Error("unsigned-tx id must be frameId(payload) — integrity tag mismatch");
+  }
   const total = Math.max(1, Math.ceil(payload.length / chunkBytes));
   const frames: string[] = [];
   for (let seq = 0; seq < total; seq++) {
@@ -127,6 +145,12 @@ export class FrameCollector {
     for (const p of parts) {
       out.set(p, off);
       off += p.length;
+    }
+    // Integrity gate: for the spend path (unsigned-tx) the id is a hash of the
+    // payload, so a tampered/injected chunk that survived reassembly is caught
+    // here — the reassembled bytes must hash back to the id the sender framed.
+    if (this.kind === "unsigned-tx" && frameId(out) !== this.id) {
+      throw new Error("assembled payload fails its integrity check (id mismatch)");
     }
     return { kind: this.kind!, payload: out };
   }

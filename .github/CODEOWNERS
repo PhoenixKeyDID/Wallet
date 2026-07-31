@@ -1,0 +1,17 @@
+# Security trust boundaries — changes to these files require maintainer review.
+#
+# In a PUBLIC repo the curated dApp allow-list and install links are a phishing
+# surface: a look-alike / homoglyph URL merged via a drive-by PR would be
+# "blessed" by the wallet's own brand. The Cardano tx / address / key-derivation
+# library moves real funds. Any change here must be consciously re-approved.
+
+/src/lib/cardano/connect.ts     @AladinContract
+/src/lib/cardano/send.ts        @AladinContract
+/src/lib/cardano/tx.ts          @AladinContract
+/src/lib/cardano/governance.ts  @AladinContract
+/src/lib/cardano/staking.ts     @AladinContract
+/src/lib/cardano/address.ts     @AladinContract
+/src/lib/cardano/xpub.ts        @AladinContract
+/src/lib/cardano/receive.ts     @AladinContract
+/src/lib/cardano/qr.ts          @AladinContract
+/locales/                       @AladinContract

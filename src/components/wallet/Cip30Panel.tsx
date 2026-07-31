@@ -11,7 +11,7 @@ import {
   type Cip30Wallet,
 } from "@/lib/cardano";
 import { BalanceView } from "./BalanceView";
-import { SendForm } from "./SendForm";
+import { WalletTabs } from "./WalletTabs";
 
 type Connected = {
   key: string;
@@ -30,7 +30,6 @@ export function Cip30Panel() {
   const [assets, setAssets] = useState<
     { unit: string; policyId: string; assetNameHex: string; quantity: bigint }[]
   >([]);
-  const [showSend, setShowSend] = useState(false);
 
   useEffect(() => {
     // Read the browser-injected `window.cardano` once after mount — an external
@@ -140,26 +139,19 @@ export function Cip30Panel() {
         showReceive
       />
 
-      <div className="flex gap-2">
-        <button
-          type="button"
-          onClick={refresh}
-          className="flex-1 p-3 rounded-brand border border-border-soft bg-bg1 hover:bg-bg2 text-sm"
-        >
-          {t("refresh")}
-        </button>
-        <button
-          type="button"
-          onClick={() => setShowSend((s) => !s)}
-          className="flex-1 p-3 rounded-brand border border-border-amber bg-bg1 hover:bg-bg2 text-sm text-amber-brand"
-        >
-          {t("send_experimental")}
-        </button>
-      </div>
+      <button
+        type="button"
+        onClick={refresh}
+        className="w-full p-2.5 rounded-brand border border-border-soft bg-bg1 hover:bg-bg2 text-sm"
+      >
+        {t("refresh")}
+      </button>
 
-      {showSend && (
-        <SendForm api={conn.api} networkId={conn.networkId} onDone={refresh} />
-      )}
+      <WalletTabs
+        api={conn.api}
+        networkId={conn.networkId}
+        changeAddress={conn.changeAddress}
+      />
     </div>
   );
 }
