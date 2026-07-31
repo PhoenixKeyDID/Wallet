@@ -8,12 +8,12 @@ features, both at the same time.
 It is built to drop into a host app (the PhoenixKey Standard wallet / Frontend),
 and it can also be added alongside an existing Standard wallet.
 
-> **Beta — not audited.** Viewing balances is safe. Building and sending
+> **Beta — not audited.** Viewing balances moves no funds. Building and sending
 > transactions is experimental and has not been through an on-chain security
 > review. Do not use it to move funds you cannot afford to lose, and do not
 > import a high-value wallet here yet.
 
-**Full specification & security model:** [`docs/SPEC.md`](docs/SPEC.md).
+**Full specification & security model:** [`docs/Phoenix Wallet-Feat.md`](<docs/Phoenix Wallet-Feat.md>).
 
 ## Design: no hot wallet, ever
 
@@ -83,7 +83,7 @@ The components use the host's Tailwind design tokens (`bg-bg1`, `text-text-dim`,
 
 ```bash
 bun install
-bun test        # 98 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
+bun test        # 104 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
 bun run typecheck
 ```
 
@@ -96,7 +96,9 @@ CLI derivation, `address.test.ts` fails.
 - ✅ Watch-only, CIP-30 connect, Phoenix custody view, `/night` handoff.
 - 🟡 Send flow — works against CIP-30 but is unaudited; needs a preprod on-chain
   pass with disposable funds before it is enabled for mainnet sends. (Send +
-  delegation verified on preprod; see the security notes.)
+  delegation verified on preprod; see the security notes.) Confirming a send or
+  delegation requires retyping the destination's last 4 characters, not just a
+  checkbox — an anti-poisoning gate (`ConfirmGate`).
 - 🟡 Staking & governance signing — built and signable over CIP-30, same
   unaudited, preprod-first caveat as Send. dRep registration/voting additionally
   needs its fee re-confirmed on preprod before mainnet use.

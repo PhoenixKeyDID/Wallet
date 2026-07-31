@@ -5,6 +5,7 @@ import { Buffer } from "buffer";
 import { useTranslation } from "react-i18next";
 import { utils as tyUtils, types as tyTypes } from "@stricahq/typhonjs";
 import { toastApiError, toastSuccess } from "@/lib/toast";
+import { ConfirmGate, tailChallenge } from "@/components/wallet/ConfirmGate";
 import {
   type Cip30Api,
   type PhoenixNetwork,
@@ -283,15 +284,17 @@ export function StakingPanel({
           <p className="text-xs text-text-hint">{t("registration_needed_note")}</p>
         )}
 
-        <label className="flex items-start gap-2 text-xs text-text-dim cursor-pointer">
-          <input
-            type="checkbox"
-            checked={checked}
-            onChange={(e) => setChecked(e.target.checked)}
-            className="mt-0.5"
-          />
-          <span>{t("delegate_verify_checkbox")}</span>
-        </label>
+        {/* Ticker/name are spoofable indexer data; the pool id is the real
+            destination. Retype its tail so a swapped pool id can't slip by. */}
+        <ConfirmGate
+          network={network}
+          alwaysChallenge
+          challenge={tailChallenge(pool.poolId)}
+          challengeHint={t("confirm_gate_hint_pool")}
+          checkboxLabel={t("delegate_verify_checkbox")}
+          confirmed={checked}
+          onChange={setChecked}
+        />
 
         <div className="flex gap-2">
           <button

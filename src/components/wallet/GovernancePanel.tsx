@@ -21,6 +21,7 @@ import { useTranslation } from "react-i18next";
 import BigNumber from "bignumber.js";
 import { utils as tyUtils, types as tyTypes } from "@stricahq/typhonjs";
 import { toastApiError, toastSuccess } from "@/lib/toast";
+import { ConfirmGate, tailChallenge } from "@/components/wallet/ConfirmGate";
 import {
   type Cip30Api,
   type PhoenixNetwork,
@@ -173,6 +174,14 @@ export function GovernancePanel({
   // ── Review panel (shared) ────────────────────────────────────────────────────
   if (pending) {
     const netLabel = network === 1 ? t("net_mainnet") : network === 2 ? t("net_preview") : t("net_preprod");
+    // The retype challenge is the cryptographic target of the action (dRep / pool
+    // / address id) taken from the review rows. Actions with no such id — Abstain,
+    // No-Confidence, an Info action — have no address to mistype, so the gate
+    // falls back to a checkbox for them.
+    const govTarget =
+      pending.rows
+        .map((r) => r.value.trim())
+        .find((v) => /^(drep|pool|addr|stake|ca)1[0-9a-z]{8,}$/i.test(v)) ?? "";
     return (
       <div className="rounded-brand border border-border-soft bg-bg1 p-5 space-y-3">
         <div className="flex items-center justify-between">
@@ -201,15 +210,14 @@ export function GovernancePanel({
             {pending.warn}
           </p>
         )}
-        <label className="flex items-start gap-2 text-xs text-text-dim cursor-pointer">
-          <input
-            type="checkbox"
-            checked={checked}
-            onChange={(e) => setChecked(e.target.checked)}
-            className="mt-0.5"
-          />
-          <span>{t("gov_verify_checkbox")}</span>
-        </label>
+        <ConfirmGate
+          network={network}
+          challenge={tailChallenge(govTarget)}
+          challengeHint={t("confirm_gate_hint_drep")}
+          checkboxLabel={t("gov_verify_checkbox")}
+          confirmed={checked}
+          onChange={setChecked}
+        />
         <div className="flex gap-2">
           <button
             type="button"

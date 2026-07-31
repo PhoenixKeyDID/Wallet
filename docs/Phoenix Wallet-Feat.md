@@ -1,8 +1,15 @@
-# Phoenix Wallet — Specification
+# Phoenix Wallet — Feature & Security Spec
 
-Status: **beta, unaudited** · Scope: this module (`PhoenixKeyDID/Wallet`) · Audience: integrators, reviewers, and users who want to understand exactly what this wallet does and does not do with their keys.
+Status: **beta, unaudited** · Scope: this module (`PhoenixKeyDID/Wallet`) · Audience: integrators, reviewers, and users who want to know exactly what this wallet does and does not do with their keys.
 
-This document is the source of truth for the module's behaviour and security model. If code and this spec disagree, that is a bug in one of them — file it.
+This document is the source of truth for the module's behaviour and security model. If the code and this spec disagree, one of them has a bug — file it.
+
+**Related**
+
+- Repo: [README](../README.md) · platform: [phoenixkey.me](https://phoenixkey.me)
+- Cardano standards used: [CIP-1852](https://github.com/cardano-foundation/CIPs/tree/master/CIP-1852) (HD derivation) · [CIP-19](https://github.com/cardano-foundation/CIPs/tree/master/CIP-0019) (addresses) · [CIP-30](https://github.com/cardano-foundation/CIPs/tree/master/CIP-0030) (dApp connector) · [CIP-95](https://github.com/cardano-foundation/CIPs/tree/master/CIP-0095) (governance keys) · [CIP-105](https://github.com/cardano-foundation/CIPs/tree/master/CIP-0105) / [CIP-129](https://github.com/cardano-foundation/CIPs/tree/master/CIP-0129) (dRep ids) · [CIP-108](https://github.com/cardano-foundation/CIPs/tree/master/CIP-0108) & [CIP-1694](https://github.com/cardano-foundation/CIPs/tree/master/CIP-1694) (Conway governance)
+- Libraries: [@stricahq/typhonjs](https://github.com/StricaHQ/typhonjs) · [@stricahq/bip32ed25519](https://github.com/StricaHQ/bip32ed25519) · [@noble/hashes](https://github.com/paulmillr/noble-hashes)
+- Chain reads: [Koios](https://koios.rest) · NIGHT redemption: [redeem.midnight.gd](https://redeem.midnight.gd)
 
 ---
 
@@ -31,7 +38,7 @@ The page never holds a spendable seed or private key. There is no code path that
 1. **delegated to a CIP-30 browser extension** (Lace / Eternl / Typhon) — the extension holds the keys, shows the transaction, and the user approves it there; or
 2. (phase 2) **co-signed offline** over an air-gap QR channel — the seed stays on a separate offline device.
 
-Consequence: even a bug in this module cannot exfiltrate a key. The worst a malformed transaction can do is be rejected by the extension review or bounce at the node — it cannot silently move funds, because this module is never the final signing authority.
+Consequence: this module holds no key, so a bug in it has no key to exfiltrate. The worst a malformed transaction can do is be rejected at the extension's review screen or bounce at the node; it is never the final signing authority, so it cannot move funds on its own.
 
 ### 2.2 Invariant M2-WATCH — watch-only cannot sign
 
@@ -44,6 +51,12 @@ Security > Privacy > Experience > Cost. Where these conflict, the earlier one wi
 ### 2.4 Persistent, non-dismissable warning
 
 Every page that can move funds renders a persistent, non-dismissable beta/unaudited banner. It cannot be hidden by state or local storage. Its copy covers **every** signing feature (send, staking, governance), not just send.
+
+### 2.5 Retype-to-confirm (anti-poisoning gate)
+
+The final confirmation before a signature request is not a bare checkbox. A checkbox is a reflex — on an irreversible action the user ticks it without reading. Instead the wallet asks the user to **retype a short challenge drawn from the transaction itself**: the last four characters of the recipient address (send), the pool id (delegate), or the dRep id (governance). Retyping the tail forces the eyes onto the exact cryptographic destination, which is what defeats an address-poisoning swap that a look-alike address relies on you not reading.
+
+The confirm button stays disabled until the retyped tail matches. For Send and Delegate the retype is required on **every** network, so the flow is exercised on preprod exactly as it runs on mainnet; for the lower-risk paths the retype is required on mainnet and a checkbox is kept on testnet. Actions with no address to mistype (Abstain, No-Confidence, withdraw-to-self) keep the checkbox. This gate is `ConfirmGate` (`src/components/wallet/ConfirmGate.tsx`).
 
 ---
 
@@ -97,7 +110,7 @@ Each fund-moving feature is **two-step**: build an unsigned transaction → show
 ### 5.1 Send (multi-recipient, multi-asset)
 
 - One or more assets (ADA + native tokens) to one or more recipients in a single transaction.
-- Each recipient address is parsed and re-encoded from its bytes; the **full** bech32 address is shown in the review (never truncated), so the confirm checkbox is meaningful against address-poisoning.
+- Each recipient address is parsed and re-encoded from its bytes; the **full** bech32 address is shown in the review (never truncated), and the user retypes its last four characters to confirm (§2.5) — so the confirmation is a deliberate check against address-poisoning, not a reflex tick.
 - Recipients on the wrong network are rejected **before** build (`addr_wrong_network`) rather than failing at submit.
 - Token-bearing outputs are bumped to the protocol minimum-UTxO automatically, and the review shows the **effective** amounts that actually leave the wallet — a token-only row is never displayed as "0 ADA".
 - Token amounts are entered in **raw on-chain units** (no decimal scaling); the UI states this explicitly next to the field.
@@ -105,7 +118,7 @@ Each fund-moving feature is **two-step**: build an unsigned transaction → show
 ### 5.2 Receive
 
 - Derives base or enterprise (receive-only) addresses at any index from the connected wallet's account key.
-- **Ownership check:** when an `acct_xvk` is pasted, the module derives addresses 0..23 and compares them to the connected wallet's own used/unused addresses. A key that is not the connected wallet's raises a mismatch warning — this catches a social-engineering attempt to make you receive into someone else's wallet. (A standalone watch-only view has no wallet to check against, so it warns explicitly to only paste your own key.)
+- **Ownership check:** when an `acct_xvk` is pasted, the module derives addresses 0..23 and compares them to the connected wallet's own used/unused addresses. A key that is not the connected wallet's raises a mismatch warning — this flags the social-engineering setup where you are steered into receiving to someone else's wallet. (A standalone watch-only view has no wallet to check against, so it warns explicitly to only paste your own key.)
 
 ### 5.3 Staking
 
@@ -121,7 +134,7 @@ Each fund-moving feature is **two-step**: build an unsigned transaction → show
 
 ### 5.5 Connect (dApp launcher)
 
-- A **curated** launcher of hand-reviewed dApps at their canonical URLs. Curation is the security boundary: the module does not connect to arbitrary user-supplied sites. The exact destination host is shown on each entry so a look-alike URL can be caught by eye.
+- A **curated** launcher of hand-reviewed dApps at their canonical URLs (currently [Minswap](https://minswap.org/) and [SundaeSwap](https://app.sundae.fi/)). Curation is the security boundary: the module does not connect to arbitrary user-supplied sites. The exact destination host is shown on each entry so a look-alike URL can be caught by eye.
 - Phoenix is a web page, not an extension, so it cannot inject `window.cardano` into another site. "Connect" opens the vetted dApp (`noopener,noreferrer`); the user connects their extension there.
 - The CIP-30 provider bridge (`buildCip30Provider`) delegates reads and signing to the connected wallet. A real dApp transport must be built via `buildDappProvider(api, guards)`, which **refuses** to hand a dApp a signer without a plain-language review interposed — a guardless provider cannot be wired by accident.
 - The embedded dApp browser (loading a dApp in an iframe with an injected provider) is **off** (`EMBEDDED_DAPP_BROWSER_ENABLED = false`); it has real CSP/clickjacking implications and is not shipped in v1.
@@ -132,7 +145,7 @@ Each fund-moving feature is **two-step**: build an unsigned transaction → show
 
 ### 5.7 `/night` — Midnight NIGHT redemption
 
-- Connect a Cardano wallet, then hand off to the official Midnight portal (`redeem.midnight.gd`). The address that receives NIGHT was fixed when the claim was made and does not need to sign, so no recovery phrase or cold-wallet restore is ever required — only a wallet with a little ADA for the fee. Phoenix builds and signs nothing here; it never touches the funds.
+- Connect a Cardano wallet, then hand off to the official Midnight portal ([redeem.midnight.gd](https://redeem.midnight.gd)). The address that receives NIGHT was fixed when the claim was made and does not need to sign, so no recovery phrase or cold-wallet restore is ever required — only a wallet with a little ADA for the fee. Phoenix builds and signs nothing here; it never touches the funds.
 
 ---
 
@@ -140,7 +153,7 @@ Each fund-moving feature is **two-step**: build an unsigned transaction → show
 
 | Threat | Mitigation | Where |
 |---|---|---|
-| Address-poisoning on send | Full (untruncated) recipient address in review + mandatory confirm; address re-encoded from bytes | `send.ts`, `SendPanel.tsx` |
+| Address-poisoning on send | Full (untruncated) recipient address in review + **retype the address tail** to confirm (not a checkbox); address re-encoded from bytes | `send.ts`, `SendPanel.tsx`, `ConfirmGate.tsx` |
 | Receiving into an attacker's wallet (pasted `acct_xvk`) | Ownership check derives 0..23 and compares to the connected wallet; explicit "your own key only" warning | `ReceivePanel.tsx`, `WatchOnlyPanel.tsx` |
 | Key exfiltration via watch-only | M2-WATCH: soft-derivation only; 64-byte public key enforced | `xpub.ts` |
 | Mainnet/testnet confusion | Network id read from the extension (not user-selected); mainnet badge is amber across send/staking/governance; wrong-network recipients rejected pre-build | all panels, `send.ts` |
@@ -161,6 +174,7 @@ Assumptions this model depends on (documented so they are not forgotten): the CI
 - ⬜ **Phoenix custody spend** — needs the controller-key path (air-gap / mobile), phase 2.
 - ⬜ **Multi-pool / multiple stake keys** — v1 delegates a single stake key; multi-stake-key management is a v2 item.
 - ⬜ **Watch-only by single address** — v1 watch-only takes an account key (a full address range); a "paste one address" quick view is a planned convenience.
+- ⬜ **Saved / known recipient addresses ("address book")** — a user-curated, labelled list of familiar destinations, so a send targets a chosen saved entry instead of a freshly pasted string an attacker can grind a look-alike of. Storage is **distributed on LampNet in a Strata** (the same model Smartsend uses); the Phoenix platform keeps none of the user's data on any server. A saved label is display-only: the full address is still shown and its tail retyped at confirm (§2.5), since a saved entry could itself have been poisoned when it was added. Strata record shape + client-side encryption to be specified.
 
 ---
 
@@ -180,7 +194,7 @@ Components use the host's Tailwind tokens (`bg-bg1`, `text-text-dim`, `teal-bran
 
 ## 9. Testing & verification
 
-- `bun run typecheck` (tsc, no emit) and `bun test` (98 unit tests) must both pass. Tests cover: address golden vectors vs the Rust reference, CKDpub derivation, UTxO decoding, send/stake/governance builders and their on-chain balance equations, the CIP-30 provider guards, the dApp URL pins, and the air-gap integrity binding.
+- `bun run typecheck` (tsc, no emit) and `bun test` (104 unit tests) must both pass. Tests cover: address golden vectors vs the Rust reference, CKDpub derivation, UTxO decoding, send/stake/governance builders and their on-chain balance equations, the CIP-30 provider guards, the dApp URL pins, the retype-confirm tail (`ConfirmGate`), and the air-gap integrity binding.
 - The send and delegation paths were exercised on **preprod** with disposable funds (send tADA, mint + send a native token, delegate to a stake pool), each confirmed on-chain, before this spec was written. Governance signing carries the preprod caveat in §7.
 - Privacy: chain reads go to public Koios (which sees the queried addresses and the client IP). No data is sent to a Phoenix backend and keys never leave the wallet.
 

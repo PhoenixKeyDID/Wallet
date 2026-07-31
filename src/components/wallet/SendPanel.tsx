@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import { utils as tyUtils, types as tyTypes } from "@stricahq/typhonjs";
 import { toastApiError, toastSuccess } from "@/lib/toast";
 import { CopyBtn } from "@/components/CopyBtn";
+import { ConfirmGate, tailChallenge } from "@/components/wallet/ConfirmGate";
 import {
   type Cip30Api,
   type PhoenixNetwork,
@@ -388,15 +389,18 @@ export function SendPanel({
 
           {anyTokenOutput && <p className="text-[11px] text-text-hint">{t("send_min_ada_note")}</p>}
 
-          <label className="flex items-start gap-2 text-xs text-text-dim cursor-pointer">
-            <input
-              type="checkbox"
-              checked={checked}
-              onChange={(e) => setChecked(e.target.checked)}
-              className="mt-0.5"
-            />
-            <span>{t("send_verify_checkbox")}</span>
-          </label>
+          {/* Final check: retype the tail of recipient #1's address. On an
+              irreversible send a checkbox is a reflex; retyping the destination
+              tail forces the eyes onto the exact address (anti-poisoning). */}
+          <ConfirmGate
+            network={network}
+            alwaysChallenge
+            challenge={tailChallenge(reviewOutputs?.[0]?.address.getBech32() ?? "")}
+            challengeHint={t("confirm_gate_hint_send")}
+            checkboxLabel={t("send_verify_checkbox")}
+            confirmed={checked}
+            onChange={setChecked}
+          />
 
           <div className="flex gap-2">
             <button
