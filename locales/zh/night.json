@@ -1,0 +1,21 @@
+{
+  "page_title": "兑换 NIGHT",
+  "page_subtitle": "连接你的 Cardano 钱包，然后在官方门户兑换 Midnight 的 NIGHT。",
+  "intro": "NIGHT 兑换由 Midnight 官方门户处理。Phoenix 仅帮助你连接并查看地址 — 永不接触你的资金。",
+  "point_official": "签名在 Midnight 官方门户 (redeem.midnight.gd) 上进行。",
+  "point_destination": "接收 NIGHT 的地址在你认领时已固定，它无需签名。你不必重新输入助记词或恢复冷钱包。",
+  "point_fee": "只需一个有少量 ADA 的钱包来支付手续费 — 这是签名钱包，不是接收钱包。无论谁付费，NIGHT 都会送到正确的地址。",
+  "point_thaw": "NIGHT 在主网启动后约 360 天内分四次解锁（解冻）。",
+  "no_wallet": "此浏览器中还没有 Cardano 钱包。请安装一个钱包（例如 Lace）作为付费钱包。",
+  "install_lace_cta": "安装 Lace 钱包（免费）→",
+  "recheck_wallets": "已安装好了？点击重新检测",
+  "connect_prompt": "连接你的付费钱包:",
+  "recommended": "推荐",
+  "connecting": "连接中…",
+  "connected_to": "已连接",
+  "your_address": "你的地址",
+  "open_portal": "在官方门户兑换 →",
+  "portal_url_preview": "将打开: redeem.midnight.gd（Midnight 官方网站）。",
+  "handoff_note": "你将在 Midnight 官方网站完成并签署兑换。",
+  "learn_more": "在 midnight.gd 了解更多 NIGHT 信息"
+}

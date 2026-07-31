@@ -1,0 +1,21 @@
+{
+  "page_title": "NIGHT を受け取る",
+  "page_subtitle": "Cardano ウォレットを接続し、公式ポータルで Midnight の NIGHT を受け取ります。",
+  "intro": "NIGHT の受け取りは Midnight の公式ポータルが処理します。Phoenix は接続とアドレス確認を助けるだけで、資金には一切触れません。",
+  "point_official": "署名は Midnight 公式ポータル (redeem.midnight.gd) で行われます。",
+  "point_destination": "NIGHT を受け取るアドレスは請求時に固定されており、署名は不要です。復元フレーズの再入力やコールドウォレットの復元は必要ありません。",
+  "point_fee": "少額の ADA を持つ任意のウォレットで手数料を払うだけです — これは署名用ウォレットで、受取用ではありません。誰が払っても NIGHT は正しいアドレスに届きます。",
+  "point_thaw": "NIGHT はメインネット開始後、約360日かけて4回に分けて解除（解凍）されます。",
+  "no_wallet": "このブラウザにはまだ Cardano ウォレットがありません。手数料支払い用に（例: Lace）ウォレットをインストールしてください。",
+  "install_lace_cta": "Lace ウォレットをインストール（無料）→",
+  "recheck_wallets": "インストールしましたか？ 再確認",
+  "connect_prompt": "手数料支払い用ウォレットを接続:",
+  "recommended": "推奨",
+  "connecting": "接続中…",
+  "connected_to": "接続先",
+  "your_address": "あなたのアドレス",
+  "open_portal": "公式ポータルで受け取る →",
+  "portal_url_preview": "開くページ: redeem.midnight.gd（Midnight の公式サイト）。",
+  "handoff_note": "受け取りと署名は Midnight の公式サイトで完了します。",
+  "learn_more": "midnight.gd で NIGHT の詳細を見る"
+}

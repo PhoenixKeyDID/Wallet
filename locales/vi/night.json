@@ -1,0 +1,21 @@
+{
+  "page_title": "Redeem NIGHT",
+  "page_subtitle": "Kết nối ví Cardano, rồi redeem NIGHT của Midnight trên portal chính chủ.",
+  "intro": "Việc redeem NIGHT do portal chính chủ của Midnight xử lý. Phoenix chỉ giúp bạn kết nối và kiểm tra địa chỉ — không bao giờ chạm vào tiền của bạn.",
+  "point_official": "Việc ký diễn ra trên portal chính chủ Midnight (redeem.midnight.gd).",
+  "point_destination": "Địa chỉ nhận NIGHT đã được cố định từ lúc bạn claim — nó KHÔNG cần ký. Bạn không phải nhập lại 24 từ hay khôi phục ví lạnh.",
+  "point_fee": "Chỉ cần một ví có chút ADA để trả phí — đây là ví ký giao dịch, không phải ví nhận. NIGHT vẫn về đúng địa chỉ nhận dù ai trả phí.",
+  "point_thaw": "NIGHT mở khoá (thaw) theo bốn đợt trong khoảng 360 ngày sau khi mainnet ra mắt.",
+  "no_wallet": "Bạn chưa có ví Cardano trên trình duyệt này. Cài một ví (ví dụ Lace) để làm ví trả-phí.",
+  "install_lace_cta": "Cài ví Lace (miễn phí) →",
+  "recheck_wallets": "Đã cài xong? Bấm để dò lại",
+  "connect_prompt": "Kết nối ví trả-phí của bạn:",
+  "recommended": "khuyến nghị",
+  "connecting": "Đang kết nối…",
+  "connected_to": "Đã kết nối",
+  "your_address": "Địa chỉ của bạn",
+  "open_portal": "Redeem trên portal chính chủ →",
+  "portal_url_preview": "Sẽ mở: redeem.midnight.gd (trang chính chủ của Midnight).",
+  "handoff_note": "Bạn sẽ hoàn tất và ký lệnh redeem trên trang chính chủ của Midnight.",
+  "learn_more": "Tìm hiểu thêm về NIGHT tại midnight.gd"
+}
