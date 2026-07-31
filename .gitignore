@@ -1,0 +1,30 @@
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+
+# build / test output
+/dist
+/build
+/coverage
+*.tsbuildinfo
+
+# secrets — never commit
+.env*
+!.env.example
+*.pem
+*.key
+*.pat
+*.mnemonic
+*.seed
+
+# agent workspace / local instructions
+/_Agents
+/_wt-*
+CLAUDE.md
+
+# misc
+.DS_Store
+npm-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
