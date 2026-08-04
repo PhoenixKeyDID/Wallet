@@ -78,19 +78,18 @@ const MAX_CANDIDATES = 800;
  * Search registered pools by ticker/name substring. Koios `/pool_list` has no
  * ticker field, so this fetches candidate ids, then `/pool_info` in batches
  * for the metadata to filter on. Empty query → no results (avoid fetching
- * everything just to show it unfiltered). Network failures are swallowed —
- * returns whatever was gathered before the failure, or `[]`.
+ * everything just to show it unfiltered).
+ *
+ * THROWS on indexer failure — deliberately. Returning `[]` reads as "no such
+ * pool", so a 503 would tell the user their pool does not exist and they would
+ * go looking for another one. Only the caller can tell "found nothing" from
+ * "could not look".
  */
 export async function searchPools(network: PhoenixNetwork, query: string): Promise<PoolSummary[]> {
   const q = query.trim().toLowerCase();
   if (!q) return [];
 
-  let list: PoolListRow[];
-  try {
-    list = await koios<PoolListRow[]>(network, "/pool_list");
-  } catch {
-    return [];
-  }
+  const list = await koios<PoolListRow[]>(network, "/pool_list");
   const ids = list
     .filter((p) => !p.pool_status || p.pool_status === "registered")
     .map((p) => p.pool_id_bech32)
@@ -101,12 +100,13 @@ export async function searchPools(network: PhoenixNetwork, query: string): Promi
   const results: PoolSummary[] = [];
   for (let i = 0; i < ids.length; i += POOL_INFO_CHUNK) {
     const batch = ids.slice(i, i + POOL_INFO_CHUNK);
-    let rows: PoolInfoRow[];
-    try {
-      rows = await koios<PoolInfoRow[]>(network, "/pool_info", { _pool_bech32_ids: batch });
-    } catch {
-      continue; // one flaky batch shouldn't blank the whole search
-    }
+    // A failed batch used to `continue`, on the reasoning that one flaky chunk
+    // should not blank the whole search. But the pool the user is looking for
+    // may be exactly the one in that chunk, and dropping it silently shows a
+    // result list that looks complete and is not. Fail loudly; let them retry.
+    const rows = await koios<PoolInfoRow[]>(network, "/pool_info", {
+      _pool_bech32_ids: batch,
+    });
     for (const r of rows) {
       if (r.pool_status && r.pool_status !== "registered") continue;
       const ticker = r.ticker ?? r.meta_json?.ticker ?? "";
@@ -140,25 +140,33 @@ type AccountInfoRow = {
   rewards_available?: string | null;
 };
 
-/** Registration / delegation / claimable-rewards state of one reward address. */
+/**
+ * Registration / delegation / claimable-rewards state of one reward address.
+ *
+ * THROWS on indexer failure — deliberately, and this one matters most. The old
+ * catch returned `registered: false`, which `StakingPanel` turns into
+ * `needsRegistration = true`; the next transaction then carries a
+ * STAKE_KEY_REGISTRATION certificate for an already-registered key and the node
+ * rejects the WHOLE transaction. A 503 from Koios must never be able to answer
+ * "this key is not registered".
+ *
+ * An empty row set is different: that is a successful answer meaning the chain
+ * has never seen this stake address, so the not-registered default stands.
+ */
 export async function getStakeAccountState(
   network: PhoenixNetwork,
   rewardAddressBech32: string,
 ): Promise<StakeAccountState> {
-  try {
-    const rows = await koios<AccountInfoRow[]>(network, "/account_info", {
-      _stake_addresses: [rewardAddressBech32],
-    });
-    const r = rows[0];
-    if (!r) return { registered: false, delegatedPoolId: null, rewardsAvailable: BigInt("0") };
-    return {
-      registered: r.status === "registered",
-      delegatedPoolId: r.delegated_pool ?? null,
-      rewardsAvailable: BigInt(r.rewards_available ?? "0"),
-    };
-  } catch {
-    return { registered: false, delegatedPoolId: null, rewardsAvailable: BigInt("0") };
-  }
+  const rows = await koios<AccountInfoRow[]>(network, "/account_info", {
+    _stake_addresses: [rewardAddressBech32],
+  });
+  const r = rows[0];
+  if (!r) return { registered: false, delegatedPoolId: null, rewardsAvailable: BigInt("0") };
+  return {
+    registered: r.status === "registered",
+    delegatedPoolId: r.delegated_pool ?? null,
+    rewardsAvailable: BigInt(r.rewards_available ?? "0"),
+  };
 }
 
 // ─── Builders ───────────────────────────────────────────────────────────────
