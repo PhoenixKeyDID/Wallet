@@ -33,7 +33,7 @@
   "building": "准备中…",
   "send_review_title": "发送前请仔细核对",
   "send_verify_checkbox": "我已核对上方完整的收款地址和金额均正确无误。",
-  "confirm_gate_prompt": "为在链上确认，请重新输入{{hint}}：",
+  "confirm_gate_prompt": "为在链上确认，请重新输入上方地址中高亮显示的{{hint}}：",
   "confirm_gate_placeholder": "在此重新输入",
   "confirm_gate_mismatch": "尚未与上方数值匹配。",
   "confirm_gate_hint_send": "收款方 #1 地址的最后 4 个字符",

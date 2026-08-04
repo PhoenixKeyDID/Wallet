@@ -6,7 +6,7 @@ import { useTranslation } from "react-i18next";
 import { utils as tyUtils, types as tyTypes } from "@stricahq/typhonjs";
 import { toastApiError, toastSuccess } from "@/lib/toast";
 import { CopyBtn } from "@/components/CopyBtn";
-import { ConfirmGate, tailChallenge } from "@/components/wallet/ConfirmGate";
+import { ConfirmGate, tailChallenge, CHALLENGE_LEN } from "@/components/wallet/ConfirmGate";
 import {
   type Cip30Api,
   type PhoenixNetwork,
@@ -353,9 +353,25 @@ export function SendPanel({
                     {t("send_to")} #{idx + 1}
                   </span>
                   {/* Full address, wrapped — a truncated address makes the verify
-                      checkbox meaningless against address-poisoning. */}
+                      checkbox meaningless against address-poisoning.
+                      Recipient #1 additionally has its challenged tail marked,
+                      because that is the one ConfirmGate asks the user to
+                      retype. Marking it here rather than printing it beside the
+                      input means the eye must cross the real address to find
+                      it (Wallet#7). */}
                   <div className="flex items-start gap-2">
-                    <span className="mono text-xs break-all flex-1">{o.address.getBech32()}</span>
+                    <span className="mono text-xs break-all flex-1">
+                      {idx === 0 ? (
+                        <>
+                          {o.address.getBech32().slice(0, -CHALLENGE_LEN)}
+                          <mark className="bg-amber-brand/25 text-amber-brand font-semibold rounded-sm px-0.5">
+                            {o.address.getBech32().slice(-CHALLENGE_LEN)}
+                          </mark>
+                        </>
+                      ) : (
+                        o.address.getBech32()
+                      )}
+                    </span>
                     <CopyBtn value={o.address.getBech32()} />
                   </div>
                 </div>

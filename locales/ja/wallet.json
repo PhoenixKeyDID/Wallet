@@ -33,7 +33,7 @@
   "building": "準備中…",
   "send_review_title": "送信前によく確認してください",
   "send_verify_checkbox": "上記の受取アドレス全体と金額の両方が正しいことを確認しました。",
-  "confirm_gate_prompt": "確定するには {{hint}} を再入力してください:",
+  "confirm_gate_prompt": "確定するには、上のアドレス内でハイライトされた{{hint}}を再入力してください:",
   "confirm_gate_placeholder": "ここに再入力",
   "confirm_gate_mismatch": "上の値とまだ一致していません。",
   "confirm_gate_hint_send": "受取先 #1 のアドレスの末尾4文字",
