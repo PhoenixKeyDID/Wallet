@@ -8,6 +8,27 @@ features, both at the same time.
 It is built to drop into a host app (the PhoenixKey Standard wallet / Frontend),
 and it can also be added alongside an existing Standard wallet.
 
+## What this repo is — and which repo to work in
+
+This is a **library package** (`@phoenixkey/wallet`), not an app and not a spec
+repo. It ships the Cardano core and the wallet UI, with its own tests and CI, and
+is consumed by more than one host — `PhoenixKey-Wakeme-Tech.md` §281 names
+**SuperApp / SDK / Frontend** as separate consumers that have to be coordinated
+together. That is why the host-contract layer below exists instead of the module
+simply importing the frontend's modules.
+
+| Where the work goes | Repo |
+|---|---|
+| This module: Cardano core, wallet UI, its own spec in `docs/` | **`PhoenixKeyDID/Wallet`** (here) |
+| Mounting it in the web app: routes, design tokens, i18n registration, session wiring | `PhoenixKeyDID/PhoenixKey-Frontend` |
+| Backend endpoints it reads (`/wallet/{did}/all`) | `PhoenixKeyDID/PhoenixKey-Database` |
+| Canonical protocol specs (`PhoenixKey-*.md`) | `PhoenixKeyDID/PhoenixKey-Specs` |
+
+`docs/Phoenix Wallet-Feat.md` is this module's own spec and security model and
+lives here on purpose, next to the code it describes. The platform-wide specs it
+refers to (Wallet API v2, Rebirthme, DappConnector) are canonical in
+`PhoenixKey-Specs` — when the two disagree, that repo wins.
+
 > **Beta — not audited.** Viewing balances moves no funds. Building and sending
 > transactions is experimental and has not been through an on-chain security
 > review. Do not use it to move funds you cannot afford to lose, and do not
