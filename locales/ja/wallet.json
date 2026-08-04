@@ -58,8 +58,7 @@
   "loading": "読み込み中…",
   "view_balance": "残高を表示",
   "derived_addresses": "導出アドレス",
-  "phoenix_intro": "Phoenix DID を入力して、アイデンティティに紐づくカストディウォレット（スクリプトアドレス、鍵ローテーションでも不変）を表示します。",
-  "did_label": "DID",
+  "phoenix_intro": "あなたの ID に紐づくカストディウォレット（スクリプトアドレス、鍵のローテーションでも不変）。自分の DID のウォレットのみ表示できます。",
   "did_help": "自分の DID とは？",
   "did_help_body": "DID は Phoenix アプリの「アイデンティティ / プロフィール」に表示されます。did:phoenix:... の形式です。",
   "resolve_custody": "カストディウォレットを解決",
@@ -216,5 +215,8 @@
   "xvk_match_note": "この鍵は接続中のウォレットのものです。",
   "network_match_hint": "ウォレット拡張機能で選択されているネットワークと一致していることを確認してください。",
   "stake_read_failed": "現在、ステーキング状況を読み取れません。ステークが失われたわけではありません — もう一度お試しください。",
-  "retry": "再試行"
+  "retry": "再試行",
+  "phoenix_session_did": "あなたの Phoenix DID",
+  "phoenix_needs_session": "カストディウォレットを表示するには、Phoenix ID でサインインしてください。",
+  "phoenix_unauthorized": "このウォレットは別の ID のものか、セッションの有効期限が切れています。もう一度サインインしてください。"
 }

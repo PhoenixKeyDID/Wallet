@@ -1,56 +1,4 @@
 {
-  "wallet": {
-    "address_label": "Cardano wallet address",
-    "balance_label": "Balance",
-    "show_qr": "Show QR code",
-    "no_address_yet": "Wallet not initialized yet. Open the mobile app.",
-    "empty_title": "Your wallet has no LAMP",
-    "empty_description": "Two ways to get LAMP: receive from another wallet, or buy the activation package (1001 LAMP + 10 ADA).",
-    "send_from_other": "Receive LAMP from another wallet",
-    "buy_activation_200k": "Buy activation — 200,000₫",
-    "claim_success": "Claimed {{amount}} MAGIC"
-  },
-  "magic": {
-    "accruing": "MAGIC accruing",
-    "rate_explained": "{{rate}} MAGIC / LAMP / slot",
-    "claim": "Claim",
-    "claiming": "Claiming..."
-  },
-  "dashboard": {
-    "did_label": "Your DID",
-    "getlamp_title": "GetLAMP Support",
-    "getlamp_subtitle": "Buy activation or ask a Genie"
-  },
-  "lamp": {
-    "title_menu": "GetLAMP",
-    "title_support": "Support",
-    "title_activation": "Activation 200,000₫",
-    "menu_title": "What do you need?",
-    "menu_description": "A Genie will help you right here in this chat",
-    "menu_activation_title": "Buy activation — 200,000₫",
-    "menu_activation_desc": "Pay 200k VND → receive 1001 LAMP + 10 ADA",
-    "menu_support_title": "Ask a Genie",
-    "menu_support_desc": "Chat with a Genie for general support",
-    "your_address": "Your wallet address",
-    "connecting": "Connecting to Genie..."
-  },
-  "activation": {
-    "awaiting_payment": "Please pay within",
-    "expired": "Payment window expired",
-    "payment_confirmed_waiting_genie": "Payment received — waiting for Genie to sign the transaction...",
-    "success_banner": "✅ Activated! Balance will update shortly.",
-    "success": "Received 1001 LAMP + 10 ADA",
-    "failed": "Transaction failed",
-    "cancelled": "Cancelled",
-    "you_will_receive": "You will receive",
-    "scan_to_pay": "Scan QR to pay via VietQR",
-    "cancel": "Cancel",
-    "testnet_payment_sent": "[Testnet] Payment confirmed"
-  },
-  "common": {
-    "copy": "Copy",
-    "copied": "Copied"
-  },
   "page_title": "Phoenix Wallet",
   "page_subtitle": "A self-custody Cardano wallet — your keys never touch this page.",
   "dev_warning_title": "Beta — not audited",
@@ -110,8 +58,7 @@
   "loading": "Loading…",
   "view_balance": "View balance",
   "derived_addresses": "Derived addresses",
-  "phoenix_intro": "Enter a Phoenix DID to view its identity-bound custody wallet (script address, invariant across key rotation).",
-  "did_label": "DID",
+  "phoenix_intro": "Your identity-bound custody wallet (script address, invariant across key rotation). You can only view the wallet for your own DID.",
   "did_help": "What is my DID?",
   "did_help_body": "Your DID is shown in your Phoenix app, under Identity / Profile. It looks like did:phoenix:...",
   "resolve_custody": "Resolve custody wallet",
@@ -268,5 +215,8 @@
   "xvk_match_note": "This key belongs to your connected wallet.",
   "network_match_hint": "Make sure this matches the network selected in your wallet extension.",
   "stake_read_failed": "Couldn't read your staking status right now. This does not mean your stake is lost — please retry.",
-  "retry": "Retry"
+  "retry": "Retry",
+  "phoenix_session_did": "Your Phoenix DID",
+  "phoenix_needs_session": "Sign in with your Phoenix identity to view your custody wallet.",
+  "phoenix_unauthorized": "This wallet belongs to a different identity, or your session has expired. Sign in again."
 }

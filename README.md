@@ -27,7 +27,7 @@ scam you.
 |---|---|---|
 | **Connect (CIP-30)** — Lace / Eternl | ✅ from the extension | ✅ the extension signs |
 | **Watch-only (`acct_xvk`)** | ✅ derived client-side from the account public key | ❌ view only |
-| **Phoenix custody (by DID)** | ✅ reads the script address + public balances | ❌ view only (v1) |
+| **Phoenix custody (your own DID)** | ✅ reads the script address + balances, signed in | ❌ view only (v1) |
 | **Air-gap QR co-sign** | ✅ | 🟡 scaffolded; enabled when the offline signer ships |
 
 - **Traditional use** — connect a standard Cardano extension (or watch an
@@ -79,11 +79,23 @@ when integrating, point these at the host's own modules:
 The components use the host's Tailwind design tokens (`bg-bg1`, `text-text-dim`,
 `teal-brand`, …); provide those in the host stylesheet.
 
+**Pass the signed-in DID.** `GET /wallet/{did}/all` requires a Bearer session and
+the backend enforces `caller_did == path_did`, so the Phoenix custody view only
+ever resolves the caller's own wallet. The host supplies the DID it already
+holds; the module never stores a token or a session of its own:
+
+```tsx
+<WalletHub did={getSessionMeta()?.userDid} />
+```
+
+Omit it and that mode says "sign in first". Connect and Watch-only need no
+session at all — they never touch the Phoenix backend.
+
 ## Develop
 
 ```bash
 bun install
-bun test        # 104 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
+bun test        # 106 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
 bun run typecheck
 ```
 

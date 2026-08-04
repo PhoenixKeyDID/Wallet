@@ -58,8 +58,7 @@
   "loading": "加载中…",
   "view_balance": "查看余额",
   "derived_addresses": "派生地址",
-  "phoenix_intro": "输入 Phoenix DID 查看其身份绑定的托管钱包（脚本地址，密钥轮换后仍不变）。",
-  "did_label": "DID",
+  "phoenix_intro": "与您身份绑定的托管钱包（脚本地址，密钥轮换后保持不变）。您只能查看自己 DID 的钱包。",
   "did_help": "我的 DID 是什么？",
   "did_help_body": "你的 DID 显示在 Phoenix 应用的“身份 / 资料”中。形如 did:phoenix:...",
   "resolve_custody": "解析托管钱包",
@@ -216,5 +215,8 @@
   "xvk_match_note": "此密钥属于你已连接的钱包。",
   "network_match_hint": "请确认这与你钱包扩展中所选的网络一致。",
   "stake_read_failed": "暂时无法读取你的质押状态。这并不代表你的质押已丢失 —— 请重试。",
-  "retry": "重试"
+  "retry": "重试",
+  "phoenix_session_did": "您的 Phoenix DID",
+  "phoenix_needs_session": "请使用 Phoenix 身份登录以查看您的托管钱包。",
+  "phoenix_unauthorized": "此钱包属于其他身份，或您的会话已过期。请重新登录。"
 }
