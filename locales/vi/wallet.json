@@ -36,7 +36,7 @@
   "confirm_gate_prompt": "Để xác nhận trước khi ký, gõ lại {{hint}} — được tô sáng trong địa chỉ ở trên:",
   "confirm_gate_placeholder": "gõ lại vào đây",
   "confirm_gate_mismatch": "Chưa khớp với giá trị ở trên.",
-  "confirm_gate_hint_send": "4 ký tự cuối của địa chỉ người nhận #1",
+  "confirm_gate_hint_send": "4 ký tự cuối của địa chỉ người nhận #{{n}}",
   "confirm_gate_hint_pool": "4 ký tự cuối của mã pool",
   "confirm_gate_hint_drep": "4 ký tự cuối của mã dRep",
   "confirm_send": "Xác nhận & Gửi",

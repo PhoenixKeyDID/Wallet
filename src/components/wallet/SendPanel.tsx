@@ -353,24 +353,17 @@ export function SendPanel({
                     {t("send_to")} #{idx + 1}
                   </span>
                   {/* Full address, wrapped — a truncated address makes the verify
-                      checkbox meaningless against address-poisoning.
-                      Recipient #1 additionally has its challenged tail marked,
-                      because that is the one ConfirmGate asks the user to
-                      retype. Marking it here rather than printing it beside the
-                      input means the eye must cross the real address to find
-                      it (Wallet#7). */}
+                      checkbox meaningless against address-poisoning. EVERY
+                      recipient has its challenged tail marked, because every one
+                      must be retyped. Marking it here rather than printing it
+                      beside the input means the eye must cross the real address
+                      to find it (Wallet#7). */}
                   <div className="flex items-start gap-2">
                     <span className="mono text-xs break-all flex-1">
-                      {idx === 0 ? (
-                        <>
-                          {o.address.getBech32().slice(0, -CHALLENGE_LEN)}
-                          <mark className="bg-amber-brand/25 text-amber-brand font-semibold rounded-sm px-0.5">
-                            {o.address.getBech32().slice(-CHALLENGE_LEN)}
-                          </mark>
-                        </>
-                      ) : (
-                        o.address.getBech32()
-                      )}
+                      {o.address.getBech32().slice(0, -CHALLENGE_LEN)}
+                      <mark className="bg-amber-brand/25 text-amber-brand font-semibold rounded-sm px-0.5">
+                        {o.address.getBech32().slice(-CHALLENGE_LEN)}
+                      </mark>
                     </span>
                     <CopyBtn value={o.address.getBech32()} />
                   </div>
@@ -405,14 +398,19 @@ export function SendPanel({
 
           {anyTokenOutput && <p className="text-[11px] text-text-hint">{t("send_min_ada_note")}</p>}
 
-          {/* Final check: retype the tail of recipient #1's address. On an
-              irreversible send a checkbox is a reflex; retyping the destination
-              tail forces the eyes onto the exact address (anti-poisoning). */}
+          {/* Final check: retype the marked tail of EVERY recipient. On an
+              irreversible send a checkbox is a reflex; retyping each destination
+              tail forces the eyes onto every address actually being paid.
+              Gating only #1 left the other outputs unchecked (Wallet#7). */}
           <ConfirmGate
             network={network}
             alwaysChallenge
-            challenge={tailChallenge(reviewOutputs?.[0]?.address.getBech32() ?? "")}
-            challengeHint={t("confirm_gate_hint_send")}
+            challenge={(reviewOutputs ?? []).map((o) =>
+              tailChallenge(o.address.getBech32()),
+            )}
+            challengeHint={(reviewOutputs ?? []).map((_, i) =>
+              t("confirm_gate_hint_send", { n: i + 1 }),
+            )}
             checkboxLabel={t("send_verify_checkbox")}
             confirmed={checked}
             onChange={setChecked}

@@ -36,7 +36,7 @@
   "confirm_gate_prompt": "確定するには、上のアドレス内でハイライトされた{{hint}}を再入力してください:",
   "confirm_gate_placeholder": "ここに再入力",
   "confirm_gate_mismatch": "上の値とまだ一致していません。",
-  "confirm_gate_hint_send": "受取先 #1 のアドレスの末尾4文字",
+  "confirm_gate_hint_send": "受取先 #{{n}} のアドレスの末尾4文字",
   "confirm_gate_hint_pool": "プール ID の末尾4文字",
   "confirm_gate_hint_drep": "dRep ID の末尾4文字",
   "confirm_send": "確認して送信",
