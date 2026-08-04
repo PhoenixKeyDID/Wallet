@@ -1,56 +1,4 @@
 {
-  "wallet": {
-    "address_label": "Địa chỉ ví Cardano",
-    "balance_label": "Số dư",
-    "show_qr": "Hiện QR code",
-    "no_address_yet": "Ví chưa được khởi tạo. Mở app để derive địa chỉ.",
-    "empty_title": "Ví của bạn chưa có LAMP",
-    "empty_description": "Có 2 cách để có LAMP. Bạn có thể nhận từ ví khác, hoặc mua gói kích hoạt để được tặng 1001 LAMP + 10 ADA.",
-    "send_from_other": "Gửi LAMP từ ví khác",
-    "buy_activation_200k": "Mua gói kích hoạt — 200.000đ",
-    "claim_success": "Đã claim {{amount}} MAGIC"
-  },
-  "magic": {
-    "accruing": "MAGIC đang sinh",
-    "rate_explained": "{{rate}} MAGIC / LAMP / slot",
-    "claim": "Claim",
-    "claiming": "Đang claim..."
-  },
-  "dashboard": {
-    "did_label": "DID của bạn",
-    "getlamp_title": "Hỗ trợ Get LAMP",
-    "getlamp_subtitle": "Mua gói kích hoạt hoặc hỏi Genie"
-  },
-  "lamp": {
-    "title_menu": "GetLAMP",
-    "title_support": "Hỗ trợ",
-    "title_activation": "Gói kích hoạt 200.000đ",
-    "menu_title": "Bạn cần gì?",
-    "menu_description": "Genie sẽ giúp bạn ngay trong cửa sổ chat này",
-    "menu_activation_title": "Mua gói kích hoạt — 200.000đ",
-    "menu_activation_desc": "Trả 200k VND → nhận 1001 LAMP + 10 ADA vào ví",
-    "menu_support_title": "Hỏi Genie",
-    "menu_support_desc": "Chat với 1 Genie để hỗ trợ chung",
-    "your_address": "Địa chỉ ví của bạn",
-    "connecting": "Đang kết nối Genie..."
-  },
-  "activation": {
-    "awaiting_payment": "Vui lòng thanh toán trong",
-    "expired": "Đã hết thời gian thanh toán",
-    "payment_confirmed_waiting_genie": "Đã nhận thanh toán — chờ Genie ký giao dịch...",
-    "success_banner": "✅ Đã kích hoạt! Balance sẽ cập nhật trong giây lát.",
-    "success": "Đã nhận 1001 LAMP + 10 ADA",
-    "failed": "Giao dịch thất bại",
-    "cancelled": "Đã huỷ",
-    "you_will_receive": "Bạn sẽ nhận",
-    "scan_to_pay": "Quét QR để thanh toán qua VietQR",
-    "cancel": "Huỷ giao dịch",
-    "testnet_payment_sent": "[Testnet] Đã xác nhận thanh toán"
-  },
-  "common": {
-    "copy": "Copy",
-    "copied": "Đã copy"
-  },
   "page_title": "Ví Phoenix",
   "page_subtitle": "Ví Cardano tự-quản — khoá của bạn không bao giờ chạm vào trang này.",
   "dev_warning_title": "Bản thử nghiệm — chưa kiểm định an ninh",
@@ -110,8 +58,7 @@
   "loading": "Đang tải…",
   "view_balance": "Xem số dư",
   "derived_addresses": "Địa chỉ dẫn ra",
-  "phoenix_intro": "Nhập một Phoenix DID để xem ví custody theo danh tính (địa chỉ script, bất biến qua xoay khoá).",
-  "did_label": "DID",
+  "phoenix_intro": "Ví custody gắn với danh tính của bạn (địa chỉ script, bất biến qua rotate khoá). Bạn chỉ xem được ví của chính DID mình.",
   "did_help": "DID của tôi là gì?",
   "did_help_body": "DID hiện trong ứng dụng Phoenix của bạn, ở mục Danh tính / Hồ sơ. Dạng did:phoenix:...",
   "resolve_custody": "Tra ví custody",
@@ -268,5 +215,8 @@
   "xvk_match_note": "Khoá này thuộc về ví đang kết nối của bạn.",
   "network_match_hint": "Đảm bảo mạng này khớp với mạng đang chọn trong tiện ích ví của bạn.",
   "stake_read_failed": "Hiện chưa đọc được tình trạng staking của bạn. Điều này không có nghĩa là bạn mất phần staking — hãy thử lại.",
-  "retry": "Thử lại"
+  "retry": "Thử lại",
+  "phoenix_session_did": "DID Phoenix của bạn",
+  "phoenix_needs_session": "Đăng nhập bằng danh tính Phoenix để xem ví custody của bạn.",
+  "phoenix_unauthorized": "Ví này thuộc về một danh tính khác, hoặc phiên đăng nhập đã hết hạn. Hãy đăng nhập lại."
 }

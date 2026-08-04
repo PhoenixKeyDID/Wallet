@@ -17,6 +17,12 @@ export default function WalletPage() {
           <p className="text-sm text-text-dim">{t("page_subtitle")}</p>
         </header>
         <DevWarningBanner />
+        {/*
+          Example page — no session here, so the Phoenix custody tab shows
+          "sign in first". The host renders this with its own DID, e.g.
+          `<WalletHub did={getSessionMeta()?.userDid} />`; the backend only
+          serves the caller's own wallet (PhoenixKey-Database#116).
+        */}
         <WalletHub />
       </main>
       <Footer />

@@ -33,10 +33,21 @@ export type AllWalletsResponse = {
   magic?: { source: string; available: number | string; accrued: number | string };
 };
 
-/** GET /wallet/{did}/all — combined phoenix + standard wallets, public read. */
+/**
+ * GET /wallet/{did}/all — combined phoenix + standard wallets.
+ *
+ * AUTHENTICATED. PhoenixKey-Database#116 put a Bearer-session guard on this
+ * endpoint and enforces `caller_did == path_did`, so it only ever resolves the
+ * CALLER'S OWN wallet — any other DID answers 401. Serving it publicly made it a
+ * mass DID→address→balance linking oracle (Wallet#2).
+ *
+ * The host's `@/lib/api` attaches the session token; this module never holds it.
+ * NOTE: `PhoenixKey-Wallet-API-v2-Feat.md` §2.3 still calls these reads
+ * "public" — that text predates #116 and is being corrected.
+ */
 export async function getAllWallets(userDid: string): Promise<AllWalletsResponse> {
   return apiFetch<AllWalletsResponse>(
     `/wallet/${encodeURIComponent(userDid)}/all`,
-    { method: "GET", noAuth: true },
+    { method: "GET" },
   );
 }

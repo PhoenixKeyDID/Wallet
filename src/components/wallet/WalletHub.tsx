@@ -14,7 +14,16 @@ const MODES: { id: Mode; labelKey: string; hintKey: string; icon: string }[] = [
   { id: "phoenix", labelKey: "mode_phoenix", hintKey: "mode_phoenix_hint", icon: "🔥" },
 ];
 
-export function WalletHub() {
+type Props = {
+  /**
+   * DID of the signed-in user, from the host session. Only the Phoenix custody
+   * mode needs it — Connect and Watch-only never talk to the Phoenix backend.
+   * Omit it and that mode simply says "sign in first".
+   */
+  did?: string | null;
+};
+
+export function WalletHub({ did }: Props) {
   const { t } = useTranslation("wallet");
   const [mode, setMode] = useState<Mode>("connect");
 
@@ -52,7 +61,7 @@ export function WalletHub() {
 
       {mode === "connect" && <Cip30Panel />}
       {mode === "watch" && <WatchOnlyPanel />}
-      {mode === "phoenix" && <PhoenixCustodyPanel />}
+      {mode === "phoenix" && <PhoenixCustodyPanel did={did} />}
     </div>
   );
 }
