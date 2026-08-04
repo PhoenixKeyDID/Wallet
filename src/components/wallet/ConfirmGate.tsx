@@ -10,9 +10,21 @@ import type { PhoenixNetwork } from "@/lib/cardano";
  * A bare checkbox is a reflex: faced with an irreversible send the user ticks
  * it without reading. This gate instead makes the user **retype a short
  * challenge drawn from the transaction itself** — the last few characters of
- * the recipient address / pool id / dRep id. Retyping the tail forces the eyes
- * onto the exact cryptographic destination and defeats an address-poisoning
- * swap that a checkbox would wave through.
+ * the recipient address / pool id / dRep id — which forces the eyes onto the
+ * destination before the signature request goes out.
+ *
+ * What this is and is NOT (Wallet#7). It defeats the reflex tick and catches a
+ * mis-paste. It does NOT defeat a targeted address-poisoning attack: four
+ * bech32 characters are 20 bits, so grinding a vanity address that shares a
+ * tail is seconds of work, and if the poisoned address is already in the form
+ * then the challenge is drawn from the poisoned address and matches. Defeating
+ * a targeted swap needs an address book plus a "you have never sent here
+ * before" warning — a different mechanism, on the roadmap.
+ *
+ * The caller must NOT print the challenge next to the input: that turns the
+ * gate into screen-to-screen copying with the address never read. Highlight the
+ * challenged characters inside the full destination instead, as `SendPanel`
+ * does, so the eye has to travel across the real address.
  *
  * Network behaviour:
  *  - `alwaysChallenge` (Send): the retype is required on every network, so the
@@ -27,8 +39,18 @@ function normalize(s: string): string {
   return s.trim().toLowerCase();
 }
 
+/**
+ * How many trailing characters the user retypes. Exported so the caller can
+ * highlight exactly these characters in the destination it renders — if the two
+ * drifted, the gate would ask for one thing and mark another.
+ *
+ * Four bech32 characters is 20 bits. That is enough to catch a mis-paste, not
+ * enough to stop a grind — see the header note.
+ */
+export const CHALLENGE_LEN = 4;
+
 /** Last `n` visible characters of a value — the string the user must retype. */
-export function tailChallenge(value: string, n = 4): string {
+export function tailChallenge(value: string, n = CHALLENGE_LEN): string {
   const v = (value ?? "").trim();
   return v.length <= n ? v : v.slice(-n);
 }
@@ -93,9 +115,13 @@ export function ConfirmGate({
 
   return (
     <div className="space-y-1.5">
+      {/* The challenge string is deliberately NOT printed here. Showing the
+          answer beside the input lets the user copy screen-to-screen without
+          ever looking at the destination — the gate would then only prove they
+          can transcribe. The characters are highlighted in the address above
+          instead, so the eye has to travel across the real address. */}
       <p className="text-xs text-amber-brand">
-        {t("confirm_gate_prompt", { hint: challengeHint })}{" "}
-        <span className="mono font-semibold tracking-widest">{challenge}</span>
+        {t("confirm_gate_prompt", { hint: challengeHint })}
       </p>
       <div className="flex items-center gap-2">
         <input

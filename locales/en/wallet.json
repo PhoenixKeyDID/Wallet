@@ -33,7 +33,7 @@
   "building": "Preparing…",
   "send_review_title": "Check carefully before sending",
   "send_verify_checkbox": "I have checked the full recipient address AND the amount above are correct.",
-  "confirm_gate_prompt": "To confirm on-chain, retype {{hint}}:",
+  "confirm_gate_prompt": "To confirm on-chain, retype {{hint}} — marked in the address above:",
   "confirm_gate_placeholder": "retype here",
   "confirm_gate_mismatch": "Doesn't match the value above yet.",
   "confirm_gate_hint_send": "the last 4 characters of recipient #1's address",
