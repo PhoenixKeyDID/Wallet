@@ -6,13 +6,18 @@
  * `@/lib/api` with session auth, retries and error mapping — when integrating,
  * point the `@/lib/api` alias at the host implementation instead of this file.
  *
- * Only the read paths in `./wallet.ts` use this today, all with `noAuth: true`.
+ * The read paths in `./wallet.ts` are AUTHENTICATED: `/wallet/{did}/all` needs a
+ * Bearer session and the backend enforces `caller_did == path_did`
+ * (PhoenixKey-Database#116). This stub attaches no Authorization header and does
+ * not unwrap the backend's `{code, message, result}` envelope — the host client
+ * does both. Standalone, those calls will fail; only the host wiring makes them
+ * work, which is the point of the alias.
  */
 
 export type ApiFetchOptions = RequestInit & {
   /** Override the API base URL for this call. */
   baseUrl?: string;
-  /** Skip attaching any Authorization header. */
+  /** Skip attaching the Authorization header — public endpoints only. */
   noAuth?: boolean;
 };
 
