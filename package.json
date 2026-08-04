@@ -1,0 +1,34 @@
+{
+  "name": "@phoenixkey/wallet",
+  "version": "0.1.0",
+  "description": "Phoenix Wallet — a pure-JS Cardano wallet module: use it like a traditional wallet (no DID, seed/keys never leave your device) or with a Phoenix DID in parallel.",
+  "license": "SEE LICENSE IN README.md",
+  "type": "module",
+  "sideEffects": false,
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@noble/hashes": "1.5.0",
+    "@stricahq/bip32ed25519": "^1.1.2",
+    "@stricahq/cbors": "^1.1.0",
+    "@stricahq/typhonjs": "^3.1.1",
+    "bech32": "^2.0.0",
+    "bignumber.js": "^9.1.2",
+    "buffer": "^6.0.3",
+    "qrcode.react": "^4.2.0",
+    "react": "^19.0.0",
+    "react-i18next": "^15.0.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "typescript": "^5",
+    "vitest": "^2.1.8"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  }
+}

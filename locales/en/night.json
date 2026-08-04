@@ -1,0 +1,21 @@
+{
+  "page_title": "Redeem NIGHT",
+  "page_subtitle": "Connect your Cardano wallet, then redeem your Midnight NIGHT on the official portal.",
+  "intro": "NIGHT redemption is handled by Midnight's official portal. Phoenix only helps you connect and check your address — it never touches your funds.",
+  "point_official": "Signing happens on the official Midnight portal (redeem.midnight.gd).",
+  "point_destination": "The address that receives NIGHT was fixed when you claimed — it does NOT need to sign. You never re-enter a recovery phrase or restore a cold wallet.",
+  "point_fee": "You just need any wallet with a little ADA to pay the fee — that's the signing wallet, not the receiving one. NIGHT still goes to the correct address no matter who pays.",
+  "point_thaw": "NIGHT unlocks (thaws) in four installments over ~360 days after mainnet launch.",
+  "no_wallet": "You don't have a Cardano wallet in this browser yet. Install one (e.g. Lace) to use as the fee-paying wallet.",
+  "install_lace_cta": "Install the Lace wallet (free) →",
+  "recheck_wallets": "Installed it? Tap to re-check",
+  "connect_prompt": "Connect your fee-paying wallet:",
+  "recommended": "recommended",
+  "connecting": "Connecting…",
+  "connected_to": "Connected to",
+  "your_address": "Your address",
+  "open_portal": "Redeem on the official portal →",
+  "portal_url_preview": "Opens: redeem.midnight.gd (Midnight's official site).",
+  "handoff_note": "You will finish and sign the redemption on Midnight's official site.",
+  "learn_more": "Learn more about NIGHT at midnight.gd"
+}
