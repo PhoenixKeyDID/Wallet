@@ -497,14 +497,13 @@ export async function listDReps(
     .slice(0, limit);
   if (filtered.length === 0) return [];
 
-  let info: KoiosDRepInfoRow[] = [];
-  try {
-    info = await koios<KoiosDRepInfoRow[]>(network, "/drep_info", {
-      _drep_ids: filtered.map((d) => d.drep_id),
-    });
-  } catch {
-    info = [];
-  }
+  // Throws on failure rather than falling back to `[]`. An empty info set makes
+  // every dRep render with no voting power and no anchor — indistinguishable
+  // from real dReps that hold nothing, right where the user is choosing whom to
+  // delegate their vote to.
+  const info = await koios<KoiosDRepInfoRow[]>(network, "/drep_info", {
+    _drep_ids: filtered.map((d) => d.drep_id),
+  });
   const byId = new Map(info.map((i) => [i.drep_id, i]));
   return filtered.map((d) => {
     const i = byId.get(d.drep_id);
