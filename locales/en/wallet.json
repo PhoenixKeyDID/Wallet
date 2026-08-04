@@ -36,7 +36,7 @@
   "confirm_gate_prompt": "To confirm on-chain, retype {{hint}} — marked in the address above:",
   "confirm_gate_placeholder": "retype here",
   "confirm_gate_mismatch": "Doesn't match the value above yet.",
-  "confirm_gate_hint_send": "the last 4 characters of recipient #1's address",
+  "confirm_gate_hint_send": "the last 4 characters of recipient #{{n}}'s address",
   "confirm_gate_hint_pool": "the last 4 characters of the pool id",
   "confirm_gate_hint_drep": "the last 4 characters of the dRep id",
   "confirm_send": "Confirm & Send",

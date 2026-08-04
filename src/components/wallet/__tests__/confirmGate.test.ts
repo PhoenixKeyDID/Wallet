@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { tailChallenge } from "../ConfirmGate";
+import { tailChallenge, allChallengesMet } from "../ConfirmGate";
 
 describe("tailChallenge — the retype target", () => {
   it("returns the last 4 characters by default", () => {
@@ -31,5 +31,46 @@ describe("tailChallenge — the retype target", () => {
     const c = tailChallenge(addr);
     expect(addr.endsWith(c)).toBe(true);
     expect(c.length).toBe(4);
+  });
+});
+
+describe("allChallengesMet — every destination must be confirmed", () => {
+  it("accepts a single correct answer", () => {
+    expect(allChallengesMet(["9k7z"], ["9k7z"])).toBe(true);
+  });
+
+  it("rejects a single wrong answer", () => {
+    expect(allChallengesMet(["9k7z"], ["9k7x"])).toBe(false);
+  });
+
+  it("REJECTS when only the first of several is answered", () => {
+    // The Wallet#7 gap: a multi-recipient send used to gate recipient #1 only,
+    // so a poisoned recipient #2 was never looked at.
+    expect(allChallengesMet(["aaaa", "bbbb"], ["aaaa", ""])).toBe(false);
+    expect(allChallengesMet(["aaaa", "bbbb"], ["aaaa"])).toBe(false);
+    expect(allChallengesMet(["aaaa", "bbbb", "cccc"], ["aaaa", "bbbb", "xxxx"])).toBe(false);
+  });
+
+  it("accepts only when every answer is correct", () => {
+    expect(allChallengesMet(["aaaa", "bbbb", "cccc"], ["aaaa", "bbbb", "cccc"])).toBe(true);
+  });
+
+  it("is order-sensitive — right tails in the wrong slots do not pass", () => {
+    expect(allChallengesMet(["aaaa", "bbbb"], ["bbbb", "aaaa"])).toBe(false);
+  });
+
+  it("ignores case and surrounding whitespace, as the input does", () => {
+    expect(allChallengesMet(["9K7Z", "AbCd"], [" 9k7z ", "abcd"])).toBe(true);
+  });
+
+  it("never passes on an empty challenge set", () => {
+    expect(allChallengesMet([], [])).toBe(false);
+  });
+
+  it("never passes an unanswerable blank challenge", () => {
+    // A blank challenge cannot be typed, so treating it as satisfied would
+    // silently unlock the confirm button for a destination nobody checked.
+    expect(allChallengesMet(["aaaa", ""], ["aaaa", ""])).toBe(false);
+    expect(allChallengesMet(["   "], ["   "])).toBe(false);
   });
 });

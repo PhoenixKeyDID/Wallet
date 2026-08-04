@@ -17,9 +17,10 @@ import type { PhoenixNetwork } from "@/lib/cardano";
  * mis-paste. It does NOT defeat a targeted address-poisoning attack: four
  * bech32 characters are 20 bits, so grinding a vanity address that shares a
  * tail is seconds of work, and if the poisoned address is already in the form
- * then the challenge is drawn from the poisoned address and matches. Defeating
- * a targeted swap needs an address book plus a "you have never sent here
- * before" warning — a different mechanism, on the roadmap.
+ * then the challenge is drawn from the poisoned address and matches. Every
+ * output of a multi-recipient send IS challenged, so no destination goes
+ * unread; but defeating a targeted swap needs an address book plus a "you have
+ * never sent here before" warning — a different mechanism, on the roadmap.
  *
  * The caller must NOT print the challenge next to the input: that turns the
  * gate into screen-to-screen copying with the address never read. Highlight the
@@ -55,6 +56,23 @@ export function tailChallenge(value: string, n = CHALLENGE_LEN): string {
   return v.length <= n ? v : v.slice(-n);
 }
 
+const asList = (v: string | string[]): string[] => (Array.isArray(v) ? v : [v]);
+
+/**
+ * The gate's core invariant: EVERY challenge must be answered correctly.
+ *
+ * Kept as a pure exported function so the rule is testable on its own — a
+ * partial confirmation must never read as confirmed, which is precisely the
+ * bug where a multi-recipient send gated only recipient #1 (Wallet#7).
+ */
+export function allChallengesMet(challenges: string[], entries: string[]): boolean {
+  if (challenges.length === 0) return false;
+  return challenges.every((c, i) => {
+    if (c.trim().length === 0) return false; // unanswerable, never satisfied
+    return normalize(entries[i] ?? "") === normalize(c);
+  });
+}
+
 export function ConfirmGate({
   network,
   challenge,
@@ -65,10 +83,18 @@ export function ConfirmGate({
   alwaysChallenge = false,
 }: {
   network: PhoenixNetwork;
-  /** Exact string the user must retype (e.g. the last 4 chars of the address). */
-  challenge: string;
-  /** Names WHAT to type, e.g. "the last 4 characters of recipient #1's address". */
-  challengeHint: string;
+  /**
+   * Exact string(s) the user must retype. Pass an ARRAY to gate every
+   * destination of a multi-output transaction — gating only the first leaves
+   * the others unchecked, which is how a poisoned recipient #2 used to sail
+   * through (Wallet#7).
+   */
+  challenge: string | string[];
+  /**
+   * Names WHAT to type, e.g. "the last 4 characters of recipient #1's address".
+   * Array form must line up 1:1 with `challenge`.
+   */
+  challengeHint: string | string[];
   /** Testnet copy for the lighter checkbox. */
   checkboxLabel: string;
   confirmed: boolean;
@@ -77,21 +103,36 @@ export function ConfirmGate({
 }) {
   const { t } = useTranslation("wallet");
   const isMainnet = network === 1;
-  const useChallenge = (isMainnet || alwaysChallenge) && challenge.trim().length > 0;
-  const [entry, setEntry] = useState("");
+
+  const challenges = asList(challenge);
+  const hints = asList(challengeHint);
+  // Every challenge must be answerable. A blank one cannot be typed, so it
+  // could never become true and would deadlock the confirm button — fall back
+  // to the checkbox, as the single-challenge path already did.
+  const useChallenge =
+    (isMainnet || alwaysChallenge) &&
+    challenges.length > 0 &&
+    challenges.every((c) => c.trim().length > 0);
+
+  const [entries, setEntries] = useState<string[]>(() => challenges.map(() => ""));
+
+  // Identity of the whole challenge set. Bech32 is letters and digits only,
+  // so a newline can never appear inside a tail — joining on it cannot make
+  // two different sets look like the same one.
+  const challengeKey = challenges.join("\n");
 
   // The gate sits at a fixed position in the review, so React keeps this
   // instance mounted when the review switches to a NEW transaction. Without
-  // this reset a previously-matched confirmation (and the typed tail) would
+  // this reset a previously-matched confirmation (and the typed tails) would
   // carry over to a different destination — the button would stay enabled for
-  // an address the user never re-checked. Re-arm whenever the challenge changes.
+  // an address the user never re-checked. Re-arm whenever the set changes.
   useEffect(() => {
-    setEntry("");
+    setEntries(challengeKey.split("\n").map(() => ""));
     onChange(false);
     // onChange is a stable setState updater from the parent; only the challenge
     // identity should re-arm the gate.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [challenge]);
+  }, [challengeKey]);
 
   if (!useChallenge) {
     return (
@@ -107,47 +148,64 @@ export function ConfirmGate({
     );
   }
 
-  const match = normalize(entry) === normalize(challenge);
-  const handle = (v: string) => {
-    setEntry(v);
-    onChange(normalize(v) === normalize(challenge));
+  const matches = challenges.map((c, i) => normalize(entries[i] ?? "") === normalize(c));
+
+  const handle = (i: number, v: string) => {
+    const next = challenges.map((_, k) => (k === i ? v : (entries[k] ?? "")));
+    setEntries(next);
+    // Every destination must be confirmed. Falling back to "the first one
+    // matched" is exactly the gap that let a poisoned recipient #2 through.
+    onChange(allChallengesMet(challenges, next));
   };
 
   return (
     <div className="space-y-1.5">
-      {/* The challenge string is deliberately NOT printed here. Showing the
+      {/* The challenge strings are deliberately NOT printed here. Showing the
           answer beside the input lets the user copy screen-to-screen without
           ever looking at the destination — the gate would then only prove they
           can transcribe. The characters are highlighted in the address above
           instead, so the eye has to travel across the real address. */}
       <p className="text-xs text-amber-brand">
-        {t("confirm_gate_prompt", { hint: challengeHint })}
+        {t("confirm_gate_prompt", { hint: hints[0] })}
       </p>
-      <div className="flex items-center gap-2">
-        <input
-          value={entry}
-          onChange={(e) => handle(e.target.value)}
-          placeholder={t("confirm_gate_placeholder")}
-          autoComplete="off"
-          autoCapitalize="off"
-          spellCheck={false}
-          aria-label={challengeHint}
-          className={
-            "flex-1 p-2 rounded-brand-sm bg-bg0 border text-sm mono tracking-widest " +
-            (entry.length === 0
-              ? "border-border-soft"
-              : match
-                ? "border-teal-brand text-teal-brand"
-                : "border-border-amber text-amber-brand")
-          }
-        />
-        <span className="mono text-sm w-5 text-center text-teal-brand" aria-hidden>
-          {match ? "✓" : ""}
-        </span>
-      </div>
-      {entry.length > 0 && !match && (
-        <p className="text-[11px] text-text-hint">{t("confirm_gate_mismatch")}</p>
-      )}
+
+      {challenges.map((c, i) => {
+        const entry = entries[i] ?? "";
+        const match = matches[i];
+        const hint = hints[i] ?? hints[0];
+        return (
+          <div key={c + String(i)} className="space-y-1">
+            {challenges.length > 1 && (
+              <span className="text-[11px] text-text-hint">{hint}</span>
+            )}
+            <div className="flex items-center gap-2">
+              <input
+                value={entry}
+                onChange={(e) => handle(i, e.target.value)}
+                placeholder={t("confirm_gate_placeholder")}
+                autoComplete="off"
+                autoCapitalize="off"
+                spellCheck={false}
+                aria-label={hint}
+                className={
+                  "flex-1 p-2 rounded-brand-sm bg-bg0 border text-sm mono tracking-widest " +
+                  (entry.length === 0
+                    ? "border-border-soft"
+                    : match
+                      ? "border-teal-brand text-teal-brand"
+                      : "border-border-amber text-amber-brand")
+                }
+              />
+              <span className="mono text-sm w-5 text-center text-teal-brand" aria-hidden>
+                {match ? "✓" : ""}
+              </span>
+            </div>
+            {entry.length > 0 && !match && (
+              <p className="text-[11px] text-text-hint">{t("confirm_gate_mismatch")}</p>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
