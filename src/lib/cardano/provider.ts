@@ -26,7 +26,7 @@ function koiosBase(network: PhoenixNetwork): string {
   return KOIOS_BASE.preprod;
 }
 
-async function koios<T>(network: PhoenixNetwork, path: string, body?: unknown): Promise<T> {
+export async function koios<T>(network: PhoenixNetwork, path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${koiosBase(network)}${path}`, {
     method: body ? "POST" : "GET",
     headers: { "content-type": "application/json", accept: "application/json" },

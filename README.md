@@ -8,10 +8,12 @@ features, both at the same time.
 It is built to drop into a host app (the PhoenixKey Standard wallet / Frontend),
 and it can also be added alongside an existing Standard wallet.
 
-> **Beta — not audited.** Viewing balances is safe. Building and sending
+> **Beta — not audited.** Viewing balances moves no funds. Building and sending
 > transactions is experimental and has not been through an on-chain security
 > review. Do not use it to move funds you cannot afford to lose, and do not
 > import a high-value wallet here yet.
+
+**Full specification & security model:** [`docs/Phoenix Wallet-Feat.md`](<docs/Phoenix Wallet-Feat.md>).
 
 ## Design: no hot wallet, ever
 
@@ -29,7 +31,10 @@ scam you.
 | **Air-gap QR co-sign** | ✅ | 🟡 scaffolded; enabled when the offline signer ships |
 
 - **Traditional use** — connect a standard Cardano extension (or watch an
-  account key). No DID needed; nothing is uploaded.
+  account key). No DID needed; no data goes to the Phoenix backend. (Reading
+  balances and building transactions does query a public Cardano indexer,
+  Koios — it sees the addresses you look up and your IP. Nothing is sent to a
+  Phoenix server, and your keys never leave your wallet.)
 - **Phoenix use** — with a DID you can view your Phoenix custody wallet and your
   standard wallet in parallel, and add this wallet into the Standard wallet.
 
@@ -78,7 +83,7 @@ The components use the host's Tailwind design tokens (`bg-bg1`, `text-text-dim`,
 
 ```bash
 bun install
-bun test        # 24 tests — includes golden vectors vs the Rust reference derivation
+bun test        # 104 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
 bun run typecheck
 ```
 
@@ -90,10 +95,15 @@ CLI derivation, `address.test.ts` fails.
 
 - ✅ Watch-only, CIP-30 connect, Phoenix custody view, `/night` handoff.
 - 🟡 Send flow — works against CIP-30 but is unaudited; needs a preprod on-chain
-  pass with disposable funds before it is enabled for mainnet sends.
+  pass with disposable funds before it is enabled for mainnet sends. (Send +
+  delegation verified on preprod; see the security notes.) Confirming a send or
+  delegation requires retyping the destination's last 4 characters, not just a
+  checkbox — an anti-poisoning gate (`ConfirmGate`).
+- 🟡 Staking & governance signing — built and signable over CIP-30, same
+  unaudited, preprod-first caveat as Send. dRep registration/voting additionally
+  needs its fee re-confirmed on preprod before mainnet use.
 - 🟡 Air-gap QR co-sign — the web side is scaffolded; it turns on when the
   offline mobile signer is available.
-- ⬜ Staking / governance signing.
 
 ## License
 
