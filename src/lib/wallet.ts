@@ -12,25 +12,42 @@ export type WalletKind = "phoenix" | "standard";
 
 export type WalletEntry = {
   kind: WalletKind;
+  /**
+   * Backend `StandardAddresses`. A phoenix wallet carries ONLY `fixed` — the
+   * spec is explicit ("1 địa chỉ, KHÔNG active/stake") and `getAllWallets()`
+   * builds it as `new StandardAddresses(walletAddress, null, null)`. There is
+   * no `custody` field; it was never in the contract.
+   */
   addresses: {
     fixed?: string | null;
     active?: string | null;
     stake?: string | null;
-    /** phoenix custody: the single script address. */
-    custody?: string | null;
     [k: string]: string | null | undefined;
   };
+  /**
+   * On-chain quantities arrive as JSON **strings**: the backend serialises them
+   * with `ToStringSerializer` because total supply exceeds
+   * `Number.MAX_SAFE_INTEGER`. Parse with `BigInt`; never compare against a
+   * number literal — `"0" === 0` is false and that mistake has shipped before.
+   */
   balances: {
-    lovelace: number | string;
-    lamp?: number | string;
-    carp?: number | string;
-    [k: string]: number | string | undefined;
+    lovelace: string;
+    lamp?: string;
+    carp?: string;
+    [k: string]: string | undefined;
   };
 };
 
 export type AllWalletsResponse = {
   wallets: WalletEntry[];
-  magic?: { source: string; available: number | string; accrued: number | string };
+  /**
+   * MAGIC is a Vault accounting balance, not a wallet balance. Values are
+   * **nanoMAGIC** (10⁹ = 1 MAGIC), as strings for the same overflow reason.
+   * Vault reads are not wired yet — the backend returns 0 with
+   * `source: "vault"`, and the spec says to render "—" rather than a 0 that
+   * reads as "you have none".
+   */
+  magic?: { source: string; available: string; accrued: string };
 };
 
 /**

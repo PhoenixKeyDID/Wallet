@@ -56,8 +56,10 @@ export function PhoenixCustodyPanel({ did }: Props) {
     }
   };
 
-  const custodyAddress =
-    phoenix?.addresses.custody ?? phoenix?.addresses.fixed ?? null;
+  // `fixed` is the whole contract for a phoenix wallet — one script address, no
+  // active/stake. The old `addresses.custody ?? addresses.fixed` fallback read
+  // a field the backend never sends; only the fallback kept it working.
+  const custodyAddress = phoenix?.addresses.fixed ?? null;
   const lovelace = phoenix ? BigInt(String(phoenix.balances.lovelace ?? 0)) : BigInt("0");
   const assets = phoenix
     ? (["lamp", "carp"] as const)
