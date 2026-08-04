@@ -29,3 +29,9 @@ jobs:
 
       - name: Locale parity
         run: bun run check:locales
+
+      # Public repo: a homoglyph swap in a shipped URL would be blessed by the
+      # wallet's own brand. An absolute URL may only live in a CODEOWNERS-gated
+      # file, so adding one anywhere else pulls in a maintainer review.
+      - name: Outbound-URL guard
+        run: bun run check:urls

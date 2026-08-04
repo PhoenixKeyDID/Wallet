@@ -15,3 +15,18 @@
 /src/lib/cardano/receive.ts     @AladinContract
 /src/lib/cardano/qr.ts          @AladinContract
 /locales/                       @AladinContract
+
+# Files that carry an outbound URL. `scripts/check-urls.mjs` fails CI when an
+# absolute URL appears in src/ outside this list, so the two cannot drift: to
+# add a URL anywhere else you must add the file here, which pulls in a
+# code-owner review. A homoglyph swap (redeem.midnlght.gd) is a one-character
+# diff that no reviewer catches by accident.
+/src/lib/night.ts                        @AladinContract
+/src/lib/cardano/provider.ts             @AladinContract
+/src/components/night/NightRedeem.tsx    @AladinContract
+/src/lib/cardano/connect.test.ts         @AladinContract
+
+# The gate itself, and the rules that decide what is gated.
+/src/components/wallet/ConfirmGate.tsx   @AladinContract
+/.github/                                @AladinContract
+/scripts/                                @AladinContract
