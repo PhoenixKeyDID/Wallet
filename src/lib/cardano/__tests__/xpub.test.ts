@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { Buffer } from "buffer";
 import { Bip32PrivateKey } from "@stricahq/bip32ed25519";
+import { bech32 } from "bech32";
 import { parseAcctXvk, deriveWatchWallet } from "../xpub";
 import { toHex } from "../hash";
 
@@ -31,6 +32,30 @@ describe("parseAcctXvk", () => {
   });
   it("rejects wrong-length hex", () => {
     expect(() => parseAcctXvk("aa".repeat(10))).toThrow();
+  });
+
+  /**
+   * Length does not identify an ACCOUNT key: root/addr/stake/policy xvk are all
+   * 64 bytes. A root key silently derives `m/0/i` instead of
+   * `m/1852'/1815'/0'/role/i` — addresses that look valid and that no wallet
+   * will ever scan, so anything received there is lost in practice.
+   */
+  it("accepts bech32 acct_xvk and xpub", async () => {
+    const { xprv } = await acctFromSeed();
+    const bytes = xprv.toBip32PublicKey().toBytes();
+    const words = bech32.toWords(bytes);
+    expect(() => parseAcctXvk(bech32.encode("acct_xvk", words, 256))).not.toThrow();
+    expect(() => parseAcctXvk(bech32.encode("xpub", words, 256))).not.toThrow();
+  });
+
+  it("rejects a 64-byte bech32 key that is not account-level", async () => {
+    const { xprv } = await acctFromSeed();
+    const words = bech32.toWords(xprv.toBip32PublicKey().toBytes());
+    for (const hrp of ["root_xvk", "addr_xvk", "stake_xvk", "policy_xvk"]) {
+      expect(() => parseAcctXvk(bech32.encode(hrp, words, 256))).toThrow(
+        /not an account extended public key/i,
+      );
+    }
   });
 });
 

@@ -257,7 +257,7 @@
   "tab_connect": "Ứng dụng",
   "gov_verify_action_id": "Đối chiếu đầy đủ mã đề xuất ở trên — tiêu đề lấy từ dịch vụ ngoài và có thể bị giả.",
   "pool_id_label": "Mã pool",
-  "paste_own_xvk_only": "Chỉ dán khoá tài khoản CỦA CHÍNH BẠN. Địa chỉ sinh từ khoá người khác là của họ, không phải của bạn — tiền gửi vào sẽ mất.",
+  "paste_own_xvk_only": "Chỉ dán khoá tài khoản CỦA CHÍNH BẠN. Địa chỉ sinh từ khoá người khác là của họ, không phải của bạn — tiền gửi vào sẽ mất. Khoá tài khoản của bạn còn để lộ mọi địa chỉ trong tài khoản — trang này và indexer công khai sẽ thấy toàn bộ lịch sử giao dịch của bạn.",
   "net_mainnet": "Mainnet",
   "net_preprod": "Preprod",
   "net_preview": "Preview",

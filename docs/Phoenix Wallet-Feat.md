@@ -42,7 +42,16 @@ Consequence: this module holds no key, so a bug in it has no key to exfiltrate. 
 
 ### 2.2 Invariant M2-WATCH — watch-only cannot sign
 
-Watch-only mode consumes an **account extended _public_ key** (`acct_xvk`, 64 bytes = 32 pubkey ‖ 32 chaincode) and performs only BIP32-Ed25519 **soft** (`CKDpub`) derivation. No private key is derivable from a public key; this mode can reproduce the exact addresses the real signer will spend from, and read their balances, but can never sign. `parseAcctXvk` rejects anything that is not exactly 64 bytes (a 32-byte plain key or a 96-byte private key is refused).
+Watch-only mode consumes an **account extended _public_ key** (`acct_xvk`, 64 bytes = 32 pubkey ‖ 32 chaincode) and performs only BIP32-Ed25519 **soft** (`CKDpub`) derivation. No private key is derivable from a public key; this mode can reproduce the exact addresses the real signer will spend from, and read their balances, but can never sign. `parseAcctXvk` rejects anything that is not exactly 64 bytes (a 32-byte plain key or a 96-byte private key is refused), and rejects a bech32 key whose prefix says it is not account-level (`root_xvk`, `addr_xvk`, `stake_xvk`, `policy_xvk` are all 64 bytes too — deriving `role/index` from a root key yields addresses at `m/0/i` that no wallet will ever scan).
+
+**M2-WATCH does not say `acct_xvk` is safe to publish.** Two things follow from soft derivation that a reader could otherwise miss:
+
+1. **It links the whole account.** Anyone holding it can enumerate every address of the account, past and future, and therefore the entire transaction history behind them. That is a privacy break on its own.
+2. **It amplifies any child-key leak into a total loss.** Soft derivation is invertible in the private direction: `kL_child = kL_parent + 8·Z_L` where `Z = HMAC-SHA512(chaincode, 0x02 ‖ A ‖ index)` depends only on the contents of `acct_xvk` and a public index. So `acct_xvk` plus the private key of **any one** soft child gives back the account key — and with it every payment, stake and dRep key of that account, including indices never used. BIP-32 states this normatively ("knowledge of the extended public key plus any non-hardened private key descending from it is equivalent to knowing the extended private key"). Hardened derivation blocks the step above the account, so the seed itself stays out of reach.
+
+The leaked child key can come from software that has nothing to do with this wallet — the same account used in another tool is enough. Hence the rule this module holds to, verifiable in code: **`acct_xvk` is never persisted, never transmitted, never synced.** It lives in React state only (`WatchOnlyPanel.tsx`, `ReceivePanel.tsx`); `localStorage` holds nothing but `phoenix.testnetVariant`; no library under `src/lib/` ever sends it anywhere.
+
+A second consequence matters for recovery: once an account is compromised this way, **a signature proves nothing about ownership at any index of that account**. Any proof-of-ownership test has to be anchored above the hardened boundary — at the DID, not at an address key. Migration after a compromise goes to a sibling account (`…/1'`), which the attacker cannot derive, never to another index of the broken one.
 
 ### 2.3 Security priority order
 
@@ -155,7 +164,8 @@ Each fund-moving feature is **two-step**: build an unsigned transaction → show
 |---|---|---|
 | Address-poisoning on send | Full (untruncated) recipient address in review + **retype the address tail** to confirm (not a checkbox); address re-encoded from bytes | `send.ts`, `SendPanel.tsx`, `ConfirmGate.tsx` |
 | Receiving into an attacker's wallet (pasted `acct_xvk`) | Ownership check derives 0..23 and compares to the connected wallet; explicit "your own key only" warning | `ReceivePanel.tsx`, `WatchOnlyPanel.tsx` |
-| Key exfiltration via watch-only | M2-WATCH: soft-derivation only; 64-byte public key enforced | `xpub.ts` |
+| Key exfiltration via watch-only | M2-WATCH: soft-derivation only; 64-byte public key enforced; bech32 prefix must be account-level | `xpub.ts` |
+| `acct_xvk` turning a single leaked child key into a whole-account loss | Never persisted, never transmitted, never synced — held in React state only; `localStorage` carries `phoenix.testnetVariant` and nothing else | `WatchOnlyPanel.tsx`, `ReceivePanel.tsx`, `WalletTabs.tsx` |
 | Mainnet/testnet confusion | Network id read from the extension (not user-selected); mainnet badge is amber across send/staking/governance; wrong-network recipients rejected pre-build | all panels, `send.ts` |
 | Malicious dApp blind-signing | `buildDappProvider` requires review guards; embedded browser disabled | `connect.ts` |
 | Poisoned dApp allow-list via a PR (public repo) | URLs pinned by a golden test + CODEOWNERS review on trust-boundary files; destination host shown in UI | `connect.test.ts`, `.github/CODEOWNERS`, `ConnectPanel.tsx` |
@@ -173,8 +183,9 @@ Assumptions this model depends on (documented so they are not forgotten): the CI
 - 🟡 **Air-gap QR co-sign** — web side scaffolded; turns on when the offline mobile signer ships. The QR transport contract (including the integrity binding in §6) is shared with the mobile signer.
 - ⬜ **Phoenix custody spend** — needs the controller-key path (air-gap / mobile), phase 2.
 - ⬜ **Multi-pool / multiple stake keys** — v1 delegates a single stake key; multi-stake-key management is a v2 item.
-- ⬜ **Watch-only by single address** — v1 watch-only takes an account key (a full address range); a "paste one address" quick view is a planned convenience.
+- ⬜ **Watch-only by single address** — v1 watch-only takes an account key (a full address range); a "paste one address" quick view is a planned convenience. It is also the **safer** of the two paths and should be offered ahead of the `acct_xvk` one: a single address links nothing and amplifies nothing (§2.2).
 - ⬜ **Saved / known recipient addresses ("address book")** — a user-curated, labelled list of familiar destinations, so a send targets a chosen saved entry instead of a freshly pasted string an attacker can grind a look-alike of. Storage is **distributed on LampNet in a Strata** (the same model Smartsend uses); the Phoenix platform keeps none of the user's data on any server. A saved label is display-only: the full address is still shown and its tail retyped at confirm (§2.5), since a saved entry could itself have been poisoned when it was added. Strata record shape + client-side encryption to be specified.
+  **Hard constraint on that record: it carries labels and individual addresses only — never an `acct_xvk`, in any form, encrypted or not.** Syncing account keys through shared storage would build exactly the leak amplifier §2.2 describes, on public infrastructure, for every user at once. Written here because "sync the xpub so the address list follows the user" is the obvious convenience to reach for once the Strata exists.
 
 ---
 

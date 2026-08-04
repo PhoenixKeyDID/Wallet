@@ -257,7 +257,7 @@
   "tab_connect": "Apps",
   "gov_verify_action_id": "Check the full Action id above — the title comes from an external service and could be faked.",
   "pool_id_label": "Pool id",
-  "paste_own_xvk_only": "Only paste your OWN account key. An address from someone else's key is theirs, not yours — funds sent to it are lost.",
+  "paste_own_xvk_only": "Only paste your OWN account key. An address from someone else's key is theirs, not yours — funds sent to it are lost. Your account key also reveals every address of the account — this page and the public indexer will see your whole history.",
   "net_mainnet": "Mainnet",
   "net_preprod": "Preprod",
   "net_preview": "Preview",

@@ -12,6 +12,13 @@
  * Invariant M2-WATCH: `acct_xvk` is a PUBLIC key (64 bytes = 32 pubkey ‖ 32
  * chaincode). No private key is derivable from it — this module can view and
  * build, never sign. Signing always happens off this device.
+ *
+ * That is NOT the same as "safe to publish". `acct_xvk` is a capability: soft
+ * derivation is invertible in the private direction, so `acct_xvk` + the private
+ * key of ANY one soft child yields the account key, and from it every address,
+ * stake and dRep key of the account — including indices never used yet. BIP-32
+ * states this normatively for the general case. Hence the standing rule for this
+ * module: `acct_xvk` is never persisted, never transmitted, never synced.
  */
 import { Buffer } from "buffer";
 import { bech32 } from "bech32";
@@ -24,9 +31,20 @@ const ACCT_XVK_LEN = 64;
 const BECH32_LIMIT = 256;
 
 /**
+ * Human-readable prefixes that actually denote an ACCOUNT-level extended public
+ * key. Length alone does not identify one: `root_xvk`, `addr_xvk`, `stake_xvk`
+ * and `policy_xvk` are all 64 bytes too. Deriving `role/index` from a root key
+ * silently produces addresses at `m/0/i` instead of `m/1852'/1815'/0'/role/i` —
+ * valid-looking strings that no wallet will ever scan, so funds received there
+ * are lost in practice. Reject by prefix rather than let it through by length.
+ */
+const ACCT_XVK_PREFIXES = new Set(["acct_xvk", "xpub"]);
+
+/**
  * Accept an `acct_xvk` as hex (128 chars) or bech32 (`acct_xvk1…` / `xpub1…`)
  * and return a Bip32PublicKey. Rejects anything that is not exactly 64 bytes —
- * a 32-byte plain public key or a private key is refused (M2-WATCH / I-CONN-2).
+ * a 32-byte plain public key or a private key is refused (M2-WATCH / I-CONN-2) —
+ * and, for bech32 input, anything whose prefix says it is not account-level.
  */
 export function parseAcctXvk(input: string): Bip32PublicKey {
   const s = input.trim();
@@ -37,7 +55,12 @@ export function parseAcctXvk(input: string): Bip32PublicKey {
     }
     bytes = Buffer.from(s, "hex");
   } else {
-    const { words } = bech32.decode(s, BECH32_LIMIT);
+    const { prefix, words } = bech32.decode(s, BECH32_LIMIT);
+    if (!ACCT_XVK_PREFIXES.has(prefix)) {
+      throw new Error(
+        `"${prefix}" is not an account extended public key — expected acct_xvk… or xpub…`,
+      );
+    }
     bytes = Buffer.from(bech32.fromWords(words));
     if (bytes.length !== ACCT_XVK_LEN) {
       throw new Error(

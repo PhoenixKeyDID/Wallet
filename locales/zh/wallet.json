@@ -205,7 +205,7 @@
   "tab_connect": "应用",
   "gov_verify_action_id": "请核对上方完整的提案 id——标题来自外部服务，可能被伪造。",
   "pool_id_label": "矿池 id",
-  "paste_own_xvk_only": "只能粘贴你自己的账户公钥。用他人密钥生成的地址属于他人，向其转账的资金将丢失。",
+  "paste_own_xvk_only": "只能粘贴你自己的账户公钥。用他人密钥生成的地址属于他人，向其转账的资金将丢失。 账户公钥还会暴露该账户的所有地址——本页面和公开索引服务将看到你的全部交易记录。",
   "net_mainnet": "Mainnet",
   "net_preprod": "Preprod",
   "net_preview": "Preview",
