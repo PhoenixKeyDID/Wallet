@@ -210,7 +210,7 @@ Components use the host's Tailwind tokens (`bg-bg1`, `text-text-dim`, `teal-bran
 
 ## 9. Testing & verification
 
-- `bun run typecheck` (tsc, no emit) and `bun test` (104 unit tests) must both pass. Tests cover: address golden vectors vs the Rust reference, CKDpub derivation, UTxO decoding, send/stake/governance builders and their on-chain balance equations, the CIP-30 provider guards, the dApp URL pins, the retype-confirm tail (`ConfirmGate`), and the air-gap integrity binding.
+- `bun run typecheck` (tsc, no emit) and `bun run test` (130 unit tests across 12 files) must both pass. Tests cover: address golden vectors vs the Rust reference, CKDpub derivation, UTxO decoding, send/stake/governance builders and their on-chain balance equations, the CIP-30 provider guards, the dApp URL pins, the retype-confirm tail (`ConfirmGate`), the indexer error mapping, and the air-gap integrity binding.
 - The send and delegation paths were exercised on **preprod** with disposable funds (send tADA, mint + send a native token, delegate to a stake pool), each confirmed on-chain, before this spec was written. Governance signing carries the preprod caveat in §7.
 - Privacy: chain reads go to public Koios (which sees the queried addresses and the client IP). No data is sent to a Phoenix backend and keys never leave the wallet.
 
