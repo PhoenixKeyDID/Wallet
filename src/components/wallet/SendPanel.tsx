@@ -6,7 +6,12 @@ import { useTranslation } from "react-i18next";
 import { utils as tyUtils, types as tyTypes } from "@stricahq/typhonjs";
 import { toastApiError, toastSuccess } from "@/lib/toast";
 import { CopyBtn } from "@/components/CopyBtn";
-import { ConfirmGate, tailChallenge, CHALLENGE_LEN } from "@/components/wallet/ConfirmGate";
+import {
+  ConfirmGate,
+  ChallengedValue,
+  tailChallenge,
+  CHALLENGE_LEN,
+} from "@/components/wallet/ConfirmGate";
 import { reportSignError } from "@/components/wallet/signError";
 import {
   type Cip30Api,
@@ -371,12 +376,10 @@ export function SendPanel({
                       beside the input means the eye must cross the real address
                       to find it (Wallet#7). */}
                   <div className="flex items-start gap-2">
-                    <span className="mono text-xs break-all flex-1">
-                      {o.address.getBech32().slice(0, -CHALLENGE_LEN)}
-                      <mark className="bg-amber-brand/25 text-amber-brand font-semibold rounded-sm px-0.5">
-                        {o.address.getBech32().slice(-CHALLENGE_LEN)}
-                      </mark>
-                    </span>
+                    <ChallengedValue
+                      value={o.address.getBech32()}
+                      className="mono text-xs break-all flex-1"
+                    />
                     <CopyBtn value={o.address.getBech32()} />
                   </div>
                 </div>
@@ -421,7 +424,7 @@ export function SendPanel({
               tailChallenge(o.address.getBech32()),
             )}
             challengeHint={(reviewOutputs ?? []).map((_, i) =>
-              t("confirm_gate_hint_send", { n: i + 1 }),
+              t("confirm_gate_hint_send", { n: i + 1, len: CHALLENGE_LEN }),
             )}
             checkboxLabel={t("send_verify_checkbox")}
             confirmed={checked}

@@ -43,15 +43,62 @@ function cardanoRoot(): Record<string, InjectedWallet> | undefined {
   return (window as unknown as { cardano?: Record<string, InjectedWallet> }).cardano;
 }
 
-/** Enumerate injected CIP-30 wallets (objects exposing `enable` + `apiVersion`). */
+/** A property read that must never take the whole list down with it. */
+function readProp(w: InjectedWallet, prop: "name" | "icon" | "apiVersion"): string {
+  try {
+    const v = w[prop];
+    return typeof v === "string" ? v : "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Enumerate injected CIP-30 wallets (objects exposing `enable` + `apiVersion`).
+ *
+ * Every read here is defensive, and that is not paranoia about theory. Anything
+ * on the page — a second extension, a badly written one, a hostile one — can
+ * write to `window.cardano`, and a property defined as a getter that throws is
+ * enough to take the whole enumeration down. The old `{key, ...w}` spread
+ * invoked every enumerable getter, so a single bad entry threw before the list
+ * was ever built and the panel showed "no wallet installed" — the user's real,
+ * working Lace made unreachable by someone else's object. One broken entry is
+ * skipped; the rest of the list still gets offered.
+ *
+ * What this deliberately does NOT do is decide which wallets are trustworthy.
+ * `name` and `icon` are self-declared by the injected object, and so is the key
+ * it registers under, so an allowlist of names would rank the list, not gate it
+ * — and a "verified" badge built on self-declared data would be a promise we
+ * cannot keep. The real boundary is `REQUIRED_API_METHODS` below, enforced on
+ * the object the wallet hands back from `enable()`.
+ */
 export function listWallets(): Cip30Wallet[] {
   const root = cardanoRoot();
   if (!root) return [];
+  let keys: string[];
+  try {
+    keys = Object.keys(root);
+  } catch {
+    return [];
+  }
   const out: Cip30Wallet[] = [];
-  for (const key of Object.keys(root)) {
-    const w = root[key];
-    if (w && typeof w.enable === "function" && typeof w.apiVersion === "string") {
-      out.push({ key, ...w });
+  for (const key of keys) {
+    try {
+      const w = root[key];
+      if (!w || typeof w.enable !== "function") continue;
+      const apiVersion = readProp(w, "apiVersion");
+      if (!apiVersion) continue;
+      out.push({
+        key,
+        apiVersion,
+        name: readProp(w, "name"),
+        icon: readProp(w, "icon"),
+        enable: () => w.enable(),
+        isEnabled: () => w.isEnabled(),
+      });
+    } catch {
+      // This one entry is unusable. The next one may be the user's real wallet.
+      continue;
     }
   }
   return out;

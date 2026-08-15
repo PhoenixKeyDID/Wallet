@@ -5,7 +5,12 @@ import { Buffer } from "buffer";
 import { useTranslation } from "react-i18next";
 import { utils as tyUtils, types as tyTypes } from "@stricahq/typhonjs";
 import { toastApiError, toastError, toastSuccess } from "@/lib/toast";
-import { ConfirmGate, tailChallenge } from "@/components/wallet/ConfirmGate";
+import {
+  ConfirmGate,
+  ChallengedValue,
+  tailChallenge,
+  CHALLENGE_LEN,
+} from "@/components/wallet/ConfirmGate";
 import { reportSignError } from "@/components/wallet/signError";
 import {
   type Cip30Api,
@@ -271,7 +276,7 @@ export function StakingPanel({
               pool id — the cryptographic destination — so it can be verified. */}
           <div className="flex justify-between gap-3 border-t border-border-soft pt-2">
             <span className="text-text-hint shrink-0">{t("pool_id_label")}</span>
-            <span className="text-right mono text-xs break-all">{pool.poolId}</span>
+            <ChallengedValue value={pool.poolId} className="text-right mono text-xs break-all" />
           </div>
           {needsRegistration && (
             <div className="flex justify-between border-t border-border-soft pt-2">
@@ -296,7 +301,7 @@ export function StakingPanel({
           network={network}
           alwaysChallenge
           challenge={tailChallenge(pool.poolId)}
-          challengeHint={t("confirm_gate_hint_pool")}
+          challengeHint={t("confirm_gate_hint_pool", { len: CHALLENGE_LEN })}
           checkboxLabel={t("delegate_verify_checkbox")}
           confirmed={checked}
           onChange={setChecked}

@@ -56,6 +56,35 @@ export function tailChallenge(value: string, n = CHALLENGE_LEN): string {
   return v.length <= n ? v : v.slice(-n);
 }
 
+/**
+ * A destination printed in full with the challenged characters set apart.
+ *
+ * The gate is only worth anything if the user can tell which characters it is
+ * asking for without counting backwards through a 56-character pool id. Send
+ * has always marked them; Staking and Governance printed the id raw and left
+ * the counting to the user, which is the fastest way to teach someone to select
+ * the tail with the mouse instead of reading the address — exactly the reflex
+ * the gate exists to break.
+ *
+ * The mark is not colour alone: a screen at low brightness, a colour-blind
+ * reader or a high-contrast theme all flatten it, and the only feedback on the
+ * other side is "does not match". Brackets carry the same information with no
+ * colour at all.
+ */
+export function ChallengedValue({ value, className = "" }: { value: string; className?: string }) {
+  const tail = tailChallenge(value);
+  if (!tail) return <span className={className}>{value}</span>;
+  const head = value.slice(0, value.length - tail.length);
+  return (
+    <span className={className}>
+      {head}
+      <mark className="bg-amber-brand/25 text-amber-brand font-semibold rounded-sm px-0.5">
+        [{tail}]
+      </mark>
+    </span>
+  );
+}
+
 const asList = (v: string | string[]): string[] => (Array.isArray(v) ? v : [v]);
 
 /**

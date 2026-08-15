@@ -21,7 +21,12 @@ import { useTranslation } from "react-i18next";
 import BigNumber from "bignumber.js";
 import { utils as tyUtils, types as tyTypes } from "@stricahq/typhonjs";
 import { toastApiError, toastSuccess } from "@/lib/toast";
-import { ConfirmGate, tailChallenge } from "@/components/wallet/ConfirmGate";
+import {
+  ConfirmGate,
+  ChallengedValue,
+  tailChallenge,
+  CHALLENGE_LEN,
+} from "@/components/wallet/ConfirmGate";
 import { reportSignError } from "@/components/wallet/signError";
 import {
   type Cip30Api,
@@ -60,7 +65,13 @@ import {
 } from "@/lib/cardano/governance";
 
 type Section = "delegate" | "actions" | "become" | "submit";
-type SummaryRow = { label: string; value: string; mono?: boolean };
+/**
+ * `challenged` marks the row holding the action's destination. That row is
+ * printed in FULL — not shortened — because it is the one the user is about to
+ * retype, and asking someone to confirm the tail of a value we truncated for
+ * them is asking them to confirm our own ellipsis.
+ */
+type SummaryRow = { label: string; value: string; mono?: boolean; challenged?: boolean };
 /**
  * `onDone` runs only after the transaction actually reached the network. A
  * section uses it to clear the form it just spent — leaving a filled form on
@@ -73,6 +84,25 @@ type Pending = {
   rows: SummaryRow[];
   warn?: string;
   onDone?: () => void;
+  /**
+   * The cryptographic destination of this action, in full — the dRep id, the
+   * pool id, the governance action id, the withdrawal address. `ConfirmGate`
+   * challenges its tail.
+   *
+   * This is carried explicitly instead of being recovered from the review rows,
+   * because recovering it used to mean sniffing the rows for anything matching
+   * `^(drep|pool|addr|stake|ca)1…$`, and that quietly failed in two ways at
+   * once: rows shortened for display (`abc…xyz`) never matched, and a
+   * governance action id has neither of those prefixes. When the sniff missed,
+   * the gate did not complain — it fell back to a checkbox. A security control
+   * that turns itself off without saying so is worse than not having it, since
+   * the screen still reads as if the check happened. An action with genuinely
+   * no destination to mistype (Abstain, No-Confidence, an Info action) leaves
+   * this undefined and gets the checkbox on purpose.
+   */
+  target?: string;
+  /** What to call `target` in the retype prompt, already translated. */
+  targetLabel?: string;
 };
 
 export function GovernancePanel({
@@ -189,14 +219,7 @@ export function GovernancePanel({
   // ── Review panel (shared) ────────────────────────────────────────────────────
   if (pending) {
     const netLabel = network === 1 ? t("net_mainnet") : network === 2 ? t("net_preview") : t("net_preprod");
-    // The retype challenge is the cryptographic target of the action (dRep / pool
-    // / address id) taken from the review rows. Actions with no such id — Abstain,
-    // No-Confidence, an Info action — have no address to mistype, so the gate
-    // falls back to a checkbox for them.
-    const govTarget =
-      pending.rows
-        .map((r) => r.value.trim())
-        .find((v) => /^(drep|pool|addr|stake|ca)1[0-9a-z]{8,}$/i.test(v)) ?? "";
+    const govTarget = pending.target?.trim() ?? "";
     return (
       <div className="rounded-brand border border-border-soft bg-bg1 p-5 space-y-3">
         <div className="flex items-center justify-between">
@@ -216,7 +239,11 @@ export function GovernancePanel({
           {pending.rows.map((r, i) => (
             <div key={i} className="flex justify-between gap-3">
               <span className="text-text-hint shrink-0">{r.label}</span>
-              <span className={`text-right break-all ${r.mono ? "mono" : ""}`}>{r.value}</span>
+              {r.challenged && govTarget ? (
+                <ChallengedValue value={govTarget} className="text-right break-all mono text-xs" />
+              ) : (
+                <span className={`text-right break-all ${r.mono ? "mono" : ""}`}>{r.value}</span>
+              )}
             </div>
           ))}
         </div>
@@ -228,7 +255,7 @@ export function GovernancePanel({
         <ConfirmGate
           network={network}
           challenge={tailChallenge(govTarget)}
-          challengeHint={t("confirm_gate_hint_drep")}
+          challengeHint={pending.targetLabel ?? t("confirm_gate_hint_drep", { len: CHALLENGE_LEN })}
           checkboxLabel={t("gov_verify_checkbox")}
           confirmed={checked}
           onChange={setChecked}
@@ -396,8 +423,19 @@ function DelegateSection({
       return {
         built,
         title: t("gov_review_delegate"),
+        // Abstain and No-Confidence are chain-level constants, not addresses:
+        // there is nothing to mistype and nothing to poison, so they keep the
+        // checkbox. Delegating to a named dRep hands voting power to a specific
+        // key, and that id is the thing worth retyping.
+        target: target.kind === "drep" ? target.drepId : undefined,
+        targetLabel: t("confirm_gate_hint_drep", { len: CHALLENGE_LEN }),
         rows: [
-          { label: t("gov_delegate_to"), value: label, mono: target.kind === "drep" },
+          {
+            label: t("gov_delegate_to"),
+            value: label,
+            mono: target.kind === "drep",
+            challenged: target.kind === "drep",
+          },
           feeRow(built),
         ],
         onDone: () => {
@@ -521,12 +559,18 @@ function ActionsSection({
       return {
         built,
         title: t("gov_review_vote"),
+        // The action id is the destination of a vote. It used to escape the
+        // gate entirely — it carries no `drep1`/`addr1` prefix, so the old row
+        // sniff never recognised it and the screen quietly served a checkbox
+        // while still telling the user to verify the id.
+        target: a.id,
+        targetLabel: t("confirm_gate_hint_action", { len: CHALLENGE_LEN }),
         rows: [
           { label: t("gov_action"), value: a.title ?? a.type, mono: false },
           // Show the FULL action id, not a truncation: the title/type come from
           // an external indexer (spoofable), but the id is what actually gets
           // signed. The user must be able to verify exactly what they vote on.
-          { label: t("gov_action_id"), value: a.id, mono: true },
+          { label: t("gov_action_id"), value: a.id, mono: true, challenged: true },
           { label: t("gov_your_vote"), value: vLabel },
           feeRow(built),
         ],
@@ -621,6 +665,11 @@ function BecomeSection({
       return {
         built,
         title: t("gov_review_register"),
+        // No `target`, and that is deliberate rather than an oversight: the dRep
+        // key hash here is the user's OWN, probed from their wallet, so there is
+        // no destination an attacker could swap and nothing a retype would
+        // verify. The deposit is the thing to look at, and the checkbox plus the
+        // refundable-deposit warning is the right weight for it.
         rows: [
           { label: t("gov_drep_id"), value: short(drepKeyHash), mono: true },
           { label: t("gov_deposit"), value: `${formatAda(BigInt(deposit.toString()))} ADA`, mono: true },
@@ -755,7 +804,12 @@ function SubmitSection({
           { label: t("gov_withdraw_amount"), value: `${wAmount} ADA`, mono: true },
           // The destination of a treasury withdrawal must be visible in the
           // review — never let the recipient be implicit.
-          { label: t("gov_withdraw_target"), value: wTarget.trim() || rewardBech32, mono: true },
+          {
+            label: t("gov_withdraw_target"),
+            value: wTarget.trim() || rewardBech32,
+            mono: true,
+            challenged: true,
+          },
         );
       }
       rows.push(feeRow(built));
@@ -763,6 +817,12 @@ function SubmitSection({
         built,
         title: t("gov_review_submit"),
         rows,
+        // An Info action moves nothing and names no recipient. A treasury
+        // withdrawal names the account the money lands in, and the prompt used
+        // to call that account "the dRep id" — sending the user to look for
+        // something that was not on the screen.
+        target: kind === "treasury" ? wTarget.trim() || rewardBech32 : undefined,
+        targetLabel: t("confirm_gate_hint_withdraw", { len: CHALLENGE_LEN }),
         warn: t("gov_deposit_refundable"),
         // Clear the form once the proposal is on its way. Every governance
         // action locks a fresh deposit, so a form left filled is a standing
