@@ -27,6 +27,19 @@ export function toNetworkId(network: PhoenixNetwork): tyTypes.NetworkId {
   return network === 1 ? tyTypes.NetworkId.MAINNET : tyTypes.NetworkId.TESTNET;
 }
 
+/**
+ * Map rust_core network id → the CIP-30 `getNetworkId()` value, so a resolved
+ * `PhoenixNetwork` can be compared against what the extension reports.
+ *
+ * These are two different id spaces and the collision is a trap: rust_core 1 is
+ * mainnet and CIP-30 1 is mainnet, but rust_core 2 (preview) is CIP-30 0, the
+ * same value preprod reports. Every testnet is 0 to CIP-30 — see
+ * `assertSameNetwork` for what that ambiguity does and does not let us catch.
+ */
+export function cip30NetworkId(network: PhoenixNetwork): number {
+  return network === 1 ? 1 : 0;
+}
+
 function keyCredential(keyHashHex: string): tyTypes.HashCredential {
   return { hash: Buffer.from(keyHashHex, "hex"), type: tyTypes.HashType.ADDRESS };
 }

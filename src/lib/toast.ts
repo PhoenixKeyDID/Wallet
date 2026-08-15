@@ -85,6 +85,14 @@ export function toastApiError(err: unknown, fallbackKey = "errors.generic"): voi
   emit("error", fallbackKey);
 }
 
+/**
+ * Show an already-translated error string. Use when the caller has i18n context
+ * and knows exactly what went wrong — `toastApiError` is for raw thrown values.
+ */
+export function toastError(message: string): void {
+  emit("error", message);
+}
+
 export function toastSuccess(key: string, _values?: Record<string, unknown>): void {
   emit("success", key);
 }

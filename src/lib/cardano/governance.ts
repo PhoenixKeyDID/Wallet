@@ -230,6 +230,17 @@ export function treasuryWithdrawalAction(
   withdrawals: Array<{ rewardAccount: RewardAddress; amount: BigNumber }>,
   policyHash: Buffer | null = null,
 ): GovAction {
+  // A proposal is only worth what it asks for. A withdrawal of zero (or of a
+  // negative amount, which an empty or mistyped field can produce) still locks
+  // the full governance deposit and still occupies a voting slot for an epoch,
+  // so it must never reach the chain — refuse it where the action is shaped,
+  // not in one screen's validation that another caller could skip.
+  if (withdrawals.length === 0) throw new Error("a treasury withdrawal needs at least one recipient");
+  for (const w of withdrawals) {
+    if (!w.amount.isFinite() || w.amount.isLessThanOrEqualTo(0)) {
+      throw new Error("a treasury withdrawal must ask for a positive amount");
+    }
+  }
   return {
     type: tyTypes.GovActionType.TREASURY_WITHDRAW_ACTION,
     action: { withdrawals, policyHash },

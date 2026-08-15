@@ -15,7 +15,7 @@ import { Buffer } from "buffer";
 import BigNumber from "bignumber.js";
 import { Decoder } from "@stricahq/cbors";
 import { Transaction, utils as tyUtils, types as tyTypes } from "@stricahq/typhonjs";
-import type { Cip30Api } from "./cip30";
+import { assertSameNetwork, type Cip30Api } from "./cip30";
 
 type ProtocolParams = tyTypes.ProtocolParams;
 type Input = tyTypes.Input;
@@ -23,13 +23,26 @@ type Output = tyTypes.Output;
 type Token = tyTypes.Token;
 type ShelleyAddress = tyTypes.ShelleyAddress;
 
+/**
+ * Coerce a CBOR-decoded integer to BigNumber, refusing anything that is not one.
+ *
+ * The input comes from the extension, i.e. from outside. `new BigNumber(String(undefined))`
+ * is `NaN` and BigNumber does NOT throw on it — the NaN then flows into an input
+ * amount, through the coin selection, and out as a malformed transaction or a
+ * nonsense fee. Reject at the boundary so a broken wallet is a clear error, not
+ * silent arithmetic damage.
+ */
 function coerceBig(v: unknown): BigNumber {
-  if (v instanceof BigNumber) return v;
-  if (typeof v === "number") return new BigNumber(v);
-  if (v && typeof (v as { toFixed?: (n: number) => string }).toFixed === "function") {
-    return new BigNumber((v as { toFixed: (n: number) => string }).toFixed(0));
-  }
-  return new BigNumber(String(v));
+  const n =
+    v instanceof BigNumber
+      ? v
+      : typeof v === "number"
+        ? new BigNumber(v)
+        : v && typeof (v as { toFixed?: (n: number) => string }).toFixed === "function"
+          ? new BigNumber((v as { toFixed: (n: number) => string }).toFixed(0))
+          : new BigNumber(String(v));
+  if (!n.isFinite()) throw new Error("wallet returned a non-numeric amount in a UTxO");
+  return n;
 }
 
 function decodeValue(value: unknown): { ada: BigNumber; tokens: Token[] } {
@@ -61,14 +74,21 @@ function decodeValue(value: unknown): { ada: BigNumber; tokens: Token[] } {
  * destroy the deployed script or drop the datum. A normal payment wallet's
  * spendable UTxOs have neither, so this only filters what should never be spent
  * here — never silently swallows ordinary funds.
+ *
+ * Duplicates are dropped by `txId#index`: a UTxO listed twice would be spent
+ * twice in the same transaction, which the ledger rejects outright — better to
+ * de-duplicate here than to hand the user an unexplainable submit failure.
  */
 export function decodeUtxosToInputs(utxosHex: string[]): Input[] {
   const inputs: Input[] = [];
+  const seen = new Set<string>();
   for (const hex of utxosHex) {
     const { value } = Decoder.decode(Buffer.from(hex, "hex"));
     const [input, output] = value as [[Buffer, number], unknown];
     const txId = Buffer.from(input[0]).toString("hex");
     const index = Number(input[1]);
+    const ref = `${txId}#${index}`;
+    if (seen.has(ref)) continue;
 
     let addrBuf: Buffer;
     let amountValue: unknown;
@@ -87,6 +107,7 @@ export function decodeUtxosToInputs(utxosHex: string[]): Input[] {
 
     const { ada, tokens } = decodeValue(amountValue);
     const address = tyUtils.getAddressFromHex(addrBuf) as ShelleyAddress;
+    seen.add(ref);
     inputs.push({ txId, index, amount: ada, tokens, address });
   }
   return inputs;
@@ -140,10 +161,47 @@ export function decodeVkeyWitnesses(witnessSetHex: string): tyTypes.VKeyWitness[
 /**
  * CIP-30 signing: hand the unsigned tx to the extension for a partial sign,
  * merge the returned vkey witnesses, and submit. Returns the tx hash.
+ *
+ * `expectedNetworkId` is the CIP-30 network id captured when the wallet
+ * connected (mainnet 1, any testnet 0). It is a REQUIRED parameter, not an
+ * option: this is the one chokepoint every signing path in the app passes
+ * through, so making it impossible to omit is what guarantees no flow can sign
+ * against a wallet that silently switched networks. See `assertSameNetwork`.
  */
-export async function signAndSubmitCip30(api: Cip30Api, built: BuiltTx): Promise<string> {
+export async function signAndSubmitCip30(
+  api: Cip30Api,
+  built: BuiltTx,
+  expectedNetworkId: number,
+): Promise<string> {
+  await assertSameNetwork(api, expectedNetworkId);
   const witnessSetHex = await api.signTx(built.unsignedCbor, true);
   for (const w of decodeVkeyWitnesses(witnessSetHex)) built.transaction.addWitness(w);
   const signed = built.transaction.buildTransaction();
-  return api.submitTx(signed.payload);
+  try {
+    return await api.submitTx(signed.payload);
+  } catch (err) {
+    // TxSendError.Refused (1) is the wallet declining to send: the transaction
+    // never left, and saying so plainly is safe. Anything else — a node error,
+    // a dropped connection, a timeout inside the extension — leaves the one
+    // question that matters unanswered: did it go out or not? Answering that
+    // with a bare "failed" is what makes people send the same money twice.
+    if (err && typeof err === "object" && (err as { code?: unknown }).code === 1) throw err;
+    throw new SubmitUncertainError(signed.hash, err);
+  }
+}
+
+/**
+ * The transaction was signed and handed over, but the submit did not come back
+ * with an answer. It may be on the network already. The hash is the way out:
+ * with it the user can look the transaction up before deciding to resend, which
+ * is the only safe way to resolve the doubt.
+ */
+export class SubmitUncertainError extends Error {
+  constructor(
+    readonly txHash: string,
+    override readonly cause: unknown,
+  ) {
+    super(`Transaction ${txHash} was signed, but its submission was not confirmed.`);
+    this.name = "SubmitUncertainError";
+  }
 }
