@@ -1,10 +1,18 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { toastApiError } from "@/lib/toast";
+import { toastApiError, toastError } from "@/lib/toast";
 import { CopyBtn } from "@/components/CopyBtn";
-import { listWallets, enableWallet, readBalance, formatAda, type Cip30Wallet } from "@/lib/cardano";
+import {
+  listWallets,
+  enableWallet,
+  readBalance,
+  formatAda,
+  WalletConnectError,
+  isConnectRefused,
+  type Cip30Wallet,
+} from "@/lib/cardano";
 import { buildRedeemUrl, MIDNIGHT_INFO } from "@/lib/night";
 
 /**
@@ -36,10 +44,19 @@ export function NightRedeem() {
     setWallets(all);
   };
 
+  // See `enableWallet`: a wallet is free to never answer. `slow` turns the mute
+  // spinner into a hint (the approval popup is usually hiding behind the
+  // window); Cancel hands control back at any moment.
+  const [slow, setSlow] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
+
   const connect = async (key: string, name: string) => {
+    const ac = new AbortController();
+    abortRef.current = ac;
     setBusy(key);
+    setSlow(false);
     try {
-      const api = await enableWallet(key);
+      const api = await enableWallet(key, { signal: ac.signal, onSlow: () => setSlow(true) });
       const [used, change, bal] = await Promise.all([
         api.getUsedAddresses(),
         api.getChangeAddress(),
@@ -49,11 +66,21 @@ export function NightRedeem() {
       setWalletName(name || key);
       setLovelace(bal.lovelace);
     } catch (err) {
+      if (isConnectRefused(err)) return toastError(t("connect_refused"));
+      if (err instanceof WalletConnectError) {
+        if (err.reason === "cancelled") return;
+        if (err.reason === "timeout") return toastError(t("connect_timeout"));
+        if (err.reason === "bad_api") return toastError(t("connect_bad_api"));
+      }
       toastApiError(err);
     } finally {
+      abortRef.current = null;
       setBusy(null);
+      setSlow(false);
     }
   };
+
+  const cancelConnect = () => abortRef.current?.abort();
 
   return (
     <div className="space-y-5">
@@ -109,6 +136,19 @@ export function NightRedeem() {
                 </span>
               </button>
             ))}
+
+            {busy !== null && (
+              <div className="space-y-2 pt-1">
+                {slow && <p className="text-xs text-amber-brand">{t("connect_slow_hint")}</p>}
+                <button
+                  type="button"
+                  onClick={cancelConnect}
+                  className="w-full p-2 rounded-brand border border-border-soft bg-bg1 hover:bg-bg2 text-sm text-text-dim"
+                >
+                  {t("cancel")}
+                </button>
+              </div>
+            )}
           </div>
         )
       ) : (
@@ -118,6 +158,19 @@ export function NightRedeem() {
             {t("connected_to")}{" "}
             <span className="font-medium capitalize">{walletName}</span>
             <span className="mono text-xs text-text-hint">{formatAda(lovelace)} ADA</span>
+            {/* Picking the wrong wallet used to be a dead end: the only way back
+                was to reload the page, which nobody guesses. */}
+            <button
+              type="button"
+              onClick={() => {
+                setAddress(null);
+                setWalletName(null);
+                setLovelace(BigInt("0"));
+              }}
+              className="ml-auto text-xs text-text-hint hover:text-text underline"
+            >
+              {t("change_wallet")}
+            </button>
           </div>
           <div className="flex items-center justify-between">
             <p className="mono text-xs uppercase tracking-wider text-text-hint">

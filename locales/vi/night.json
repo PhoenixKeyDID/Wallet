@@ -17,5 +17,11 @@
   "open_portal": "Redeem trên portal chính chủ →",
   "portal_url_preview": "Sẽ mở: redeem.midnight.gd (trang chính chủ của Midnight).",
   "handoff_note": "Bạn sẽ hoàn tất và ký lệnh redeem trên trang chính chủ của Midnight.",
-  "learn_more": "Tìm hiểu thêm về NIGHT tại midnight.gd"
+  "learn_more": "Tìm hiểu thêm về NIGHT tại midnight.gd",
+  "connect_slow_hint": "Ví chưa trả lời. Cửa sổ duyệt của ví có thể đang nấp sau trình duyệt — mở tiện ích ví ra xem. Ví đang khoá thì mở khoá trước.",
+  "connect_timeout": "Ví không trả lời. Mở khoá ví, đóng cửa sổ duyệt còn treo, rồi thử lại.",
+  "connect_bad_api": "Ví này trả về giao diện CIP-30 không đầy đủ nên chưa dùng an toàn được. Hãy cập nhật tiện ích ví rồi thử lại.",
+  "connect_refused": "Bạn đã từ chối kết nối trong ví. Bấm lại vào ví nếu muốn thử lần nữa.",
+  "cancel": "Huỷ",
+  "change_wallet": "Dùng ví khác"
 }

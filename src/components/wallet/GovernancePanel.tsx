@@ -22,12 +22,14 @@ import BigNumber from "bignumber.js";
 import { utils as tyUtils, types as tyTypes } from "@stricahq/typhonjs";
 import { toastApiError, toastSuccess } from "@/lib/toast";
 import { ConfirmGate, tailChallenge } from "@/components/wallet/ConfirmGate";
+import { reportSignError } from "@/components/wallet/signError";
 import {
   type Cip30Api,
   type PhoenixNetwork,
   type BuiltTx,
   decodeUtxosToInputs,
   signAndSubmitCip30,
+  cip30NetworkId,
   fetchProtocolParams,
   fetchTipSlot,
   formatAda,
@@ -59,7 +61,19 @@ import {
 
 type Section = "delegate" | "actions" | "become" | "submit";
 type SummaryRow = { label: string; value: string; mono?: boolean };
-type Pending = { built: BuiltTx; title: string; rows: SummaryRow[]; warn?: string };
+/**
+ * `onDone` runs only after the transaction actually reached the network. A
+ * section uses it to clear the form it just spent — leaving a filled form on
+ * screen after a successful submit invites a second press, and a second
+ * governance action costs a second deposit that no one asked for.
+ */
+type Pending = {
+  built: BuiltTx;
+  title: string;
+  rows: SummaryRow[];
+  warn?: string;
+  onDone?: () => void;
+};
 
 export function GovernancePanel({
   api,
@@ -154,12 +168,13 @@ export function GovernancePanel({
     if (!pending) return;
     setBusy(true);
     try {
-      const hash = await signAndSubmitCip30(api, pending.built);
+      const hash = await signAndSubmitCip30(api, pending.built, cip30NetworkId(network));
       toastSuccess("gov_submitted", { hash: hash.slice(0, 12) });
+      pending.onDone?.();
       resetReview();
     } catch (err) {
       resetReview(); // drop the built tx: it already carries a witness; a retry must rebuild
-      toastApiError(err);
+      reportSignError(err, t);
     } finally {
       setBusy(false);
     }
@@ -338,9 +353,15 @@ function DelegateSection({
   const [dreps, setDreps] = useState<DRepSummary[]>([]);
   const [searching, setSearching] = useState(false);
   const [current, setCurrent] = useState<string | null | undefined>(undefined);
+  /**
+   * A delegation that was just submitted is not yet visible to the indexer —
+   * it needs a block first. Showing the old delegation with no note reads as
+   * "it did not work", which is what makes people delegate a second time.
+   */
+  const [justDelegated, setJustDelegated] = useState(false);
 
-  useEffect(() => {
-    if (!rewardBech32) return;
+  const reloadCurrent = useCallback(() => {
+    if (!rewardBech32) return () => {};
     let alive = true;
     getVoteDelegationState(network, rewardBech32)
       .then((s) => alive && setCurrent(s.delegatedDRep ?? null))
@@ -349,6 +370,8 @@ function DelegateSection({
       alive = false;
     };
   }, [network, rewardBech32]);
+
+  useEffect(() => reloadCurrent(), [reloadCurrent]);
 
   const search = async () => {
     setSearching(true);
@@ -377,6 +400,10 @@ function DelegateSection({
           { label: t("gov_delegate_to"), value: label, mono: target.kind === "drep" },
           feeRow(built),
         ],
+        onDone: () => {
+          setJustDelegated(true);
+          reloadCurrent();
+        },
       };
     });
 
@@ -389,6 +416,7 @@ function DelegateSection({
           <span className="mono">{current ? short(current) : t("gov_none")}</span>
         </p>
       )}
+      {justDelegated && <p className="text-xs text-amber-brand">{t("gov_delegate_pending")}</p>}
 
       <div className="flex gap-2">
         <button
@@ -731,7 +759,21 @@ function SubmitSection({
         );
       }
       rows.push(feeRow(built));
-      return { built, title: t("gov_review_submit"), rows, warn: t("gov_deposit_refundable") };
+      return {
+        built,
+        title: t("gov_review_submit"),
+        rows,
+        warn: t("gov_deposit_refundable"),
+        // Clear the form once the proposal is on its way. Every governance
+        // action locks a fresh deposit, so a form left filled is a standing
+        // invitation to pay twice for the same proposal.
+        onDone: () => {
+          setMetaUrl("");
+          setMetaHash("");
+          setWAmount("");
+          setWTarget("");
+        },
+      };
     });
 
   return (

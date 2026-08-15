@@ -35,8 +35,18 @@ export function BalanceView({
           <ul className="divide-y divide-border-soft">
             {assets.map((a) => (
               <li key={a.unit} className="flex items-center justify-between py-1.5 text-sm">
-                <span className="mono truncate max-w-[60%]" title={a.unit}>
-                  {assetLabel(a.assetNameHex)}
+                {/* The name is attacker-chosen: minting a token called "ADA",
+                    or one whose name matches a token the user already holds,
+                    costs nothing. Only the policy id distinguishes them, so it
+                    is shown next to every name rather than hidden in a
+                    tooltip — a tooltip does not exist on a phone. */}
+                <span className="max-w-[60%] min-w-0">
+                  <span className="mono block truncate" title={a.unit}>
+                    {assetLabel(a.assetNameHex)}
+                  </span>
+                  <span className="mono block text-[10px] text-text-hint truncate">
+                    {a.policyId.slice(0, 8)}…{a.policyId.slice(-4)}
+                  </span>
                 </span>
                 <span className="mono text-text-dim">{a.quantity.toString()}</span>
               </li>
