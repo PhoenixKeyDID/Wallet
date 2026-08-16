@@ -6,7 +6,13 @@ import { useTranslation } from "react-i18next";
 import { utils as tyUtils, types as tyTypes } from "@stricahq/typhonjs";
 import { toastApiError, toastSuccess } from "@/lib/toast";
 import { CopyBtn } from "@/components/CopyBtn";
-import { ConfirmGate, tailChallenge, CHALLENGE_LEN } from "@/components/wallet/ConfirmGate";
+import {
+  ConfirmGate,
+  ChallengedValue,
+  tailChallenge,
+  CHALLENGE_LEN,
+} from "@/components/wallet/ConfirmGate";
+import { reportSignError } from "@/components/wallet/signError";
 import {
   type Cip30Api,
   type PhoenixNetwork,
@@ -14,6 +20,7 @@ import {
   type AssetAmount,
   decodeUtxosToInputs,
   signAndSubmitCip30,
+  cip30NetworkId,
   fetchProtocolParams,
   fetchTipSlot,
   formatAda,
@@ -114,6 +121,16 @@ export function SendPanel({
     setChecked(false);
     setTxHash(null);
     try {
+      // A row with an amount typed but no asset chosen used to be filtered out
+      // in silence: the user reviewed a transaction that no longer contained
+      // the token they had just entered, and nothing on screen said it had been
+      // dropped. Refuse to build instead — a half-filled row is a mistake, and
+      // the only safe reading of a mistake is to stop.
+      for (const r of recipients) {
+        if (r.tokens.some((l) => !l.unit && l.amount.trim())) {
+          throw new Error(t("token_row_no_asset"));
+        }
+      }
       const rows: RecipientRow[] = recipients.map((r) => ({
         address: r.address,
         ada: r.ada,
@@ -171,7 +188,7 @@ export function SendPanel({
     if (!built) return;
     setBusy(true);
     try {
-      const hash = await signAndSubmitCip30(api, built);
+      const hash = await signAndSubmitCip30(api, built, cip30NetworkId(network));
       toastSuccess("send_submitted", { hash: hash.slice(0, 12) });
       setTxHash(hash);
       setBuilt(null);
@@ -185,7 +202,7 @@ export function SendPanel({
       setBuilt(null);
       setReviewOutputs(null);
       setChecked(false);
-      toastApiError(err);
+      reportSignError(err, t);
     } finally {
       setBusy(false);
     }
@@ -359,12 +376,10 @@ export function SendPanel({
                       beside the input means the eye must cross the real address
                       to find it (Wallet#7). */}
                   <div className="flex items-start gap-2">
-                    <span className="mono text-xs break-all flex-1">
-                      {o.address.getBech32().slice(0, -CHALLENGE_LEN)}
-                      <mark className="bg-amber-brand/25 text-amber-brand font-semibold rounded-sm px-0.5">
-                        {o.address.getBech32().slice(-CHALLENGE_LEN)}
-                      </mark>
-                    </span>
+                    <ChallengedValue
+                      value={o.address.getBech32()}
+                      className="mono text-xs break-all flex-1"
+                    />
                     <CopyBtn value={o.address.getBech32()} />
                   </div>
                 </div>
@@ -409,7 +424,7 @@ export function SendPanel({
               tailChallenge(o.address.getBech32()),
             )}
             challengeHint={(reviewOutputs ?? []).map((_, i) =>
-              t("confirm_gate_hint_send", { n: i + 1 }),
+              t("confirm_gate_hint_send", { n: i + 1, len: CHALLENGE_LEN }),
             )}
             checkboxLabel={t("send_verify_checkbox")}
             confirmed={checked}

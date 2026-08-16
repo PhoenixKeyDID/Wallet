@@ -116,7 +116,7 @@ session at all — they never touch the Phoenix backend.
 
 ```bash
 bun install
-bun test        # 106 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
+bun run test    # 178 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
 bun run typecheck
 ```
 

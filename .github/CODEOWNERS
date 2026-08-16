@@ -25,6 +25,7 @@
 /src/lib/cardano/provider.ts             @AladinContract
 /src/components/night/NightRedeem.tsx    @AladinContract
 /src/lib/cardano/connect.test.ts         @AladinContract
+/src/components/wallet/Cip30Panel.tsx    @AladinContract
 
 # The gate itself, and the rules that decide what is gated.
 /src/components/wallet/ConfirmGate.tsx   @AladinContract

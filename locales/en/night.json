@@ -17,5 +17,11 @@
   "open_portal": "Redeem on the official portal →",
   "portal_url_preview": "Opens: redeem.midnight.gd (Midnight's official site).",
   "handoff_note": "You will finish and sign the redemption on Midnight's official site.",
-  "learn_more": "Learn more about NIGHT at midnight.gd"
+  "learn_more": "Learn more about NIGHT at midnight.gd",
+  "connect_slow_hint": "No answer from the wallet yet. Its approval window may be hidden behind the browser — open the wallet extension. If the wallet is locked, unlock it first.",
+  "connect_timeout": "The wallet did not answer. Unlock it, close any approval window left waiting, then try again.",
+  "connect_bad_api": "That wallet returned an incomplete CIP-30 interface, so it cannot be used safely. Update the extension and try again.",
+  "connect_refused": "You declined the connection in your wallet. Tap the wallet again if you want to retry.",
+  "cancel": "Cancel",
+  "change_wallet": "Use a different wallet"
 }

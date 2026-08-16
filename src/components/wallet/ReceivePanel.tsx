@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Buffer } from "buffer";
 import { useTranslation } from "react-i18next";
 import { QRCodeSVG } from "qrcode.react";
@@ -46,6 +46,13 @@ function AddressCard({
     </div>
   );
 }
+
+/**
+ * Verdict of the "is this account key really yours?" check. `unknown` is a
+ * deliberate state, not the absence of one: an undecidable check must be shown
+ * as undecided, never as silence the user reads as a pass.
+ */
+type Ownership = "checking" | "match" | "mismatch" | "unknown" | null;
 
 export function ReceivePanel({
   api,
@@ -93,7 +100,16 @@ export function ReceivePanel({
   // Ownership check: does the pasted account key actually belong to the wallet
   // you're connected to? A "no" is the social-engineering trap (pasting an
   // attacker's key and receiving your funds to THEIR address).
-  const [ownership, setOwnership] = useState<"match" | "mismatch" | null>(null);
+  const [ownership, setOwnership] = useState<Ownership>(null);
+  /**
+   * Which derivation the on-screen verdict belongs to.
+   *
+   * The check is async and the address is rendered immediately, so two runs in
+   * a row (paste key A, then key B) could have A's slow answer land after B's
+   * and label B's address with A's verdict. Every run takes a ticket; a stale
+   * ticket's answer is dropped.
+   */
+  const checkRun = useRef(0);
 
   const parsedIndex = useMemo(() => {
     const n = Number(indexInput);
@@ -104,6 +120,11 @@ export function ReceivePanel({
   // with an address the connected wallet actually owns. If none does, the key
   // is almost certainly not this wallet's — warn loudly.
   const checkOwnership = async (acctXvk: Parameters<typeof deriveReceiveAddress>[0]["acctXvk"]) => {
+    const run = ++checkRun.current;
+    const settle = (v: Ownership) => {
+      if (checkRun.current === run) setOwnership(v);
+    };
+    settle("checking");
     try {
       const [used, unused] = await Promise.all([api.getUsedAddresses(), api.getUnusedAddresses()]);
       const owned = new Set(
@@ -112,15 +133,19 @@ export function ReceivePanel({
         ),
       );
       if (owned.size === 0) {
-        setOwnership(null); // can't decide (fresh wallet, no addresses exposed)
+        // Fresh wallet, or one that exposes no addresses: we cannot decide.
+        // Say so. Silence here reads as approval of an address that may belong
+        // to whoever sent the user the key — this is the whole trap the check
+        // exists to catch, so it must not fail quietly.
+        settle("unknown");
         return;
       }
       const mine = deriveReceiveRange({ acctXvk, kind: "base", start: 0, count: 24, network }).some((d) =>
         owned.has(d.address),
       );
-      setOwnership(mine ? "match" : "mismatch");
+      settle(mine ? "match" : "mismatch");
     } catch {
-      setOwnership(null);
+      settle("unknown");
     }
   };
 
@@ -271,6 +296,15 @@ export function ReceivePanel({
         )}
       </div>
 
+      {ownership === "checking" && (
+        <p className="text-xs text-text-hint">{t("xvk_checking")}</p>
+      )}
+      {ownership === "unknown" && (
+        <div className="rounded-brand border border-border-soft bg-bg1 p-4 text-sm text-text-dim space-y-1">
+          <p className="font-semibold">{t("xvk_unknown_title")}</p>
+          <p className="text-xs">{t("xvk_unknown_body")}</p>
+        </div>
+      )}
       {ownership === "mismatch" && (
         <div className="rounded-brand border border-border-amber bg-amber-brand/10 p-4 text-sm text-amber-brand space-y-1">
           <p className="font-semibold">⚠ {t("xvk_mismatch_title")}</p>

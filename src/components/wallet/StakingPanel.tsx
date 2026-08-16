@@ -4,14 +4,21 @@ import { useEffect, useState } from "react";
 import { Buffer } from "buffer";
 import { useTranslation } from "react-i18next";
 import { utils as tyUtils, types as tyTypes } from "@stricahq/typhonjs";
-import { toastApiError, toastSuccess } from "@/lib/toast";
-import { ConfirmGate, tailChallenge } from "@/components/wallet/ConfirmGate";
+import { toastApiError, toastError, toastSuccess } from "@/lib/toast";
+import {
+  ConfirmGate,
+  ChallengedValue,
+  tailChallenge,
+  CHALLENGE_LEN,
+} from "@/components/wallet/ConfirmGate";
+import { reportSignError } from "@/components/wallet/signError";
 import {
   type Cip30Api,
   type PhoenixNetwork,
   type BuiltTx,
   decodeUtxosToInputs,
   signAndSubmitCip30,
+  cip30NetworkId,
   fetchProtocolParams,
   fetchTipSlot,
   formatAda,
@@ -145,7 +152,10 @@ export function StakingPanel({
   };
 
   const reviewDelegate = async (pool: PoolSummary) => {
-    if (!rewardAddressHex) return;
+    // Returning silently here made the button look broken: the user pressed
+    // "delegate", nothing moved, and nothing said why. The reward address is
+    // still being read from the wallet — say so.
+    if (!rewardAddressHex) return toastError(t("reward_addr_not_ready"));
     setBusy(true);
     try {
       const { inputs, changeAddr, params, tip } = await prepareInputs();
@@ -172,7 +182,7 @@ export function StakingPanel({
     if (!poolReview) return;
     setBusy(true);
     try {
-      const hash = await signAndSubmitCip30(api, poolReview.built);
+      const hash = await signAndSubmitCip30(api, poolReview.built, cip30NetworkId(network));
       toastSuccess("delegate_submitted", { hash: hash.slice(0, 12) });
       setPoolReview(null);
       setChecked(false);
@@ -185,14 +195,15 @@ export function StakingPanel({
       // extension's witness, so drop the built tx rather than retry-signing it.
       setPoolReview(null);
       setChecked(false);
-      toastApiError(err);
+      reportSignError(err, t);
     } finally {
       setBusy(false);
     }
   };
 
   const reviewWithdraw = async () => {
-    if (!rewardAddressHex || !accountState || accountState.rewardsAvailable <= BigInt("0")) return;
+    if (!rewardAddressHex) return toastError(t("reward_addr_not_ready"));
+    if (!accountState || accountState.rewardsAvailable <= BigInt("0")) return;
     setBusy(true);
     try {
       const { inputs, changeAddr, params, tip } = await prepareInputs();
@@ -217,7 +228,7 @@ export function StakingPanel({
     if (!withdrawReview) return;
     setBusy(true);
     try {
-      const hash = await signAndSubmitCip30(api, withdrawReview.built);
+      const hash = await signAndSubmitCip30(api, withdrawReview.built, cip30NetworkId(network));
       toastSuccess("withdraw_submitted", { hash: hash.slice(0, 12) });
       setWithdrawReview(null);
       setChecked(false);
@@ -225,7 +236,7 @@ export function StakingPanel({
     } catch (err) {
       setWithdrawReview(null);
       setChecked(false);
-      toastApiError(err);
+      reportSignError(err, t);
     } finally {
       setBusy(false);
     }
@@ -265,7 +276,7 @@ export function StakingPanel({
               pool id — the cryptographic destination — so it can be verified. */}
           <div className="flex justify-between gap-3 border-t border-border-soft pt-2">
             <span className="text-text-hint shrink-0">{t("pool_id_label")}</span>
-            <span className="text-right mono text-xs break-all">{pool.poolId}</span>
+            <ChallengedValue value={pool.poolId} className="text-right mono text-xs break-all" />
           </div>
           {needsRegistration && (
             <div className="flex justify-between border-t border-border-soft pt-2">
@@ -290,7 +301,7 @@ export function StakingPanel({
           network={network}
           alwaysChallenge
           challenge={tailChallenge(pool.poolId)}
-          challengeHint={t("confirm_gate_hint_pool")}
+          challengeHint={t("confirm_gate_hint_pool", { len: CHALLENGE_LEN })}
           checkboxLabel={t("delegate_verify_checkbox")}
           confirmed={checked}
           onChange={setChecked}
@@ -440,7 +451,10 @@ export function StakingPanel({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && query.trim()) runSearch();
+              // The button is disabled while a search is in flight; Enter must
+              // obey the same rule, or holding it fires overlapping searches
+              // whose replies can land out of order and show the wrong list.
+              if (e.key === "Enter" && query.trim() && !searching) runSearch();
             }}
           />
           <button

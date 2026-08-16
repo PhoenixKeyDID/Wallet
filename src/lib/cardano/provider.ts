@@ -37,6 +37,38 @@ export async function koios<T>(network: PhoenixNetwork, path: string, body?: unk
 }
 
 /**
+ * Plausibility bounds on the numbers the indexer hands us.
+ *
+ * Koios is a public, key-less service and it is the one input on the build path
+ * that no wallet re-checks: the UTxOs, the signature and the submit all go
+ * through the user's extension, but the fee and min-ADA arithmetic is done here
+ * from these values. A hostile or simply broken indexer cannot spend anyone's
+ * money with them — it can only inflate what a transaction the user started
+ * costs, and both our own review screen and the extension's signing popup show
+ * that number before anything is signed. So this is not the thing standing
+ * between the user and a loss; it is a cheap upper bound that turns a garbage
+ * response into a refusal instead of a transaction nobody meant to build.
+ *
+ * The ceilings sit far above real chain values (mainnet today: minFeeA 44,
+ * minFeeB 155381, keyDeposit 2 ADA, utxoCostPerByte 4310), so a genuine
+ * parameter change will not trip them.
+ */
+const PARAM_CEILING = {
+  minFeeA: 100_000,
+  minFeeB: 100_000_000, // 100 ADA of flat fee — absurd, but not impossible-in-principle
+  stakeKeyDeposit: 1_000_000_000, // 1000 ADA
+  utxoCostPerByte: 10_000_000,
+} as const;
+
+function checked(name: keyof typeof PARAM_CEILING, raw: string | number): BigNumber {
+  const v = new BigNumber(raw);
+  if (!v.isFinite() || v.isNegative() || v.isGreaterThan(PARAM_CEILING[name])) {
+    throw new Error(`Koios returned an implausible ${name}: ${String(raw)}`);
+  }
+  return v;
+}
+
+/**
  * Current protocol parameters in typhon's `ProtocolParams` shape. Koios
  * `/epoch_params` returns the latest epoch first.
  */
@@ -58,10 +90,10 @@ export async function fetchProtocolParams(network: PhoenixNetwork): Promise<Prot
   const p = rows[0];
   if (!p) throw new Error("Koios returned no protocol params");
   return {
-    minFeeA: new BigNumber(p.min_fee_a),
-    minFeeB: new BigNumber(p.min_fee_b),
-    stakeKeyDeposit: new BigNumber(p.key_deposit),
-    utxoCostPerByte: new BigNumber(p.coins_per_utxo_size),
+    minFeeA: checked("minFeeA", p.min_fee_a),
+    minFeeB: checked("minFeeB", p.min_fee_b),
+    stakeKeyDeposit: checked("stakeKeyDeposit", p.key_deposit),
+    utxoCostPerByte: checked("utxoCostPerByte", p.coins_per_utxo_size),
     collateralPercent: new BigNumber(p.collateral_percent ?? 150),
     priceSteps: new BigNumber(p.price_step ?? 0),
     priceMem: new BigNumber(p.price_mem ?? 0),

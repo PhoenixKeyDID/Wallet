@@ -17,5 +17,11 @@
   "open_portal": "在官方门户兑换 →",
   "portal_url_preview": "将打开: redeem.midnight.gd（Midnight 官方网站）。",
   "handoff_note": "你将在 Midnight 官方网站完成并签署兑换。",
-  "learn_more": "在 midnight.gd 了解更多 NIGHT 信息"
+  "learn_more": "在 midnight.gd 了解更多 NIGHT 信息",
+  "connect_slow_hint": "钱包尚未响应。授权窗口可能藏在浏览器后面 — 请打开钱包扩展查看。若钱包已锁定，请先解锁。",
+  "connect_timeout": "钱包没有响应。请解锁钱包、关闭仍在等待的授权窗口，然后重试。",
+  "connect_bad_api": "该钱包返回的 CIP-30 接口不完整，无法安全使用。请更新扩展后重试。",
+  "connect_refused": "你在钱包中拒绝了连接。想再试一次请重新点击该钱包。",
+  "cancel": "取消",
+  "change_wallet": "换一个钱包"
 }

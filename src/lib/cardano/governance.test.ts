@@ -17,6 +17,7 @@ import {
   buildDRepRegistration,
   buildDRepDeRegistration,
   rewardAddressFrom,
+  treasuryWithdrawalAction,
 } from "./governance";
 
 // ── Handcrafted fixtures (no network) ──────────────────────────────────────────
@@ -317,5 +318,40 @@ describe("rewardAddressFrom", () => {
   it("accepts the bech32 form", () => {
     const back = rewardAddressFrom(rewardAddr.getBech32());
     expect(back.getBech32()).toBe(rewardAddr.getBech32());
+  });
+});
+
+// ── treasuryWithdrawalAction ─────────────────────────────────────────────────
+
+describe("treasuryWithdrawalAction", () => {
+  it("shapes a normal withdrawal", () => {
+    const a = treasuryWithdrawalAction([
+      { rewardAccount: rewardAddr, amount: new BigNumber(1_000_000) },
+    ]);
+    expect(a.type).toBe(tyTypes.GovActionType.TREASURY_WITHDRAW_ACTION);
+  });
+
+  it("refuses a withdrawal of zero — it still costs a full deposit", () => {
+    expect(() =>
+      treasuryWithdrawalAction([{ rewardAccount: rewardAddr, amount: new BigNumber(0) }]),
+    ).toThrow(/positive/);
+  });
+
+  it("refuses a negative amount", () => {
+    expect(() =>
+      treasuryWithdrawalAction([{ rewardAccount: rewardAddr, amount: new BigNumber(-1) }]),
+    ).toThrow(/positive/);
+  });
+
+  it("refuses NaN, which an empty or mistyped amount field produces", () => {
+    // `new BigNumber("")` is NaN and BigNumber does not throw on it, so a
+    // comparison-only guard (`<= 0`) would let it straight through.
+    expect(() =>
+      treasuryWithdrawalAction([{ rewardAccount: rewardAddr, amount: new BigNumber("") }]),
+    ).toThrow(/positive/);
+  });
+
+  it("refuses an empty recipient list", () => {
+    expect(() => treasuryWithdrawalAction([])).toThrow(/at least one/);
   });
 });

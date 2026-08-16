@@ -17,5 +17,11 @@
   "open_portal": "公式ポータルで受け取る →",
   "portal_url_preview": "開くページ: redeem.midnight.gd（Midnight の公式サイト）。",
   "handoff_note": "受け取りと署名は Midnight の公式サイトで完了します。",
-  "learn_more": "midnight.gd で NIGHT の詳細を見る"
+  "learn_more": "midnight.gd で NIGHT の詳細を見る",
+  "connect_slow_hint": "ウォレットからまだ応答がありません。承認ウィンドウがブラウザの背後に隠れている可能性があります — 拡張機能を開いてください。ロック中の場合は先に解除してください。",
+  "connect_timeout": "ウォレットが応答しませんでした。ロックを解除し、待機中の承認ウィンドウを閉じてから、もう一度お試しください。",
+  "connect_bad_api": "このウォレットが返した CIP-30 インターフェースは不完全なため、安全に使用できません。拡張機能を更新してからお試しください。",
+  "connect_refused": "ウォレットで接続を拒否しました。もう一度試す場合はウォレットをタップしてください。",
+  "cancel": "キャンセル",
+  "change_wallet": "別のウォレットを使う"
 }

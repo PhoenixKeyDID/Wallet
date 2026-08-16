@@ -63,6 +63,43 @@ describe("decodeUtxosToInputs", () => {
     expect(inputs[0].tokens).toHaveLength(0);
     expect(inputs[0].address.getBech32()).toMatch(/^addr_test1[0-9a-z]+$/);
   });
+
+  it("drops a UTxO the wallet listed twice", () => {
+    // Spending the same UTxO twice in one transaction is rejected by the
+    // ledger; de-duplicating here turns a cryptic submit failure into nothing
+    // at all.
+    const addr = Buffer.concat([Buffer.from([0x60]), Buffer.alloc(28, 0x22)]);
+    const txId = Buffer.alloc(32, 0x01);
+    const hex = Encoder.encode([
+      [txId, 3],
+      [addr, new BigNumber(5_000_000)],
+    ]).toString("hex");
+    const inputs = decodeUtxosToInputs([hex, hex]);
+    expect(inputs).toHaveLength(1);
+    expect(inputs[0].index).toBe(3);
+  });
+
+  it("keeps two different outputs of the same transaction", () => {
+    const addr = Buffer.concat([Buffer.from([0x60]), Buffer.alloc(28, 0x22)]);
+    const txId = Buffer.alloc(32, 0x01);
+    const at = (i: number) =>
+      Encoder.encode([
+        [txId, i],
+        [addr, new BigNumber(1_000_000)],
+      ]).toString("hex");
+    expect(decodeUtxosToInputs([at(0), at(1)])).toHaveLength(2);
+  });
+
+  it("refuses a UTxO whose amount is not a number, rather than carrying NaN forward", () => {
+    // A broken extension can hand back an output with no amount. `new
+    // BigNumber(String(undefined))` is NaN and BigNumber does not throw, so
+    // without the boundary check the NaN would flow into the coin selection.
+    const addr = Buffer.concat([Buffer.from([0x60]), Buffer.alloc(28, 0x22)]);
+    const txId = Buffer.alloc(32, 0x01);
+    const babbage = new Map<number, unknown>([[0, addr]]); // key 1 (value) missing
+    const hex = Encoder.encode([[txId, 0], babbage]).toString("hex");
+    expect(() => decodeUtxosToInputs([hex])).toThrow(/non-numeric/);
+  });
 });
 
 describe("decodeVkeyWitnesses", () => {
