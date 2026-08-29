@@ -140,4 +140,15 @@ CLI derivation, `address.test.ts` fails.
 
 ## License
 
-Source-available. The final open-source license is to be announced.
+**Apache License 2.0** — see [`LICENSE`](LICENSE).
+
+You may read it, run it, fork it, modify it, and ship your own build, commercially
+or not. The one thing Apache-2.0 asks in return is attribution and a note of what
+you changed. This is the same licence Lace ships under, and the same one this
+module's own Cardano dependencies (`@stricahq/*`) use, so the whole stack is
+under one rule.
+
+The choice is deliberate rather than incidental: a wallet asks people to trust it
+with money, and "trust me" is not a security property. A licence that lets anyone
+read the code, rebuild it, and check that the build matches is the only version of
+that trust which can be verified instead of believed.
