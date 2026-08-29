@@ -35,3 +35,12 @@ jobs:
       # file, so adding one anywhere else pulls in a maintainer review.
       - name: Outbound-URL guard
         run: bun run check:urls
+
+      # A bundler replaces Node built-ins with stubs that throw on first touch.
+      # Icarus derivation reaches PBKDF2 -> readable-stream -> events, so a
+      # wallet could derive one address under `bun run test` and a different
+      # one in Chrome — funds sent somewhere their owner cannot reach, with
+      # every Node-side test still green. This builds the real browser bundle
+      # and runs it, asserting the golden-vector address and a vault round-trip.
+      - name: Browser bundle derives the golden address
+        run: bun run check:bundle
