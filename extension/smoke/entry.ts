@@ -12,6 +12,13 @@
  * So this file is compiled by the real browser build and then executed. If a
  * stub is on the live path, it throws here.
  */
+// The popup's own module graph, imported but not mounted. `popup.tsx` calls
+// `createRoot` at module scope and would need a DOM; these are the modules it
+// pulls in, and evaluating them is what proves the graph loads in a browser at
+// all. Building only `derive` + `vault` proved the maths and missed a crash that
+// blanked the popup.
+import { LocalWalletPanel } from "../../src/components/wallet/LocalWalletPanel";
+import { i18n } from "../src/i18n";
 import { accountFromEntropy, primaryAddress } from "../../src/lib/keystore/derive";
 import { sealVault, openVault } from "../../src/lib/keystore/vault";
 
@@ -42,5 +49,6 @@ function toHex(b: Uint8Array): string {
     address,
     addressMatches: address === EXPECT_ADDR,
     entropyRoundTrips: toHex(reopened) === ENTROPY_HEX,
+    popupGraphLoads: typeof LocalWalletPanel === "function" && typeof i18n.t === "function",
   };
 };

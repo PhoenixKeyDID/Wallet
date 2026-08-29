@@ -147,11 +147,31 @@ export function headerAad(v: number, kdf: VaultKdf, cipher: VaultCipher): Uint8A
 
 // ─── key derivation ───────────────────────────────────────────────────────────
 
+/**
+ * Ceilings, not just floors.
+ *
+ * The floors stop a stored header from making the password cheap to guess. The
+ * ceilings stop the opposite: a header rewritten to `m = 2^23` makes the wallet
+ * try to allocate ~8 GiB the moment someone types their password. `@noble/hashes`
+ * refuses above 4 GiB, so the interesting range is just below that — enough to
+ * wedge a laptop, and reachable by anyone who can write to the browser's storage.
+ * These bounds sit an order of magnitude above the strongest setting we ship.
+ */
+const MAX_KDF_MEMORY_KIB = 1 << 20; // 1 GiB
+const MAX_KDF_TIME = 64;
+const MAX_KDF_PARALLELISM = 16;
+
 function deriveKey(password: string, kdf: VaultKdf): Uint8Array {
   if (kdf.alg !== "argon2id") throw new VaultError("vault_unsupported_kdf");
-  if (!Number.isInteger(kdf.t) || kdf.t < 1) throw new VaultError("vault_bad_kdf_params");
-  if (!Number.isInteger(kdf.m) || kdf.m < 8) throw new VaultError("vault_bad_kdf_params");
-  if (!Number.isInteger(kdf.p) || kdf.p < 1) throw new VaultError("vault_bad_kdf_params");
+  if (!Number.isInteger(kdf.t) || kdf.t < 1 || kdf.t > MAX_KDF_TIME) {
+    throw new VaultError("vault_bad_kdf_params");
+  }
+  if (!Number.isInteger(kdf.m) || kdf.m < 8 || kdf.m > MAX_KDF_MEMORY_KIB) {
+    throw new VaultError("vault_bad_kdf_params");
+  }
+  if (!Number.isInteger(kdf.p) || kdf.p < 1 || kdf.p > MAX_KDF_PARALLELISM) {
+    throw new VaultError("vault_bad_kdf_params");
+  }
 
   return argon2id(new TextEncoder().encode(password.normalize("NFKC")), fromBase64(kdf.salt), {
     t: kdf.t,
@@ -222,30 +242,49 @@ export async function sealVault(
 /**
  * Decrypt a vault back to entropy.
  *
- * A wrong password and a tampered vault both surface as `vault_bad_password`.
- * That is intentional: GCM cannot tell them apart without leaking which part
- * of the guess was right, and a message that distinguishes them would hand an
- * attacker an oracle.
+ * A wrong password and a *tampered* vault both surface as `vault_bad_password`,
+ * and that much is intentional: GCM cannot tell them apart without leaking
+ * which part of the guess was right, and a message that distinguishes them
+ * would hand an attacker an oracle.
+ *
+ * That argument covers exactly those two, and nothing else. It does not cover a
+ * vault whose base64 got truncated by a bad sync, or a page served over plain
+ * `http://` where there is no `crypto.subtle` at all. Reporting those as "wrong
+ * password" sends someone whose password is *right* off to guess it forever,
+ * while the one thing that would actually save them — the phrase they wrote on
+ * paper — goes unmentioned. So only the `decrypt` call is caught.
  */
 export async function openVault(vault: Vault, password: string): Promise<Uint8Array> {
   if (vault.v !== VAULT_VERSION) throw new VaultError("vault_unsupported_version");
   if (vault.cipher?.alg !== "AES-256-GCM") throw new VaultError("vault_unsupported_cipher");
 
+  // Outside the try below on purpose: a missing WebCrypto is an environment
+  // problem, not a failed guess.
+  const webcrypto = subtle();
+
+  let iv: Uint8Array;
+  let ct: Uint8Array;
+  try {
+    iv = fromBase64(vault.cipher.iv);
+    ct = fromBase64(vault.ct);
+  } catch {
+    throw new VaultError("vault_malformed");
+  }
+  const aad = headerAad(vault.v, vault.kdf, vault.cipher);
+
   const keyBytes = deriveKey(password, vault.kdf);
   try {
     const key = await importAesKey(keyBytes);
-    const pt = await subtle().decrypt(
-      {
-        name: "AES-GCM",
-        iv: fromBase64(vault.cipher.iv) as BufferSource,
-        additionalData: headerAad(vault.v, vault.kdf, vault.cipher) as BufferSource,
-      },
-      key,
-      fromBase64(vault.ct) as BufferSource,
-    );
-    return new Uint8Array(pt);
-  } catch {
-    throw new VaultError("vault_bad_password");
+    try {
+      const pt = await webcrypto.decrypt(
+        { name: "AES-GCM", iv: iv as BufferSource, additionalData: aad as BufferSource },
+        key,
+        ct as BufferSource,
+      );
+      return new Uint8Array(pt);
+    } catch {
+      throw new VaultError("vault_bad_password");
+    }
   } finally {
     keyBytes.fill(0);
   }

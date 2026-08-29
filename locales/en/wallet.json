@@ -297,6 +297,7 @@
   "vault_malformed": "That backup file is incomplete or damaged.",
   "sign_no_required_witnesses": "This transaction needs no signature from this wallet, which should not happen.",
   "sign_bad_body_hash": "The transaction hash is malformed; nothing was signed.",
+  "tx_no_witnesses_decoded": "Could not read the signature your wallet returned, so nothing was submitted. Your funds did not move. This is a bug here, not in your wallet — please report it.",
   "sign_key_not_in_wallet": "This transaction needs a key this wallet does not hold. Nothing was signed.",
   "sign_network_mismatch": "This wallet belongs to a different network than the transaction. Nothing was signed.",
   "local_seed_notice": "This mode does ask for your recovery phrase — because it is the mode where this device holds your wallet. Type it only here, on a page you reached yourself, and never because someone asked you to.",

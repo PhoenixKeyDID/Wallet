@@ -50,4 +50,5 @@ const result = await globalThis.__phoenixSmoke();
 console.log(JSON.stringify(result, null, 2));
 if (!result.addressMatches) fail("browser build derives a different address than the golden vector");
 if (!result.entropyRoundTrips) fail("vault does not round-trip in the browser build");
+if (!result.popupGraphLoads) fail("the popup's own module graph does not evaluate in the browser build");
 console.log("Extension bundle OK — golden address and vault round-trip hold with no Node globals present");

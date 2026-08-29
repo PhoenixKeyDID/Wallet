@@ -53,3 +53,17 @@ jobs:
       # Measured on 2026-08-29: the second one was real and shipping.
       - name: Browser bundle runs with no Node globals
         run: bun run check:bundle
+
+      # Everything above this line checks source. This builds and checks the
+      # package a user drags onto chrome://extensions, because a broken popup
+      # entry or an unparseable manifest leaves every source gate green and the
+      # extension unloadable — nothing else in CI ever ran the shipping build.
+      - name: Build the extension package
+        run: bun run build:extension
+
+      # `host_permissions` decides who this wallet may talk to, and widening it
+      # is a one-line diff in a file that is not code. Every host declared must
+      # appear in the CODEOWNERS-gated provider, the CSP must still forbid
+      # remote code, and popup.html must reference nothing outside the package.
+      - name: Extension package is loadable and claims no reach it does not use
+        run: bun run check:package

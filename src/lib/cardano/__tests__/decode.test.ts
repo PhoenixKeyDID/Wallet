@@ -117,4 +117,26 @@ describe("decodeVkeyWitnesses", () => {
     const hex = Encoder.encode(new Map()).toString("hex");
     expect(decodeVkeyWitnesses(hex)).toHaveLength(0);
   });
+
+  /**
+   * A Conway-era wallet may wrap key 0 in CBOR tag 258 — the RFC 8742 set tag —
+   * because the ledger models a witness set as a set. Same signature, different
+   * encoding. Reading that as "no signatures" is not a decode failure that stops
+   * anything: the caller merges zero witnesses and submits the unsigned body
+   * while still returning a tx hash. So the tagged form gets its own test.
+   */
+  it("reads a witness set wrapped in CBOR tag 258 the same as a plain array", () => {
+    const pub = Buffer.alloc(32, 0xaa);
+    const sig = Buffer.alloc(64, 0xbb);
+    // a1 00 = map(1) with key 0; d9 0102 = tag(258); then the array itself.
+    const hex = Buffer.concat([
+      Buffer.from("a100d90102", "hex"),
+      Encoder.encode([[pub, sig]]),
+    ]).toString("hex");
+
+    const ws = decodeVkeyWitnesses(hex);
+    expect(ws).toHaveLength(1);
+    expect(ws[0].publicKey.toString("hex")).toBe("aa".repeat(32));
+    expect(ws[0].signature.toString("hex")).toBe("bb".repeat(64));
+  });
 });

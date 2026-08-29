@@ -297,6 +297,7 @@
   "vault_malformed": "Tệp sao lưu đó thiếu hoặc hỏng.",
   "sign_no_required_witnesses": "Giao dịch này không cần chữ ký nào từ ví này — lẽ ra không xảy ra.",
   "sign_bad_body_hash": "Băm giao dịch không hợp lệ; chưa ký gì cả.",
+  "tx_no_witnesses_decoded": "Không đọc được chữ ký ví trả về, nên không có gì được gửi đi. Tiền của bạn không suy chuyển. Đây là lỗi ở phía ứng dụng này, không phải ví của bạn — mong bạn báo lại.",
   "sign_key_not_in_wallet": "Giao dịch này cần một khoá mà ví này không giữ. Chưa ký gì cả.",
   "sign_network_mismatch": "Ví này thuộc mạng khác với giao dịch. Chưa ký gì cả.",
   "local_seed_notice": "Chế độ này CÓ hỏi cụm từ khôi phục — vì đây là chế độ mà chính máy này giữ ví của bạn. Chỉ gõ nó ở đây, trên trang bạn tự mở, và không bao giờ vì ai đó bảo bạn làm vậy.",

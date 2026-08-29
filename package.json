@@ -15,7 +15,8 @@
     "check:urls": "node scripts/check-urls.mjs",
     "check:node-globals": "node scripts/check-node-globals.mjs",
     "build:extension": "vite build --config extension/vite.config.ts",
-    "check:bundle": "node extension/smoke/run.mjs"
+    "check:bundle": "node extension/smoke/run.mjs",
+    "check:package": "node scripts/check-extension-package.mjs"
   },
   "dependencies": {
     "@noble/hashes": "1.5.0",

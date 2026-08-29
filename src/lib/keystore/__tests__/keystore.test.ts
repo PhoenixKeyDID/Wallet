@@ -279,6 +279,33 @@ describe("vault", () => {
     await expect(openVault(weakened, PASSWORD)).rejects.toThrow("vault_bad_password");
   });
 
+  /**
+   * "Wrong password" and "your stored vault is damaged" need opposite reactions:
+   * type it again, versus stop typing and get the paper phrase. Reporting both
+   * the same way is what makes someone with the correct password spend an hour
+   * guessing it. The oracle argument that justifies merging *wrong password* and
+   * *tampered ciphertext* does not extend to a vault that will not even decode.
+   */
+  it("tells a damaged vault apart from a wrong password", async () => {
+    const vault = await sealVault(entropy, PASSWORD, { kdf: FAST_KDF });
+    const damaged: Vault = { ...vault, ct: vault.ct.slice(0, -2) + "!!" };
+    await expect(openVault(damaged, PASSWORD)).rejects.toThrow("vault_malformed");
+    // And the correct password still opens the undamaged one, so the check above
+    // is not passing for the trivial reason that nothing opens.
+    expect(Buffer.from(await openVault(vault, PASSWORD)).toString("hex")).toBe(
+      VECTORS[0].entropyHex,
+    );
+  });
+
+  it("refuses a KDF cost high enough to wedge the machine", async () => {
+    // The mirror image of the downgrade attack: anyone who can write to the
+    // browser's storage can also raise the cost, and the wallet would try to
+    // allocate it the moment the owner types their password.
+    const vault = await sealVault(entropy, PASSWORD, { kdf: FAST_KDF });
+    const bloated: Vault = { ...vault, kdf: { ...vault.kdf, m: 1 << 22 } };
+    await expect(openVault(bloated, PASSWORD)).rejects.toThrow("vault_bad_kdf_params");
+  });
+
   it("survives a trip through export and import", async () => {
     const vault = await sealVault(entropy, PASSWORD, { kdf: FAST_KDF, label: "Ví chính" });
     const reloaded = vaultFromJson(vaultToJson(vault));

@@ -105,8 +105,15 @@ export function LocalWalletPanel() {
     void refresh();
   }, [refresh]);
 
-  // Lock on the way out. A closing tab that leaves keys in a detached context
-  // is exactly the walk-away case the timeout exists for.
+  // Lock on the way out. A tab you have navigated away from — or closed — is
+  // exactly the walk-away case the inactivity timeout exists for, and it is the
+  // case where nobody is watching the screen.
+  //
+  // This used to call `session.touch()` here, which *resets* the countdown
+  // rather than ending it. The effect was the opposite of the intent: a wallet
+  // left open in a background tab never locked at all, because every switch away
+  // pushed the deadline out again. Measured with fake timers: 100 minutes with
+  // no user action and a tab switch every five, still unlocked.
   useEffect(() => {
     const off = session.subscribe((s) => {
       if (s.status === "locked") {
@@ -116,12 +123,14 @@ export function LocalWalletPanel() {
       }
     });
     const onHide = () => {
-      if (document.visibilityState === "hidden") session.touch();
+      if (document.visibilityState === "hidden") session.lock();
     };
+    const onPageHide = () => session.lock();
     document.addEventListener("visibilitychange", onHide);
-    window.addEventListener("pagehide", () => session.lock());
+    window.addEventListener("pagehide", onPageHide);
     return () => {
       document.removeEventListener("visibilitychange", onHide);
+      window.removeEventListener("pagehide", onPageHide);
       off();
       session.lock();
     };
