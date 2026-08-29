@@ -7,6 +7,7 @@
  * CORS, fine for read-only client calls. When the PhoenixKey backend exposes a
  * UTxO/params proxy (`PhoenixKey-Wallet-API-v2`), swap `PROVIDER_BASE` for it.
  */
+import "../node-globals";
 import { Buffer } from "buffer";
 import BigNumber from "bignumber.js";
 import { types as tyTypes, utils as tyUtils } from "@stricahq/typhonjs";

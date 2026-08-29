@@ -268,7 +268,7 @@
   "local_address": "Your address",
   "local_balance_unavailable": "Balance unavailable — the chain indexer did not answer. This says nothing about your funds.",
   "local_autolock_label": "Lock after inactivity",
-  "local_autolock_minutes": "{{n}} minutes",
+  "local_autolock_minutes": "{{n}} min",
   "local_autolock_never": "Never (not recommended)",
   "local_export_vault": "Export encrypted backup",
   "local_export_note": "The exported file is encrypted with your password. It is useful as a second copy, but it is not a substitute for the written phrase: lose the password and the file is unopenable.",

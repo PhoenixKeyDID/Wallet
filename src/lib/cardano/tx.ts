@@ -11,6 +11,7 @@
  * The same unsigned CBOR feeds the air-gap QR path (`qr.ts`) once the offline
  * signer ships.
  */
+import "../node-globals";
 import { Buffer } from "buffer";
 import BigNumber from "bignumber.js";
 import { Decoder } from "@stricahq/cbors";

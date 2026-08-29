@@ -15,6 +15,7 @@
  * does soft derivation on purpose, because watch-only mode only ever holds
  * public material. The two must never be confused, so they do not share code.
  */
+import "../node-globals";
 import { Buffer } from "buffer";
 import { Bip32PrivateKey, PrivateKey } from "@stricahq/bip32ed25519";
 import { baseAddress, rewardAddress, type PhoenixNetwork } from "../cardano/address";

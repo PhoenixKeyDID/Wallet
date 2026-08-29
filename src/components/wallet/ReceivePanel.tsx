@@ -1,5 +1,6 @@
 "use client";
 
+import "../../lib/node-globals";
 import { useMemo, useRef, useState } from "react";
 import { Buffer } from "buffer";
 import { useTranslation } from "react-i18next";

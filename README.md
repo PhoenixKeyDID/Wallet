@@ -122,7 +122,8 @@ bun run test          # 218 tests — golden vectors vs the Rust reference deriv
 bun run typecheck
 bun run check:locales # 4 languages × 2 namespaces must stay in step
 bun run check:urls    # no ungated outbound URL ships under src/
-bun run check:bundle  # the browser build derives the golden address (see below)
+bun run check:node-globals # the Node-globals shim is imported before @stricahq
+bun run check:bundle  # the browser build runs with no Node globals (see below)
 ```
 
 The address golden vectors are copied verbatim from the Rust core
@@ -160,15 +161,32 @@ context and the keys with it, so nothing sits unlocked in a background worker.
 
 ### `check:bundle` — why a separate check exists
 
-A bundler rewrites Node built-ins away for the browser. Icarus derivation reaches
-PBKDF2, which transitively pulls `readable-stream`, which imports `events` — and
-`events` is replaced with a stub that throws on first touch. A wallet that
-derived a *different* address in Chrome than in `vitest` would send funds to an
-address its owner cannot reach, and no test running under Node would ever see it.
+Two things can be wrong with this wallet while every test is green, and both of
+them are about the difference between Node and a browser.
 
-So `bun run check:bundle` compiles the real browser build and executes it,
-asserting it produces the golden-vector address and that a sealed vault
-round-trips. Currently the stubs sit on dead code and the address matches.
+Icarus derivation reaches PBKDF2, which transitively pulls `readable-stream@2`.
+That package reads a bare `process` while it is still evaluating, and it imports
+`events`, which the bundler replaces with a stub that throws on first touch. So:
+
+- a build could derive a **different address** in Chrome than in `vitest` — funds
+  sent to an address their owner cannot reach; or
+- loading the wallet could **throw before it paints**, which is what happened. The
+  built extension popup rendered blank with `ReferenceError: process is not
+  defined`, while 218 unit tests, the type check and an earlier version of this
+  very check all passed. The earlier version ran the browser bundle under plain
+  Node, where `process` exists — so it proved the maths and missed the crash.
+
+`bun run check:bundle` now deletes `process`, `global` and `setImmediate` before
+importing the bundle, then asserts the golden-vector address and a vault
+round-trip. `src/lib/node-globals.ts` is what puts `process` back in a browser,
+and `bun run check:node-globals` enforces that every module reaching `@stricahq`
+imports it *first* — ES modules evaluate imports in source order, so a shim
+imported second is a shim that never ran.
+
+Verified in a real browser on 2026-08-29 against the built bundle: create →
+confirm phrase → encrypt → address, lock → wrong password rejected → unlock →
+same address, and restore-from-phrase reproducing the same address with a fresh
+salt and ciphertext.
 
 ## Status & roadmap
 

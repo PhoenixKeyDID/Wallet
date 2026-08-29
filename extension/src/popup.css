@@ -116,4 +116,10 @@ button:disabled { cursor: default; opacity: .5; }
 .hover\:border-border-amber:hover { border-color: var(--border-amber); }
 .hover\:bg-bg2:hover { background: var(--bg2); }
 .disabled\:opacity-50:disabled { opacity: .5; }
-ol, ul { margin: 0; padding-left: 1.1rem; }
+/*
+ * Match the host app's CSS reset. Tailwind's preflight strips list markers, and
+ * the wallet components are written for that: the recovery-phrase list renders
+ * its own "1." … "24." so the words stay copy-pasteable in order. Leaving the
+ * browser default on showed every word numbered twice — "1. 1. entire".
+ */
+ol, ul { margin: 0; padding: 0; list-style: none; }

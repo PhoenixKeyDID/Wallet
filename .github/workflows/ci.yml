@@ -36,11 +36,20 @@ jobs:
       - name: Outbound-URL guard
         run: bun run check:urls
 
-      # A bundler replaces Node built-ins with stubs that throw on first touch.
-      # Icarus derivation reaches PBKDF2 -> readable-stream -> events, so a
-      # wallet could derive one address under `bun run test` and a different
-      # one in Chrome — funds sent somewhere their owner cannot reach, with
-      # every Node-side test still green. This builds the real browser bundle
-      # and runs it, asserting the golden-vector address and a vault round-trip.
-      - name: Browser bundle derives the golden address
+      # ES modules evaluate their imports in source order, and
+      # `@stricahq/bip32ed25519` reads a bare `process` while it is still
+      # evaluating. The Node-globals shim has to be imported before it, in every
+      # module that reaches it. Nothing in the test suite can see this, because
+      # `vitest` runs under Node where `process` is real.
+      - name: Node-globals guard
+        run: bun run check:node-globals
+
+      # Builds the real browser bundle and runs it with `process`, `global` and
+      # `setImmediate` deleted — the three Node globals a browser does not have.
+      # Two failures hide here, and both are invisible to a green test suite:
+      # Icarus derivation could yield one address under `bun run test` and a
+      # different one in Chrome (funds sent where their owner cannot reach
+      # them), and a missing Node global crashes the popup into a blank page.
+      # Measured on 2026-08-29: the second one was real and shipping.
+      - name: Browser bundle runs with no Node globals
         run: bun run check:bundle
