@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "Phoenix Wallet",
+  "version": "0.1.0",
+  "description": "A self-custody Cardano wallet. Open source, Apache-2.0. Your keys stay on your device.",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Phoenix Wallet"
+  },
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://api.koios.rest/*",
+    "https://preprod.koios.rest/*",
+    "https://preview.koios.rest/*"
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  },
+  "icons": { "128": "icon128.png" }
+}
