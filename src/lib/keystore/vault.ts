@@ -37,8 +37,30 @@
  * - **AES-256-GCM via WebCrypto**, not a JS implementation. The browser's own
  *   primitive is the one that gets constant-time treatment and hardware AES
  *   instructions; a hand-rolled JS cipher in a wallet is a liability.
- * - **A random 16-byte salt per vault**, so two people with the same password
+ * - **A random 32-byte salt per vault**, so two people with the same password
  *   do not share a key, and a precomputed table buys an attacker nothing.
+ *
+ * ## Measured against Lace
+ *
+ * Lace's current scheme ("SBV1", `lace/packages/lib/core/src/secret-box/`)
+ * was read at 2026-08-29 and lands on the same numbers: Argon2id at
+ * `m=19456, t=2, p=1`, a 12-byte nonce, a fixed header bound as associated
+ * data, and the derived key wiped in a `finally`. Two deliberate differences:
+ *
+ * - **AES-256-GCM via WebCrypto** where Lace uses ChaCha20-Poly1305 in JS.
+ *   Both are sound AEADs. In a browser the platform primitive is the one that
+ *   gets hardware AES and the engine's own constant-time treatment, so the
+ *   cipher that is *not* our code is the safer of the two.
+ * - **32-byte salt**, matching Lace's, rather than the 16-byte minimum —
+ *   a free win against multi-target guessing.
+ *
+ * One place this file is ahead, and it is worth stating because it is a real
+ * limit Lace documents against itself: their key material passes through hex
+ * **strings** during account derivation, which JavaScript cannot zero (their
+ * own `TODO` in `in-memory-wallet-integration.ts` says so). Nothing here turns
+ * a private key into a string — keys stay in `Buffer`s that `wipe()` can
+ * overwrite. That narrows the window; it does not close it, and `derive.ts`
+ * says as much rather than claiming more.
  */
 import { argon2id } from "@noble/hashes/argon2";
 
@@ -54,7 +76,7 @@ export const VAULT_VERSION = 1;
  */
 export const DEFAULT_KDF = { alg: "argon2id", t: 2, m: 19456, p: 1 } as const;
 
-const SALT_BYTES = 16;
+const SALT_BYTES = 32;
 const IV_BYTES = 12; // 96 bits, the size AES-GCM is specified for
 const KEY_BYTES = 32; // AES-256
 

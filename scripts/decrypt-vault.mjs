@@ -31,7 +31,7 @@
  *
  * {
  *   "v": 1,
- *   "kdf":    { "alg": "argon2id", "t": 2, "m": 19456, "p": 1, "salt": "<base64, 16 bytes>" },
+ *   "kdf":    { "alg": "argon2id", "t": 2, "m": 19456, "p": 1, "salt": "<base64, 32 bytes>" },
  *   "cipher": { "alg": "AES-256-GCM", "iv": "<base64, 12 bytes>" },
  *   "ct":     "<base64: ciphertext ‖ 16-byte GCM tag>",
  *   "label":  "optional, not secret, not used as a key input"

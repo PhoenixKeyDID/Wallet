@@ -234,7 +234,7 @@ describe("vault", () => {
     expect(vault.v).toBe(1);
     expect(vault.kdf.alg).toBe("argon2id");
     expect(vault.cipher.alg).toBe("AES-256-GCM");
-    expect(fromBase64(vault.kdf.salt)).toHaveLength(16);
+    expect(fromBase64(vault.kdf.salt)).toHaveLength(32);
     expect(fromBase64(vault.cipher.iv)).toHaveLength(12);
     // …and the secret is not in there in the clear.
     expect(JSON.stringify(vault)).not.toContain(VECTORS[0].entropyHex);
