@@ -36,20 +36,31 @@ refers to (Wallet API v2, Rebirthme, DappConnector) are canonical in
 
 **Full specification & security model:** [`docs/Phoenix Wallet-Feat.md`](<docs/Phoenix Wallet-Feat.md>).
 
-## Design: no hot wallet, ever
+## Design: where your keys live
 
-This module **never holds a spendable seed in the browser.** There is no
-"create wallet / paste your 24 words" flow. It only ever sees public data or
-hands the signing off to something that already holds the key. A page in this
-module will never ask you for a recovery phrase — anyone who does is trying to
-scam you.
+Four modes. **Three of them never hold a key**; the fourth does, on purpose, and
+says so everywhere it can.
 
-| Mode | View | Sign / spend |
-|---|---|---|
-| **Connect (CIP-30)** — Lace / Eternl | ✅ from the extension | ✅ the extension signs |
-| **Watch-only (`acct_xvk`)** | ✅ derived client-side from the account public key | ❌ view only |
-| **Phoenix custody (your own DID)** | ✅ reads the script address + balances, signed in | ❌ view only (v1) |
-| **Air-gap QR co-sign** | ✅ | 🟡 scaffolded; enabled when the offline signer ships |
+| Mode | View | Sign / spend | Key held in the page? |
+|---|---|---|---|
+| **Connect (CIP-30)** — Lace / Eternl | ✅ from the extension | ✅ the extension signs | ❌ never |
+| **Watch-only (`acct_xvk`)** | ✅ derived client-side from the account public key | ❌ view only | ❌ never |
+| **Phoenix custody (your own DID)** | ✅ reads the script address + balances, signed in | ❌ view only (v1) | ❌ never |
+| **Air-gap QR co-sign** | ✅ | 🟡 scaffolded; enabled when the offline signer ships | ❌ never |
+| **Local self-custody** 🔑 | ✅ | ✅ this page signs | ⚠️ **yes, while unlocked** |
+
+In the first four, a page here will never ask for your recovery phrase — anyone
+who does is trying to scam you. **Local self-custody is the one exception**, and
+it exists so that someone with no extension installed and no DID still has a
+wallet. Choosing it means accepting that the signing key is in the page: the seed
+is encrypted at rest (Argon2id + AES-256-GCM) and held in memory only while
+unlocked, but any script that runs in the page can reach an unlocked key. Use it
+for **small, hot balances** — for anything worth protecting, connect a
+hardware-backed extension instead.
+
+The self-custody code lives in `src/lib/keystore/` and is reachable only from
+`LocalWalletPanel`; no other mode imports it, so the three key-free modes stay
+key-free. Full threat model: [`docs/Phoenix Wallet-Feat.md`](<docs/Phoenix Wallet-Feat.md>) §2.1 / §2.1a.
 
 - **Traditional use** — connect a standard Cardano extension (or watch an
   account key). No DID needed; no data goes to the Phoenix backend. (Reading
