@@ -301,5 +301,16 @@
   "sign_key_not_in_wallet": "Giao dịch này cần một khoá mà ví này không giữ. Chưa ký gì cả.",
   "sign_network_mismatch": "Ví này thuộc mạng khác với giao dịch. Chưa ký gì cả.",
   "local_seed_notice": "Chế độ này CÓ hỏi cụm từ khôi phục — vì đây là chế độ mà chính máy này giữ ví của bạn. Chỉ gõ nó ở đây, trên trang bạn tự mở, và không bao giờ vì ai đó bảo bạn làm vậy.",
-  "local_mainnet_warning": "Tiền thật. Chế độ này chưa được audit."
+  "local_mainnet_warning": "Tiền thật. Chế độ này chưa được audit.",
+  "watch_by_address": "Xem một địa chỉ",
+  "watch_by_address_hint": "An toàn hơn — chỉ lộ đúng địa chỉ đó",
+  "watch_by_xvk": "Xem cả tài khoản",
+  "watch_by_xvk_hint": "Khoá công khai tài khoản — liên kết mọi địa chỉ",
+  "watch_addr_intro": "Dán một địa chỉ Cardano để xem số dư. Không dẫn xuất gì, không lưu gì — chỉ lộ đúng địa chỉ bạn dán.",
+  "watch_addr_label": "Địa chỉ Cardano",
+  "watch_addr_scope_note": "Số dư này chỉ tính riêng địa chỉ ở trên. Các địa chỉ khác của cùng ví không được cộng vào.",
+  "watch_addr_required": "Hãy dán một địa chỉ Cardano trước.",
+  "watch_addr_invalid": "Đây không phải địa chỉ Cardano hợp lệ.",
+  "watch_addr_is_stake": "Đây là địa chỉ stake, bản thân nó không giữ số dư — hãy dán địa chỉ thanh toán (addr1… / addr_test1…).",
+  "watch_xvk_links_account": "Khoá tài khoản làm lộ mọi địa chỉ của ví này, kể cả địa chỉ chưa dùng, cùng toàn bộ lịch sử. Nếu chỉ cần xem một số dư, hãy dùng “Xem một địa chỉ”."
 }

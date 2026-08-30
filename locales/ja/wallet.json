@@ -301,5 +301,16 @@
   "sign_key_not_in_wallet": "この取引にはこのウォレットが持たない鍵が必要です。何も署名していません。",
   "sign_network_mismatch": "このウォレットは取引とは別のネットワークに属します。何も署名していません。",
   "local_seed_notice": "このモードはリカバリーフレーズを尋ねます——この端末がウォレットを保持するモードだからです。自分で開いたこのページでのみ入力し、誰かに言われて入力することは絶対にしないでください。",
-  "local_mainnet_warning": "実際の資金です。このモードは監査を受けていません。"
+  "local_mainnet_warning": "実際の資金です。このモードは監査を受けていません。",
+  "watch_by_address": "アドレス1件を表示",
+  "watch_by_address_hint": "より安全 — そのアドレスのみ露出",
+  "watch_by_xvk": "アカウント全体を表示",
+  "watch_by_xvk_hint": "アカウント公開鍵 — 全アドレスが紐づく",
+  "watch_addr_intro": "Cardano アドレスを1件貼り付けて残高を確認します。導出も保存も行いません — 貼り付けたアドレスだけが露出します。",
+  "watch_addr_label": "Cardano アドレス",
+  "watch_addr_scope_note": "この残高は上記アドレスのみの分です。同じウォレットの他のアドレスは含みません。",
+  "watch_addr_required": "まず Cardano アドレスを貼り付けてください。",
+  "watch_addr_invalid": "有効な Cardano アドレスではありません。",
+  "watch_addr_is_stake": "これはステークアドレスで、それ自体は残高を持ちません — 支払いアドレス（addr1… / addr_test1…）を貼り付けてください。",
+  "watch_xvk_links_account": "アカウント鍵は、未使用のものを含むこのウォレットの全アドレスと全履歴を露出させます。残高を1件だけ確認するなら「アドレス1件を表示」を使ってください。"
 }
