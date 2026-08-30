@@ -56,7 +56,37 @@ type ChromeLike = {
   };
 };
 
+/**
+ * Extension pages are served from their own scheme. This is the one thing a
+ * script running in a web page cannot forge: it can define `globalThis.chrome`,
+ * it can define `chrome.runtime.id`, it can hand back any object it likes — but
+ * it cannot change the document's own protocol.
+ *
+ * That matters because the previous rule was "does `chrome.storage.local`
+ * exist". A script on any page could satisfy it with six lines, and two things
+ * followed. The vault got written into the attacker's object instead of
+ * IndexedDB, handing over the encrypted blob to grind the password offline. And
+ * `isExtensionContext()` returned true, which is what suppresses the "this is a
+ * web page, an unlocked key is reachable by any script here" warning — so the
+ * UI reassured the user in exactly the case the warning exists for.
+ *
+ * The API check stays as well, because the scheme alone does not prove the
+ * storage API is present. It is the scheme that carries the security weight.
+ */
+const EXTENSION_PROTOCOLS = new Set([
+  "chrome-extension:",
+  "moz-extension:",
+  "safari-web-extension:",
+  "ms-browser-extension:",
+]);
+
+function inExtensionOrigin(): boolean {
+  const proto = (globalThis as { location?: { protocol?: string } }).location?.protocol;
+  return typeof proto === "string" && EXTENSION_PROTOCOLS.has(proto);
+}
+
 function chromeLocal() {
+  if (!inExtensionOrigin()) return undefined;
   const c = (globalThis as unknown as { chrome?: ChromeLike; browser?: ChromeLike });
   return c.browser?.storage?.local ?? c.chrome?.storage?.local;
 }
@@ -157,7 +187,13 @@ export function vaultStore(): VaultStore {
   return memoryStore();
 }
 
-/** True when running inside a browser extension rather than a web page. */
+/**
+ * True when running inside a browser extension rather than a web page.
+ *
+ * Answered from the document's own scheme, not from whether an object called
+ * `chrome` happens to exist — see `inExtensionOrigin` above for why the second
+ * question has a different answer than it looks like it has.
+ */
 export function isExtensionContext(): boolean {
   return Boolean(chromeLocal());
 }

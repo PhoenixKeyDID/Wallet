@@ -95,6 +95,9 @@ export function LocalWalletPanel() {
   const [assets, setAssets] = useState<DisplayAsset[]>([]);
   const [balanceOk, setBalanceOk] = useState(false);
   const [revealed, setRevealed] = useState<string | null>(null);
+  // Set when the wallet locks while a recovery phrase is on screen. It hides
+  // the words without destroying them: see the `locked` subscriber below.
+  const [concealed, setConcealed] = useState(false);
   const [lockMs, setLockMs] = useState<number>(DEFAULT_LOCK_TIMEOUT_MS);
 
   const refresh = useCallback(async () => {
@@ -120,6 +123,18 @@ export function LocalWalletPanel() {
         setAccount(null);
         setRevealed(null);
         setStep((cur) => (cur === "open" ? "list" : cur));
+        // The password is what opens the vault. Keeping it in state through a
+        // lock means "locked" and "unlocked" differ by a boolean while the
+        // secret that bridges them is still sitting there. It costs one retype.
+        setPw("");
+        setPw2("");
+        // A recovery phrase mid-creation is a different case: destroying it
+        // would throw away a wallet the user is in the middle of writing down,
+        // and a wallet that punishes you for opening your password manager
+        // teaches you to screenshot the words instead. So hide, do not destroy
+        // — the walk-away threat is someone reading the screen, and hiding
+        // answers exactly that. What survives is stated in `session.ts`.
+        setConcealed(true);
       }
     });
     const onHide = () => {
@@ -213,6 +228,7 @@ export function LocalWalletPanel() {
   };
 
   const resetDraft = () => {
+    setConcealed(false);
     setPhrase("");
     setRestoreText("");
     setConfirmIdx([]);
@@ -364,15 +380,24 @@ export function LocalWalletPanel() {
         <div className="rounded-brand border border-border-soft bg-bg1 p-5 space-y-4">
           <h3 className="text-sm font-medium">{t("local_words_title")}</h3>
           <p className="text-xs text-amber-brand">⚠ {t("local_words_warning")}</p>
-          <ol className="grid grid-cols-2 gap-x-4 gap-y-1 sm:grid-cols-3">
-            {phrase.split(" ").map((w, i) => (
-              <li key={i} className="mono text-sm">
-                <span className="text-text-hint">{i + 1}.</span> {w}
-              </li>
-            ))}
-          </ol>
+          {concealed ? (
+            <div className="rounded-brand border border-border-soft bg-bg2 p-4 text-center space-y-2">
+              <p className="text-sm">{t("local_concealed_body")}</p>
+              <button className={btnCls} onClick={() => setConcealed(false)}>
+                {t("local_concealed_show")}
+              </button>
+            </div>
+          ) : (
+            <ol className="grid grid-cols-2 gap-x-4 gap-y-1 sm:grid-cols-3">
+              {phrase.split(" ").map((w, i) => (
+                <li key={i} className="mono text-sm">
+                  <span className="text-text-hint">{i + 1}.</span> {w}
+                </li>
+              ))}
+            </ol>
+          )}
           <div className="flex flex-wrap items-center gap-2">
-            <CopyBtn value={phrase} />
+            {!concealed && <CopyBtn value={phrase} />}
             <button className={primaryCls} onClick={startConfirm}>
               {t("local_words_next")}
             </button>
@@ -427,6 +452,8 @@ export function LocalWalletPanel() {
       {step === "restore" && (
         <RestoreForm
           value={restoreText}
+          concealed={concealed}
+          onReveal={() => setConcealed(false)}
           onChange={setRestoreText}
           onCancel={() => {
             resetDraft();
@@ -597,11 +624,15 @@ export function LocalWalletPanel() {
  */
 function RestoreForm({
   value,
+  concealed,
+  onReveal,
   onChange,
   onCancel,
   onNext,
 }: {
   value: string;
+  concealed: boolean;
+  onReveal: () => void;
   onChange: (v: string) => void;
   onCancel: () => void;
   onNext: () => void;
@@ -627,15 +658,26 @@ function RestoreForm({
     <div className="rounded-brand border border-border-soft bg-bg1 p-5 space-y-3">
       <h3 className="text-sm font-medium">{t("local_restore_title")}</h3>
       <p className="text-xs text-text-dim">{t("local_restore_intro")}</p>
-      <textarea
-        ref={ref}
-        className={`${inputCls} mono h-28`}
-        value={value}
-        autoComplete="off"
-        spellCheck={false}
-        placeholder={t("local_restore_placeholder")}
-        onChange={(e) => onChange(e.target.value)}
-      />
+      {concealed && value.length > 0 ? (
+        // Only when there is something to hide. Covering an empty box is friction
+        // that teaches nothing.
+        <div className="rounded-brand border border-border-soft bg-bg2 p-4 text-center space-y-2 h-28 flex flex-col justify-center">
+          <p className="text-sm">{t("local_concealed_body")}</p>
+          <button className={btnCls} onClick={onReveal}>
+            {t("local_concealed_show")}
+          </button>
+        </div>
+      ) : (
+        <textarea
+          ref={ref}
+          className={`${inputCls} mono h-28`}
+          value={value}
+          autoComplete="off"
+          spellCheck={false}
+          placeholder={t("local_restore_placeholder")}
+          onChange={(e) => onChange(e.target.value)}
+        />
+      )}
 
       <p className="text-xs text-text-hint">{t("local_restore_count", { n: words.length })}</p>
 

@@ -75,6 +75,22 @@ export type Account = {
   wipe(): void;
 };
 
+/**
+ * Overwrite the bytes a key object is still holding.
+ *
+ * Both `PrivateKey.toBytes()` and `Bip32PrivateKey.toBytes()` return the live
+ * internal buffer rather than a copy, so filling it with zeroes really does
+ * scrub the key — measured, not assumed. A frozen buffer is not worth failing a
+ * lock over, so a throw here is swallowed.
+ */
+function zeroLiveBytes(key: { toBytes(): Uint8Array }): void {
+  try {
+    key.toBytes().fill(0);
+  } catch {
+    /* nothing useful to do: the lock must still complete */
+  }
+}
+
 /** Root extended private key from BIP-39 entropy, per Icarus / CIP-3. */
 export async function rootKeyFromEntropy(entropy: Uint8Array): Promise<Bip32PrivateKey> {
   return Bip32PrivateKey.fromEntropy(Buffer.from(entropy));
@@ -147,13 +163,15 @@ export function buildAccount(
         // JavaScript gives no guarantee the engine kept no other copy — this
         // shortens the window, it does not close it. The honest mitigation for
         // a compromised machine is a hardware wallet, and the UI says so.
-        try {
-          prv.toBytes().fill(0);
-        } catch {
-          /* a frozen buffer is not worth failing a lock over */
-        }
+        zeroLiveBytes(prv);
       }
       keyByHash.clear();
+      // The account extended key is the one that mattered most and was the one
+      // being missed: every key above is derived *from* it, so leaving it intact
+      // meant a lock that scrubbed the leaves and left the trunk. It is wiped
+      // last, after the keys derived from it, so an exception part-way through
+      // cannot leave the trunk alive while the leaves are already gone.
+      zeroLiveBytes(acct);
     },
   };
 }
@@ -165,7 +183,18 @@ export async function accountFromEntropy(
   network: PhoenixNetwork,
 ): Promise<Account> {
   const root = await rootKeyFromEntropy(entropy);
-  return buildAccount(root, accountIndex, network);
+  const account = buildAccount(root, accountIndex, network);
+  // The root belongs to this function, not to `buildAccount`, so this is the
+  // only place allowed to scrub it — `buildAccount` is also called with a root
+  // the caller still owns and must not destroy. The root regenerates every key
+  // for every account, so a lock that leaves it in the heap is a lock in name.
+  return {
+    ...account,
+    wipe() {
+      account.wipe();
+      zeroLiveBytes(root);
+    },
+  };
 }
 
 /** The first external address — what "your address" means in the UI. */

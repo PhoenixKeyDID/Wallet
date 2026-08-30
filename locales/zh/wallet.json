@@ -312,5 +312,7 @@
   "watch_addr_required": "请先粘贴一个 Cardano 地址。",
   "watch_addr_invalid": "这不是有效的 Cardano 地址。",
   "watch_addr_is_stake": "这是质押地址，其本身不持有余额 — 请粘贴支付地址（addr1… / addr_test1…）。",
-  "watch_xvk_links_account": "账户密钥会暴露该钱包的全部地址（包括尚未使用的）及其完整历史。若只想查看一个余额，请改用“查看单个地址”。"
+  "watch_xvk_links_account": "账户密钥会暴露该钱包的全部地址（包括尚未使用的）及其完整历史。若只想查看一个余额，请改用“查看单个地址”。",
+  "local_concealed_body": "助记词显示在屏幕上时钱包已锁定。内容并未丢失，也没有被保存或发送。",
+  "local_concealed_show": "重新显示"
 }

@@ -312,5 +312,7 @@
   "watch_addr_required": "Paste a Cardano address first.",
   "watch_addr_invalid": "That is not a valid Cardano address.",
   "watch_addr_is_stake": "That is a stake address. It holds no balance of its own — paste a payment address (addr1… / addr_test1…).",
-  "watch_xvk_links_account": "An account key reveals every address of this wallet, including ones you have not used yet, and its whole history. To check one balance, use “Watch one address” instead."
+  "watch_xvk_links_account": "An account key reveals every address of this wallet, including ones you have not used yet, and its whole history. To check one balance, use “Watch one address” instead.",
+  "local_concealed_body": "The wallet locked while your recovery phrase was on screen. It was not lost — nothing was saved or sent.",
+  "local_concealed_show": "Show it again"
 }

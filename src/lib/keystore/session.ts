@@ -5,6 +5,22 @@
  * spendable keys goes through the password, so the only question this file
  * answers is: how long after the last thing the user did should the keys stay?
  *
+ * That first sentence is a claim, so here is exactly what it does and does not
+ * cover. `lock()` calls `Account.wipe()`, which zeroes every derived private
+ * key, the account extended key, and — on the `accountFromEntropy` path — the
+ * root. It used to zero only the derived keys, which meant a lock scrubbed the
+ * leaves and left the trunk that regenerates them; that is fixed and pinned by
+ * `__tests__/wipe.test.ts`. The panel additionally clears the password field,
+ * because a password held across a lock is the thing that undoes the lock.
+ *
+ * What survives, stated rather than glossed: a recovery phrase being shown
+ * during wallet creation, before any vault exists. Destroying it would throw
+ * away a wallet the user is halfway through writing down, and a wallet that
+ * punishes you for opening your password manager teaches you to screenshot the
+ * words instead. The panel hides it on lock rather than destroying it, which
+ * answers the threat the walk-away timer is actually for — someone reading the
+ * screen — and does not pretend to answer a different one.
+ *
  * **Default: 5 minutes.** Worth stating why, because the obvious reference
  * gets this wrong: Lace's browser extension ships
  * `DEFAULT_INACTIVITY_TIMEOUT_MS = INDEFINITE` — it does not auto-lock at all

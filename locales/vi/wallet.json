@@ -312,5 +312,7 @@
   "watch_addr_required": "Hãy dán một địa chỉ Cardano trước.",
   "watch_addr_invalid": "Đây không phải địa chỉ Cardano hợp lệ.",
   "watch_addr_is_stake": "Đây là địa chỉ stake, bản thân nó không giữ số dư — hãy dán địa chỉ thanh toán (addr1… / addr_test1…).",
-  "watch_xvk_links_account": "Khoá tài khoản làm lộ mọi địa chỉ của ví này, kể cả địa chỉ chưa dùng, cùng toàn bộ lịch sử. Nếu chỉ cần xem một số dư, hãy dùng “Xem một địa chỉ”."
+  "watch_xvk_links_account": "Khoá tài khoản làm lộ mọi địa chỉ của ví này, kể cả địa chỉ chưa dùng, cùng toàn bộ lịch sử. Nếu chỉ cần xem một số dư, hãy dùng “Xem một địa chỉ”.",
+  "local_concealed_body": "Ví đã khoá trong lúc cụm từ khôi phục đang hiện trên màn hình. Chưa mất gì cả — không có gì được lưu hay gửi đi.",
+  "local_concealed_show": "Hiện lại"
 }
