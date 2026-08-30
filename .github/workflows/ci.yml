@@ -44,6 +44,15 @@ jobs:
       - name: Node-globals guard
         run: bun run check:node-globals
 
+      # The spec and the README both promise the self-custody keystore is
+      # reachable only from `LocalWalletPanel` — that promise is what lets the
+      # Connect / Watch-only / custody modes be described as key-free. Until
+      # this step existed it was an assertion in a document, and the next panel
+      # to `import { … } from "@/lib/keystore/session"` would have falsified it
+      # everywhere it is written, silently.
+      - name: Keystore boundary
+        run: bun run check:keystore-boundary
+
       # Builds the real browser bundle and runs it with `process`, `global` and
       # `setImmediate` deleted — the three Node globals a browser does not have.
       # Two failures hide here, and both are invisible to a green test suite:
@@ -67,3 +76,10 @@ jobs:
       # remote code, and popup.html must reference nothing outside the package.
       - name: Extension package is loadable and claims no reach it does not use
         run: bun run check:package
+
+      # The README's test count has been wrong five times, each time by simply
+      # being left behind. A figure a reader catches as stale costs more than a
+      # missing one: it teaches them not to trust the rest of the page, which is
+      # where this wallet explains what it does NOT protect them from.
+      - name: README's mechanical claims are still true
+        run: bun run check:readme

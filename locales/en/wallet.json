@@ -267,6 +267,7 @@
   "local_wallet_missing": "That wallet is no longer stored on this device.",
   "local_address": "Your address",
   "local_balance_unavailable": "Balance unavailable — the chain indexer did not answer. This says nothing about your funds.",
+  "local_balance_partial": "This wallet uses more addresses than Phoenix scans, so the balance shown is lower than the real one. Open it in Lace, Eternl or Yoroi to see everything. Nothing is lost — Phoenix is looking at only part of it.",
   "local_autolock_label": "Lock after inactivity",
   "local_autolock_minutes": "{{n}} min",
   "local_autolock_never": "Never (not recommended)",

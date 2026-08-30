@@ -267,6 +267,7 @@
   "local_wallet_missing": "Ví đó không còn được lưu trên máy này.",
   "local_address": "Địa chỉ của bạn",
   "local_balance_unavailable": "Chưa đọc được số dư — bộ chỉ mục không trả lời. Điều này không nói gì về tiền của bạn.",
+  "local_balance_partial": "Ví này dùng nhiều địa chỉ hơn số Phoenix quét, nên số dư đang hiện THẤP HƠN số thật. Mở bằng Lace, Eternl hoặc Yoroi để thấy đủ. Không mất gì cả — Phoenix chỉ đang nhìn được một phần.",
   "local_autolock_label": "Tự khoá sau khi không dùng",
   "local_autolock_minutes": "{{n}} phút",
   "local_autolock_never": "Không bao giờ (không khuyến nghị)",
