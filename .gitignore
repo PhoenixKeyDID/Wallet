@@ -28,3 +28,6 @@ CLAUDE.md
 npm-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+
+# Agent scratch
+.claude/
