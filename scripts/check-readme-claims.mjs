@@ -12,6 +12,14 @@
  * unmentioned for a release — so a contributor reading the README would not know
  * to run it, and a reviewer would not know it existed.
  *
+ * And "documented" is the weaker half of that promise. A gate that exists, is
+ * written up in the README, and is never run by CI reads to every visitor as
+ * enforcement while enforcing nothing — the strongest possible version of the
+ * failure this file was written to prevent. It is not hypothetical here: CI
+ * went for a release without ever running `build:extension`, so the package
+ * users install was checked by nobody while the repo described a gate for it.
+ * So each `check:*` must appear in **both** the README and the workflow.
+ *
  * Both are mechanical facts. Nothing about them needs a human to remember.
  *
  * The count comes from `vitest list`, which collects without executing, so this
@@ -55,6 +63,19 @@ for (const name of Object.keys(pkg.scripts ?? {})) {
   }
 }
 
+// ─── and CI must actually run them ────────────────────────────────────────────
+
+const workflow = readFileSync(join(REPO, ".github", "workflows", "ci.yml"), "utf8");
+for (const name of Object.keys(pkg.scripts ?? {})) {
+  if (!name.startsWith("check:")) continue;
+  if (!workflow.includes(`bun run ${name}`)) {
+    problems.push(
+      `\`${name}\` is documented as a gate but .github/workflows/ci.yml never runs it — ` +
+        `a gate CI skips is a claim of enforcement with no enforcement behind it`,
+    );
+  }
+}
+
 for (const [, name] of readme.matchAll(/bun run ([a-z][a-z:-]*)/g)) {
   if (!(name in (pkg.scripts ?? {}))) {
     problems.push(`README tells the reader to run \`bun run ${name}\`, which package.json does not define`);
@@ -67,4 +88,6 @@ if (problems.length) {
   process.exit(1);
 }
 
-console.log(`README claims OK — ${actual} tests, and every check:* gate is documented`);
+console.log(
+  `README claims OK — ${actual} tests, and every check:* gate is both documented and run by CI`,
+);
