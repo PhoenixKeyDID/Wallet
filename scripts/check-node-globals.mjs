@@ -12,6 +12,12 @@
  * the rule is enforced here rather than left to whoever adds the next import.
  *
  * Type-only imports are exempt — they are erased before anything runs.
+ *
+ * The scan reads whole import *statements*, not lines. An earlier version tested
+ * each line for both `import ` and `@stricahq`, so an import spread over several
+ * lines matched neither test and the file was skipped entirely — `governance.ts`
+ * was already through that hole on main, importing `@stricahq/typhonjs` at
+ * runtime with no shim anywhere in the file, while this gate printed OK.
  */
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -31,18 +37,26 @@ function* walk(dir) {
 
 const offenders = [];
 
+// One statement, however many lines it spans: anchored at a line-start `import`,
+// then lazily up to the first quoted string, which is the module specifier.
+const IMPORT_RE = /^import\b[\s\S]*?["']([^"']+)["']/gm;
+const lineOf = (text, index) => text.slice(0, index).split("\n").length;
+
 for (const file of [...walk(join(REPO, "src")), ...walk(join(REPO, "extension", "src"))]) {
-  const lines = readFileSync(file, "utf8").split("\n");
-  const imports = lines
-    .map((line, i) => ({ line: line.trim(), no: i + 1 }))
-    .filter(({ line }) => line.startsWith("import "));
+  const text = readFileSync(file, "utf8");
+  const imports = [...text.matchAll(IMPORT_RE)].map((m) => ({
+    statement: m[0],
+    specifier: m[1],
+    no: lineOf(text, m.index),
+  }));
 
   const stricahq = imports.find(
-    ({ line }) => line.includes("@stricahq") && !line.startsWith("import type "),
+    ({ statement, specifier }) =>
+      specifier.startsWith("@stricahq") && !/^import\s+type\b/.test(statement),
   );
   if (!stricahq) continue;
 
-  const shim = imports.find(({ line }) => line.includes(`/${SHIM}"`));
+  const shim = imports.find(({ specifier }) => specifier.endsWith(`/${SHIM}`));
   if (!shim) {
     offenders.push(`${relative(REPO, file)}:${stricahq.no} imports @stricahq without importing the ${SHIM} shim`);
   } else if (shim.no > stricahq.no) {
