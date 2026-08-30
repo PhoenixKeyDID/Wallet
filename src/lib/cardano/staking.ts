@@ -11,6 +11,7 @@
  *
  * ⚠️ EXPERIMENTAL / UNAUDITED, same caveat as `tx.ts`.
  */
+import "../node-globals";
 import { Buffer } from "buffer";
 import BigNumber from "bignumber.js";
 import { Transaction, address as tyAddress, types as tyTypes, utils as tyUtils } from "@stricahq/typhonjs";

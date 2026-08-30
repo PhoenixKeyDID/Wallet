@@ -49,6 +49,17 @@ function installWallets(wallets: Record<string, Partial<FakeWallet>>): void {
   (globalThis as { window?: unknown }).window = { cardano: root };
 }
 
+/**
+ * A witness set with one real vkey witness: `{0: [[pubkey32, sig64]]}`.
+ *
+ * The fixture used to be `"a0"` — an empty CBOR map, i.e. a wallet that signed
+ * nothing. Every assertion below still passed, because nothing asserted that a
+ * signature came back. A stub that returns no signature cannot tell you whether
+ * the code merges signatures correctly; it can only tell you it does not crash.
+ */
+const WITNESS_SET_HEX =
+  "a10081825820" + "aa".repeat(32) + "5840" + "bb".repeat(64);
+
 function fullApi(overrides: Partial<Cip30Api> = {}): Cip30Api {
   return {
     getNetworkId: vi.fn().mockResolvedValue(0),
@@ -58,7 +69,7 @@ function fullApi(overrides: Partial<Cip30Api> = {}): Cip30Api {
     getUnusedAddresses: vi.fn().mockResolvedValue([]),
     getChangeAddress: vi.fn().mockResolvedValue("01cc"),
     getRewardAddresses: vi.fn().mockResolvedValue(["e0dd"]),
-    signTx: vi.fn().mockResolvedValue("a0"),
+    signTx: vi.fn().mockResolvedValue(WITNESS_SET_HEX),
     signData: vi.fn().mockResolvedValue({ signature: "s", key: "k" }),
     submitTx: vi.fn().mockResolvedValue("txhash"),
     ...overrides,
@@ -238,6 +249,20 @@ describe("signAndSubmitCip30 — the guard sits before the signature", () => {
     const api = fullApi();
     await expect(signAndSubmitCip30(api, built, 0)).resolves.toBe("txhash");
     expect(api.signTx).toHaveBeenCalledWith("unsignedcbor", true);
+  });
+
+  /**
+   * A wallet that returns from `signTx` without throwing has signed. Reading
+   * zero witnesses out of its answer therefore means we failed to parse it —
+   * and submitting anyway puts the *unsigned* body on the wire while handing
+   * the caller a tx hash that reads as success. The node rejects it, the user
+   * has a hash for a transaction that does not exist, and nothing in the app
+   * ever said anything was wrong.
+   */
+  it("refuses to submit when it read no signature out of the wallet's answer", async () => {
+    const api = fullApi({ signTx: vi.fn().mockResolvedValue("a0") });
+    await expect(signAndSubmitCip30(api, built, 0)).rejects.toThrow("tx_no_witnesses_decoded");
+    expect(api.submitTx).not.toHaveBeenCalled();
   });
 
   it("refuses to even ASK for a signature once the network drifted", async () => {

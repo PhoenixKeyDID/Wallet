@@ -5,7 +5,9 @@
 
 # build / test output
 /dist
+/dist-extension
 /build
+extension/smoke/out
 /coverage
 *.tsbuildinfo
 

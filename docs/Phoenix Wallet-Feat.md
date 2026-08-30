@@ -15,13 +15,13 @@ This document is the source of truth for the module's behaviour and security mod
 
 ## 1. What this is
 
-A pure-JavaScript Cardano wallet module for the browser. It lets a user **view balances** and **build/sign/submit transactions** (send, delegate, withdraw rewards, vote, register as a dRep) — and hand off to the Midnight NIGHT redemption portal — **without the web page ever holding a spendable seed**.
+A pure-JavaScript Cardano wallet module for the browser. It lets a user **view balances** and **build/sign/submit transactions** (send, delegate, withdraw rewards, vote, register as a dRep) — and hand off to the Midnight NIGHT redemption portal. Three of its four modes do this **without the web page ever holding a spendable seed**; the fourth, local self-custody, holds one deliberately (§2.1a).
 
 It is designed to drop into a host application (the PhoenixKey Standard wallet / Frontend). It can be used **like a traditional wallet** (connect a standard Cardano extension, or watch an account public key) or alongside a **Phoenix DID** for the Phoenix-specific custody view — both at once.
 
 ### Non-goals (v1)
 
-- It does **not** create wallets, generate seeds, or import a recovery phrase. There is no "paste your 24 words" flow, by design (§3).
+- It does **not** hold keys in the page for the Connect, Watch-only or Phoenix-custody modes. Local self-custody is a **separate, opt-in fourth mode** with its own threat model — see §2.1.
 - It does **not** spend from a Phoenix DID custody address (that is a script address; v1 shows its balance only — see §5.6).
 - It does **not** build or sign the NIGHT redemption transaction; `/night` hands off to the official Midnight portal (§5.7).
 
@@ -31,14 +31,33 @@ It is designed to drop into a host application (the PhoenixKey Standard wallet /
 
 Security is the top priority and is enforced **structurally**, not by promises.
 
-### 2.1 Core invariant — no hot wallet, ever
+### 2.1 Where the signing key lives — per mode
 
-The page never holds a spendable seed or private key. There is no code path that accepts a mnemonic or derives a signing key. This is verifiable: a search of `src/` for `bip39`, `mnemonicTo*`, or `fromMnemonic` returns nothing. Every spend is either:
+This section used to read "no hot wallet, ever" and claim the page never holds a spendable seed. That was true when the module had three modes. It is **no longer true**, and the old wording is kept out of this document on purpose: a security claim that has quietly stopped holding is worse than no claim, because readers act on it.
 
-1. **delegated to a CIP-30 browser extension** (Lace / Eternl / Typhon) — the extension holds the keys, shows the transaction, and the user approves it there; or
-2. (phase 2) **co-signed offline** over an air-gap QR channel — the seed stays on a separate offline device.
+Three of the four modes still hold no key at all:
 
-Consequence: this module holds no key, so a bug in it has no key to exfiltrate. The worst a malformed transaction can do is be rejected at the extension's review screen or bounce at the node; it is never the final signing authority, so it cannot move funds on its own.
+1. **Connect (CIP-30)** — delegated to a browser extension (Lace / Eternl / Typhon). The extension holds the keys, shows the transaction, and the user approves it there.
+2. **Watch-only (`acct_xvk`)** — a public key only; it can derive addresses and read balances, never sign (§2.2).
+3. **Phoenix custody** — a script address, read-only in v1; spending needs the controller key on the air-gap / mobile path.
+
+For those three the old consequence still stands: the module holds no key, so a bug in it has no key to exfiltrate, and it is never the final signing authority.
+
+**Local self-custody (§2.1a) is different, and the difference is the whole point of reading this section.** It exists so that somebody with no extension installed and no DID still has a wallet. The cost is that the signing key is in the page.
+
+### 2.1a Local self-custody — the mode that does hold a key
+
+The seed is generated in the page (BIP-39, 24 words by default, `crypto.getRandomValues` with no `Math.random` fallback), encrypted at rest with Argon2id + AES-256-GCM, and held in memory only while unlocked.
+
+What this mode is **not** protected against, stated plainly because the mitigations do not reach it:
+
+- **Any script that executes in the page can reach an unlocked key.** A compromised dependency, a hostile browser extension with host access, or an XSS bug in the host app defeats the vault, because the vault protects data at rest, not a running page.
+- **Encryption at rest is only as strong as the password.** Argon2id raises the cost per guess; it does not rescue a weak password.
+- Therefore this mode is appropriate for **small, hot balances** — spending money, not savings. For anything worth protecting, Connect mode with a hardware-backed extension remains the recommended path, and the UI says so.
+
+The browser extension packaging (§ README) narrows the first bullet — its own origin, no remote code permitted by CSP — but does not remove it.
+
+**The self-custody code is confined to `src/lib/keystore/` and reachable only from `LocalWalletPanel`.** No other mode imports it, so the three key-free modes stay key-free. The on-screen assurance is swapped per mode for the same reason this section was rewritten: leaving "this page never asks for your recovery phrase" visible while the page asks for exactly that would train the habit the notice exists to prevent.
 
 ### 2.2 Invariant M2-WATCH — watch-only cannot sign
 
@@ -81,6 +100,7 @@ The confirm button stays disabled until the retyped tail matches. For Send and D
 | **Watch-only (`acct_xvk`)** | ✅ derived client-side from the account public key | ❌ view only | ✅ |
 | **Phoenix custody (by DID)** | ✅ reads the script address + public balances | ❌ view only | ✅ view |
 | **Air-gap QR co-sign** | ✅ (reuses the watch-only key) | 🟡 offline device signs → QR witness | 🟡 web scaffolded; enabled when the offline signer ships |
+| **Local self-custody** 🔑 | ✅ | ✅ **this page signs** — the one mode that holds a key (§2.1a) | ✅ |
 
 The Phoenix custody address is a **script** (enterprise) address spent by the `did_payment` validator, which requires a controller-key witness. A CIP-30 extension cannot sign for it, so v1 exposes the custody balance for viewing; spending goes through the air-gap / mobile signer path in a later phase.
 

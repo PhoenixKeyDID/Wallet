@@ -10,6 +10,7 @@
  * Invariant M2-WATCH still holds: `acct_xvk` is a PUBLIC key, this module
  * only builds addresses, it never signs and never sees a private key.
  */
+import "../node-globals";
 import { Buffer } from "buffer";
 import type { Bip32PublicKey } from "@stricahq/bip32ed25519";
 import { address as tyAddress, types as tyTypes } from "@stricahq/typhonjs";

@@ -15,6 +15,7 @@
  * `getPubDRepKey()` and derive the key-hash (blake2b-224). Wallets without CIP-95
  * see those two sections disabled with an explanation; we never fake the key.
  */
+import "../../lib/node-globals";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Buffer } from "buffer";
 import { useTranslation } from "react-i18next";

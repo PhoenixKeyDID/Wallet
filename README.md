@@ -36,20 +36,31 @@ refers to (Wallet API v2, Rebirthme, DappConnector) are canonical in
 
 **Full specification & security model:** [`docs/Phoenix Wallet-Feat.md`](<docs/Phoenix Wallet-Feat.md>).
 
-## Design: no hot wallet, ever
+## Design: where your keys live
 
-This module **never holds a spendable seed in the browser.** There is no
-"create wallet / paste your 24 words" flow. It only ever sees public data or
-hands the signing off to something that already holds the key. A page in this
-module will never ask you for a recovery phrase — anyone who does is trying to
-scam you.
+Four modes. **Three of them never hold a key**; the fourth does, on purpose, and
+says so everywhere it can.
 
-| Mode | View | Sign / spend |
-|---|---|---|
-| **Connect (CIP-30)** — Lace / Eternl | ✅ from the extension | ✅ the extension signs |
-| **Watch-only (`acct_xvk`)** | ✅ derived client-side from the account public key | ❌ view only |
-| **Phoenix custody (your own DID)** | ✅ reads the script address + balances, signed in | ❌ view only (v1) |
-| **Air-gap QR co-sign** | ✅ | 🟡 scaffolded; enabled when the offline signer ships |
+| Mode | View | Sign / spend | Key held in the page? |
+|---|---|---|---|
+| **Connect (CIP-30)** — Lace / Eternl | ✅ from the extension | ✅ the extension signs | ❌ never |
+| **Watch-only (`acct_xvk`)** | ✅ derived client-side from the account public key | ❌ view only | ❌ never |
+| **Phoenix custody (your own DID)** | ✅ reads the script address + balances, signed in | ❌ view only (v1) | ❌ never |
+| **Air-gap QR co-sign** | ✅ | 🟡 scaffolded; enabled when the offline signer ships | ❌ never |
+| **Local self-custody** 🔑 | ✅ | ✅ this page signs | ⚠️ **yes, while unlocked** |
+
+In the first four, a page here will never ask for your recovery phrase — anyone
+who does is trying to scam you. **Local self-custody is the one exception**, and
+it exists so that someone with no extension installed and no DID still has a
+wallet. Choosing it means accepting that the signing key is in the page: the seed
+is encrypted at rest (Argon2id + AES-256-GCM) and held in memory only while
+unlocked, but any script that runs in the page can reach an unlocked key. Use it
+for **small, hot balances** — for anything worth protecting, connect a
+hardware-backed extension instead.
+
+The self-custody code lives in `src/lib/keystore/` and is reachable only from
+`LocalWalletPanel`; no other mode imports it, so the three key-free modes stay
+key-free. Full threat model: [`docs/Phoenix Wallet-Feat.md`](<docs/Phoenix Wallet-Feat.md>) §2.1 / §2.1a.
 
 - **Traditional use** — connect a standard Cardano extension (or watch an
   account key). No DID needed; no data goes to the Phoenix backend. (Reading
@@ -79,6 +90,8 @@ src/lib/night.ts   NIGHT redemption handoff (URL builder + info)
 src/lib/wallet.ts  read-path calls to the PhoenixKey backend wallet API
 src/components/     wallet/* and night/* UI (React)
 src/app/            example /wallet and /night pages
+src/lib/keystore/  local self-custody: mnemonic · derive · vault · signer · storage · session
+extension/          the browser extension — popup that mounts the same UI
 locales/            en · vi · ja · zh   (namespaces: wallet, night)
 ```
 
@@ -116,13 +129,75 @@ session at all — they never touch the Phoenix backend.
 
 ```bash
 bun install
-bun run test    # 178 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
+bun run test          # 218 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
 bun run typecheck
+bun run check:locales # 4 languages × 2 namespaces must stay in step
+bun run check:urls    # no ungated outbound URL ships under src/
+bun run check:node-globals # the Node-globals shim is imported before @stricahq
+bun run check:bundle  # the browser build runs with no Node globals (see below)
 ```
 
 The address golden vectors are copied verbatim from the Rust core
 (`phoenix_address.rs`): if the browser derivation ever drifts from the canonical
 CLI derivation, `address.test.ts` fails.
+
+## The browser extension
+
+```bash
+bun install
+bun run build:extension     # → dist-extension/
+```
+
+Then in Chrome: **chrome://extensions** → Developer mode → **Load unpacked** →
+pick `dist-extension/`.
+
+The popup mounts the same `LocalWalletPanel` the web page uses, so there is one
+implementation of key handling rather than two that can drift apart. What the
+extension adds is a container the web page cannot give you:
+
+- **Its own origin.** An XSS anywhere on a website is an XSS in a wallet running
+  on that website. The extension page is not scriptable from any web page.
+- **`script-src 'self'`.** Nothing is fetched at runtime — not the locale files,
+  not a font, not a CDN script. Everything that can run shipped in the package.
+- **`host_permissions` limited to the three Koios hosts.** That list is checkable
+  against the build: the only `fetch` in `dist-extension/popup.js` targets Koios.
+
+The build is deliberately **not minified**. An open-source wallet whose published
+bundle cannot be read is open source in name only — you should be able to rebuild
+from a tag and diff it against what you installed. That costs bundle size, and
+that trade is made on purpose.
+
+Keys live only while the popup is open. Closing it destroys the JavaScript
+context and the keys with it, so nothing sits unlocked in a background worker.
+
+### `check:bundle` — why a separate check exists
+
+Two things can be wrong with this wallet while every test is green, and both of
+them are about the difference between Node and a browser.
+
+Icarus derivation reaches PBKDF2, which transitively pulls `readable-stream@2`.
+That package reads a bare `process` while it is still evaluating, and it imports
+`events`, which the bundler replaces with a stub that throws on first touch. So:
+
+- a build could derive a **different address** in Chrome than in `vitest` — funds
+  sent to an address their owner cannot reach; or
+- loading the wallet could **throw before it paints**, which is what happened. The
+  built extension popup rendered blank with `ReferenceError: process is not
+  defined`, while 218 unit tests, the type check and an earlier version of this
+  very check all passed. The earlier version ran the browser bundle under plain
+  Node, where `process` exists — so it proved the maths and missed the crash.
+
+`bun run check:bundle` now deletes `process`, `global` and `setImmediate` before
+importing the bundle, then asserts the golden-vector address and a vault
+round-trip. `src/lib/node-globals.ts` is what puts `process` back in a browser,
+and `bun run check:node-globals` enforces that every module reaching `@stricahq`
+imports it *first* — ES modules evaluate imports in source order, so a shim
+imported second is a shim that never ran.
+
+Verified in a real browser on 2026-08-29 against the built bundle: create →
+confirm phrase → encrypt → address, lock → wrong password rejected → unlock →
+same address, and restore-from-phrase reproducing the same address with a fresh
+salt and ciphertext.
 
 ## Status & roadmap
 
@@ -137,6 +212,13 @@ CLI derivation, `address.test.ts` fails.
   needs its fee re-confirmed on preprod before mainnet use.
 - 🟡 Air-gap QR co-sign — the web side is scaffolded; it turns on when the
   offline mobile signer is available.
+- 🟡 Local self-custody wallet (no DID required) — create, restore, unlock,
+  auto-lock, and local signing are implemented and covered by golden vectors
+  against `cardano-serialization-lib`, so a phrase made here restores in Lace,
+  Yoroi or Eternl. Unaudited; the popup UI has not yet been exercised in a real
+  browser.
+- 🔴 CIP-30 injection — the extension does not yet present itself to dApps as a
+  wallet. It signs from its own popup only.
 
 ## License
 

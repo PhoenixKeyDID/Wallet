@@ -15,6 +15,7 @@
  * (`GET /wallet/{did}/all`); this module only assembles an address from a hash
  * you already hold, and computes the anchor asset-name.
  */
+import "../node-globals";
 import { Buffer } from "buffer";
 import { address as tyAddress, types as tyTypes } from "@stricahq/typhonjs";
 import { blake2b256, toHex } from "./hash";

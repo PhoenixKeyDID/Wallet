@@ -11,9 +11,10 @@
  * The same unsigned CBOR feeds the air-gap QR path (`qr.ts`) once the offline
  * signer ships.
  */
+import "../node-globals";
 import { Buffer } from "buffer";
 import BigNumber from "bignumber.js";
-import { Decoder } from "@stricahq/cbors";
+import { CborTag, Decoder } from "@stricahq/cbors";
 import { Transaction, utils as tyUtils, types as tyTypes } from "@stricahq/typhonjs";
 import { assertSameNetwork, type Cip30Api } from "./cip30";
 
@@ -147,10 +148,26 @@ export function buildPaymentTx(req: SendRequest): BuiltTx {
   return { transaction: tx, unsignedCbor: built.payload, hash: built.hash, fee: tx.getFee().toString() };
 }
 
-/** Decode a CIP-30 witness-set CBOR into typhon VKeyWitnesses (map key 0). */
+/**
+ * Decode a CIP-30 witness-set CBOR into typhon VKeyWitnesses (map key 0).
+ *
+ * Key 0 may arrive two ways, and both are correct CBOR. A plain array is the
+ * older encoding; from the Conway era a wallet may wrap the same array in
+ * **tag 258**, the RFC 8742 set tag, because the ledger spec models a witness
+ * set as a set. `@stricahq/cbors` surfaces the second form as a `CborTag`, not
+ * an array — so a decoder that only checks `Array.isArray` reads a perfectly
+ * good signature as "no signatures at all".
+ *
+ * That failure is silent and expensive: the caller merges zero witnesses,
+ * rebuilds, and submits the *unsigned* body while everything upstream still
+ * looks successful. Measured against `@stricahq/cbors`: tag-258 input decoded
+ * to `CborTag`, and the old code returned `[]` for it.
+ */
 export function decodeVkeyWitnesses(witnessSetHex: string): tyTypes.VKeyWitness[] {
   const { value } = Decoder.decode(Buffer.from(witnessSetHex, "hex"));
-  const set = value instanceof Map ? value.get(0) : undefined;
+  const key0 = value instanceof Map ? value.get(0) : undefined;
+  // Tag 258 (RFC 8742 "set") wraps the same array a plain encoding gives directly.
+  const set = key0 instanceof CborTag ? key0.value : key0;
   if (!Array.isArray(set)) return [];
   return (set as Array<[Buffer, Buffer]>).map(([publicKey, signature]) => ({
     publicKey: Buffer.from(publicKey),
@@ -175,7 +192,13 @@ export async function signAndSubmitCip30(
 ): Promise<string> {
   await assertSameNetwork(api, expectedNetworkId);
   const witnessSetHex = await api.signTx(built.unsignedCbor, true);
-  for (const w of decodeVkeyWitnesses(witnessSetHex)) built.transaction.addWitness(w);
+  const witnesses = decodeVkeyWitnesses(witnessSetHex);
+  // A wallet that returned from `signTx` without erroring has signed something.
+  // Zero witnesses therefore means we failed to read what it sent, not that
+  // there was nothing to read — and submitting here would put an unsigned body
+  // on the wire while handing the caller a tx hash that looks like success.
+  if (witnesses.length === 0) throw new Error("tx_no_witnesses_decoded");
+  for (const w of witnesses) built.transaction.addWitness(w);
   const signed = built.transaction.buildTransaction();
   try {
     return await api.submitTx(signed.payload);
