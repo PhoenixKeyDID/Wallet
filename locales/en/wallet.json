@@ -301,5 +301,16 @@
   "sign_key_not_in_wallet": "This transaction needs a key this wallet does not hold. Nothing was signed.",
   "sign_network_mismatch": "This wallet belongs to a different network than the transaction. Nothing was signed.",
   "local_seed_notice": "This mode does ask for your recovery phrase — because it is the mode where this device holds your wallet. Type it only here, on a page you reached yourself, and never because someone asked you to.",
-  "local_mainnet_warning": "Real funds. This mode is unaudited."
+  "local_mainnet_warning": "Real funds. This mode is unaudited.",
+  "watch_by_address": "Watch one address",
+  "watch_by_address_hint": "Safer — reveals only that address",
+  "watch_by_xvk": "Watch a whole account",
+  "watch_by_xvk_hint": "Account public key — links every address",
+  "watch_addr_intro": "Paste one Cardano address to see its balance. Nothing is derived and nothing is stored — this reveals only the address you paste.",
+  "watch_addr_label": "Cardano address",
+  "watch_addr_scope_note": "This balance covers only the address above. Other addresses of the same wallet are not included.",
+  "watch_addr_required": "Paste a Cardano address first.",
+  "watch_addr_invalid": "That is not a valid Cardano address.",
+  "watch_addr_is_stake": "That is a stake address. It holds no balance of its own — paste a payment address (addr1… / addr_test1…).",
+  "watch_xvk_links_account": "An account key reveals every address of this wallet, including ones you have not used yet, and its whole history. To check one balance, use “Watch one address” instead."
 }

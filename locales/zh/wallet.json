@@ -301,5 +301,16 @@
   "sign_key_not_in_wallet": "此交易需要本钱包没有的密钥。未签署任何内容。",
   "sign_network_mismatch": "本钱包所属网络与该交易不同。未签署任何内容。",
   "local_seed_notice": "此模式确实会询问你的助记词——因为这正是由本设备保管钱包的模式。只在你自己打开的这个页面上输入，绝不要因为有人要求你而输入。",
-  "local_mainnet_warning": "真实资金。此模式未经审计。"
+  "local_mainnet_warning": "真实资金。此模式未经审计。",
+  "watch_by_address": "查看单个地址",
+  "watch_by_address_hint": "更安全 — 仅暴露该地址",
+  "watch_by_xvk": "查看整个账户",
+  "watch_by_xvk_hint": "账户公钥 — 关联全部地址",
+  "watch_addr_intro": "粘贴一个 Cardano 地址即可查看余额。不做任何派生，也不保存 — 仅暴露你粘贴的这个地址。",
+  "watch_addr_label": "Cardano 地址",
+  "watch_addr_scope_note": "此余额仅统计上方地址。同一钱包的其他地址不计入。",
+  "watch_addr_required": "请先粘贴一个 Cardano 地址。",
+  "watch_addr_invalid": "这不是有效的 Cardano 地址。",
+  "watch_addr_is_stake": "这是质押地址，其本身不持有余额 — 请粘贴支付地址（addr1… / addr_test1…）。",
+  "watch_xvk_links_account": "账户密钥会暴露该钱包的全部地址（包括尚未使用的）及其完整历史。若只想查看一个余额，请改用“查看单个地址”。"
 }
