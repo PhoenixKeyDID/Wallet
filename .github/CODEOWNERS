@@ -16,6 +16,16 @@
 /src/lib/cardano/qr.ts          @AladinContract
 /locales/                       @AladinContract
 
+# The self-custody keystore. These files hold the recovery phrase, the vault
+# that encrypts it, and the signing keys derived from it — the only code in the
+# repo where a bug loses funds that nobody else is holding for the user.
+/src/lib/keystore/                                @AladinContract
+/src/components/wallet/LocalWalletPanel.tsx       @AladinContract
+
+# The extension package. `manifest.json` decides which hosts the wallet may
+# reach and what may execute inside it; loosening either is a one-line diff.
+/extension/                                       @AladinContract
+
 # Files that carry an outbound URL. `scripts/check-urls.mjs` fails CI when an
 # absolute URL appears in src/ outside this list, so the two cannot drift: to
 # add a URL anywhere else you must add the file here, which pulls in a

@@ -8,6 +8,7 @@
  *
  * ⚠️ EXPERIMENTAL / UNAUDITED — see `tx.ts` header. This module moves funds.
  */
+import "../node-globals";
 import BigNumber from "bignumber.js";
 import { Transaction, utils as tyUtils, types as tyTypes } from "@stricahq/typhonjs";
 import { toNetworkId, type PhoenixNetwork, type BuiltTx } from "@/lib/cardano";

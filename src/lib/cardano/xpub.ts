@@ -20,6 +20,7 @@
  * states this normatively for the general case. Hence the standing rule for this
  * module: `acct_xvk` is never persisted, never transmitted, never synced.
  */
+import "../node-globals";
 import { Buffer } from "buffer";
 import { bech32 } from "bech32";
 import { Bip32PublicKey } from "@stricahq/bip32ed25519";

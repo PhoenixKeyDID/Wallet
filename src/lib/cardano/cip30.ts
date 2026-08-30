@@ -8,6 +8,7 @@
  *
  * Spec surface: `PhoenixKey-Specs/PhoenixKey-DappConnector-Feat.md`.
  */
+import "../node-globals";
 import { Buffer } from "buffer";
 import { Decoder } from "@stricahq/cbors";
 

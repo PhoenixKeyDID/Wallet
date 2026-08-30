@@ -7,9 +7,10 @@
  * CORS, fine for read-only client calls. When the PhoenixKey backend exposes a
  * UTxO/params proxy (`PhoenixKey-Wallet-API-v2`), swap `PROVIDER_BASE` for it.
  */
+import "../node-globals";
 import { Buffer } from "buffer";
 import BigNumber from "bignumber.js";
-import { types as tyTypes } from "@stricahq/typhonjs";
+import { types as tyTypes, utils as tyUtils } from "@stricahq/typhonjs";
 
 type ProtocolParams = tyTypes.ProtocolParams;
 import type { PhoenixNetwork } from "./address";
@@ -164,6 +165,75 @@ export function assetLabel(assetNameHex: string): string {
   } catch {
     return assetNameHex;
   }
+}
+
+/**
+ * Spendable UTxOs for a set of addresses, in the shape the transaction builder
+ * takes.
+ *
+ * UTxOs carrying an inline datum or a reference script are skipped, the same
+ * rule `decodeUtxosToInputs` applies to the CIP-30 path. Such a UTxO usually
+ * belongs to a script — spending it casually can destroy a reference script
+ * other people depend on, and the datum is not ours to reinterpret.
+ */
+export async function fetchUtxos(
+  network: PhoenixNetwork,
+  addresses: string[],
+): Promise<tyTypes.Input[]> {
+  if (addresses.length === 0) return [];
+  const rows = await koios<
+    Array<{
+      tx_hash: string;
+      tx_index: number;
+      value: string;
+      address: string;
+      inline_datum: unknown;
+      reference_script: unknown;
+      asset_list: Array<{ policy_id: string; asset_name: string | null; quantity: string }> | null;
+    }>
+  >(network, "/address_utxos", { _addresses: addresses, _extended: true });
+
+  const out: tyTypes.Input[] = [];
+  for (const r of rows) {
+    if (r.inline_datum != null || r.reference_script != null) continue;
+    out.push({
+      txId: r.tx_hash,
+      index: r.tx_index,
+      amount: new BigNumber(r.value),
+      tokens: (r.asset_list ?? []).map((a) => ({
+        policyId: a.policy_id,
+        assetName: a.asset_name ?? "",
+        amount: new BigNumber(a.quantity),
+      })),
+      address: tyUtils.getAddressFromString(r.address) as tyTypes.ShelleyAddress,
+    });
+  }
+  return out;
+}
+
+/**
+ * Submit a signed transaction.
+ *
+ * Koios `/submittx` takes the raw CBOR bytes, not hex and not JSON, so this is
+ * the one call that does not go through `koios()`. A non-2xx response carries
+ * the node's rejection reason in the body, and that text is the only useful
+ * thing a user or a developer has when a transaction bounces — so it is put
+ * into the error rather than swallowed behind the status code.
+ */
+export async function submitTx(network: PhoenixNetwork, signedCborHex: string): Promise<string> {
+  const body = Buffer.from(signedCborHex, "hex");
+  const res = await fetch(`${koiosBase(network)}/submittx`, {
+    method: "POST",
+    headers: { "content-type": "application/cbor" },
+    body: body as unknown as BodyInit,
+  });
+  const text = (await res.text()).trim();
+  if (!res.ok) throw new Error(`Koios /submittx → HTTP ${res.status}: ${text.slice(0, 300)}`);
+  const hash = text.replace(/^"|"$/g, "");
+  if (!/^[0-9a-f]{64}$/i.test(hash)) {
+    throw new Error(`Koios /submittx returned no tx hash: ${text.slice(0, 300)}`);
+  }
+  return hash.toLowerCase();
 }
 
 export { tyTypes };
