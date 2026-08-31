@@ -32,14 +32,14 @@ const REPO = join(dirname(fileURLToPath(import.meta.url)), "..");
  * `assertNoUnscannedSourceRoot()` below is what stops that happening again. A
  * hand-maintained list drifts; a list that fails CI when it falls behind does not.
  */
-const SCAN_ROOTS = ["src", "extension", "scripts"];
+const SCAN_ROOTS = ["src", "extension", "scripts", "docs"];
 
 /** Never source, or gated wholesale elsewhere. */
 const NOT_SOURCE = new Set([".git", "node_modules", "dist-extension", ".claude", "_Agents", "locales", ".github"]);
 
 /** Build output living inside a source root. Not written by hand, not shipped. */
 const BUILD_OUTPUT = new Set(["extension/smoke/out"]);
-const SOURCE_EXT = /\.(m|c)?[jt]sx?$|\.json$|\.html$/;
+const SOURCE_EXT = /\.(m|c)?[jt]sx?$|\.json$|\.html$|\.md$/;
 const CODEOWNERS = join(REPO, ".github", "CODEOWNERS");
 
 /**
@@ -105,7 +105,14 @@ assertNoUnscannedSourceRoot();
 const rules = gatedPaths();
 const offenders = [];
 
-for (const file of SCAN_ROOTS.flatMap((root) => [...walk(join(REPO, root))])) {
+// Files sitting at the repo root are scanned by rule, not by a list: README.md is
+// the most-read file in a public repo and carried the install link nobody gated.
+const rootFiles = readdirSync(REPO)
+  .sort()
+  .map((entry) => join(REPO, entry))
+  .filter((full) => !statSync(full).isDirectory() && SOURCE_EXT.test(full));
+
+for (const file of [...rootFiles, ...SCAN_ROOTS.flatMap((root) => [...walk(join(REPO, root))])]) {
   const rel = relative(REPO, file).split(sep).join("/");
   const found = new Set(readFileSync(file, "utf8").match(URL_RE) ?? []);
   if (found.size === 0) continue;
@@ -127,5 +134,5 @@ if (offenders.length) {
 }
 
 console.log(
-  `Outbound-URL guard OK — every absolute URL under ${SCAN_ROOTS.map((r) => r + "/").join(", ")} sits in a CODEOWNERS-gated file.`,
+  `Outbound-URL guard OK — every absolute URL at the repo root and under ${SCAN_ROOTS.map((r) => r + "/").join(", ")} sits in a CODEOWNERS-gated file.`,
 );
