@@ -237,3 +237,24 @@ export async function submitTx(network: PhoenixNetwork, signedCborHex: string): 
 }
 
 export { tyTypes };
+
+/**
+ * Does any address in this batch hold anything?
+ *
+ * The probe `gapScan` runs on. It asks `fetchAddressBalance`, whose response
+ * shape is already load-bearing elsewhere in this file, rather than a
+ * per-address history endpoint whose row format would have to be taken on
+ * trust — a wrong assumption there would silently under-report a balance, which
+ * is the exact bug the scan exists to fix.
+ *
+ * Every UTxO carries min-ADA, so an address holding anything at all has a
+ * positive lovelace balance; there is no "holds only tokens" case to miss.
+ */
+export async function anyAddressFunded(
+  network: PhoenixNetwork,
+  addresses: string[],
+): Promise<boolean> {
+  if (addresses.length === 0) return false;
+  const { lovelace } = await fetchAddressBalance(network, addresses);
+  return lovelace > BigInt("0");
+}

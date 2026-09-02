@@ -72,3 +72,41 @@ describe("the addresses a local wallet can receive at but never sees", () => {
     expect(acct.external.every((a) => a.index < GAP_LIMIT)).toBe(true);
   });
 });
+
+/**
+ * Building deeper than the default, which is what a scanned depth is for.
+ */
+describe("buildAccount depth", () => {
+  it("derives the requested number of addresses per chain, with their keys", async () => {
+    const acct = await accountFromEntropy(ENTROPY, 0, NETWORK, 60);
+    expect(acct.external).toHaveLength(60);
+    expect(acct.internal).toHaveLength(60);
+    expect(allAddresses(acct)).toHaveLength(120);
+    // The point of deriving them is being able to spend them.
+    for (const a of [acct.external[59]!, acct.internal[59]!]) {
+      expect(acct.keyByHash.has(a.keyHashHex)).toBe(true);
+    }
+  });
+
+  it("agrees with the default account on every address they share", async () => {
+    // A deeper account must be an extension of the shallow one, not a different
+    // wallet: same addresses at the same indices, or a restore would move a
+    // person's funds to addresses their other wallet does not know.
+    const shallow = await accountFromEntropy(ENTROPY, 0, NETWORK);
+    const deep = await accountFromEntropy(ENTROPY, 0, NETWORK, 60);
+    expect(deep.accountXvkHex).toBe(shallow.accountXvkHex);
+    expect(deep.rewardAddress).toBe(shallow.rewardAddress);
+    for (let i = 0; i < GAP_LIMIT; i += 1) {
+      expect(deep.external[i]!.address).toBe(shallow.external[i]!.address);
+      expect(deep.internal[i]!.address).toBe(shallow.internal[i]!.address);
+    }
+  });
+
+  it("refuses a depth below the gap limit rather than quietly narrowing the wallet", async () => {
+    // Shrinking is how funds disappear: a smaller account watches fewer
+    // addresses, and the money at the ones it dropped stops being visible.
+    await expect(accountFromEntropy(ENTROPY, 0, NETWORK, 0)).rejects.toThrow();
+    await expect(accountFromEntropy(ENTROPY, 0, NETWORK, GAP_LIMIT - 1)).rejects.toThrow();
+    await expect(accountFromEntropy(ENTROPY, 0, NETWORK, 20.5)).rejects.toThrow();
+  });
+});
