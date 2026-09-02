@@ -17,6 +17,7 @@ import {
   isKnownMethod,
   GRANTED_METHODS,
   PER_USE_METHODS,
+  CIP30_MANDATORY_METHODS,
   API_ERROR,
 } from "../protocol";
 
@@ -122,6 +123,28 @@ describe("requirementOf — deny by default", () => {
     // of allow-list turns into an allow-everything.
     expect(requirementOf("constructor")).toBe("refused");
     expect(requirementOf("hasOwnProperty")).toBe("refused");
+  });
+});
+
+describe("the mandatory CIP-30 surface is actually routable", () => {
+  /**
+   * The provider can only offer what the background will carry. A method
+   * present on `window.cardano.phoenix` but absent from both tiers here is a
+   * function that exists, is called, and is refused — which reads to a dApp as
+   * a broken wallet rather than as a wallet that says no.
+   */
+  it("routes every method a CIP-30 wallet must have", () => {
+    const unroutable = CIP30_MANDATORY_METHODS.filter((m) => requirementOf(m) === "refused");
+    expect(unroutable).toEqual([]);
+  });
+
+  it("still asks every time for the ones that spend", () => {
+    // Routable must not quietly mean "granted once". Named separately so that
+    // satisfying the test above by moving a signer into GRANTED_METHODS fails.
+    for (const m of ["signTx", "signData", "submitTx"]) {
+      expect(CIP30_MANDATORY_METHODS).toContain(m);
+      expect(requirementOf(m)).toBe("approval");
+    }
   });
 });
 

@@ -55,6 +55,31 @@ export const GRANTED_METHODS = [
  */
 export const PER_USE_METHODS = ["signTx", "signData", "submitTx"] as const;
 
+/**
+ * The CIP-30 methods a wallet must have to be usable at all.
+ *
+ * Named here, in the file both sides already import, because this is a contract
+ * between two files that never call each other: `inpage/provider.ts` builds the
+ * object a dApp receives, and `src/lib/cardano/cip30.ts` decides whether an
+ * injected wallet is complete enough to connect to. Phoenix's web build runs
+ * that second check against Phoenix's own extension — so a method dropped from
+ * the provider makes this wallet reject itself, with a message about the
+ * *user's* wallet being unusable. Keeping the list in one place is what lets a
+ * test catch that instead of a user.
+ */
+export const CIP30_MANDATORY_METHODS = [
+  "getNetworkId",
+  "getUtxos",
+  "getBalance",
+  "getUsedAddresses",
+  "getUnusedAddresses",
+  "getChangeAddress",
+  "getRewardAddresses",
+  "signTx",
+  "signData",
+  "submitTx",
+] as const;
+
 export const ENABLE_METHOD = "enable" as const;
 
 export type OpenMethod = (typeof OPEN_METHODS)[number];

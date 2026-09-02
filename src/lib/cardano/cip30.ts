@@ -196,7 +196,7 @@ export type EnableOptions = {
  * to call with the user's money. Fail here, at the boundary, rather than with
  * "api.signTx is not a function" halfway through a send.
  */
-const REQUIRED_API_METHODS = [
+export const REQUIRED_API_METHODS = [
   "getNetworkId",
   "getUtxos",
   "getBalance",

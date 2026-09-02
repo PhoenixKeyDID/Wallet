@@ -236,6 +236,8 @@ Extension only. Four processes, and the split between them is the design:
 
 **What is not proven.** None of this has been loaded into a real Chrome. `chrome.storage.session`, the CSP on a live `chrome-extension://` page, and window lifecycle under real focus changes are checked by `check:package` and by unit tests over `rpc/protocol.ts` — which is a statement about the rules, not about the browser running them. §7 carries this as 🟡 until someone loads the package.
 
+**One more thing a test holds together.** Phoenix's web build runs its own completeness check on every injected wallet it finds — including this one. A method dropped from the provider would make Phoenix refuse Phoenix, with an on-screen message blaming the user's wallet. The mandatory list therefore lives in `rpc/protocol.ts`, which both sides import, and a test asserts the injected api satisfies the web build's list exactly.
+
 ---
 
 ## 6. Threat model & mitigations
@@ -291,7 +293,7 @@ Components use the host's Tailwind tokens (`bg-bg1`, `text-text-dim`, `teal-bran
 
 ## 9. Testing & verification
 
-- `bun run typecheck` (tsc, no emit) and `bun run test` must both pass, along with the `check:*` gates listed in the README. Tests cover: address golden vectors vs the Rust reference, CKDpub derivation, UTxO decoding, send/stake/governance builders and their on-chain balance equations, the CIP-30 provider guards, the dApp URL pins, the retype-confirm tail (`ConfirmGate`), the indexer error mapping, the air-gap integrity binding, the vault round-trip, what `lock()` actually scrubs, and the refusal to treat a web page as an extension context.
+- `bun run typecheck` (tsc, no emit) and `bun run test` must both pass, along with the `check:*` gates listed in the README. Tests cover: address golden vectors vs the Rust reference, CKDpub derivation, UTxO decoding, send/stake/governance builders and their on-chain balance equations, the CIP-30 provider guards, the dApp URL pins, the retype-confirm tail (`ConfirmGate`), the indexer error mapping, the air-gap integrity binding, the vault round-trip, what `lock()` actually scrubs, the refusal to treat a web page as an extension context, the rules deciding which websites this wallet answers (§5.8), and the injected provider driven end to end against a fake page — including the check that Phoenix's web build accepts Phoenix's own extension, which is a contract between two files that never call each other.
 - **No test count is written here on purpose.** This line has read 98, 104, 130, 218, 241 and 249 at various times — each correct on the day it was typed and wrong a week later. A reader who catches one stale number stops believing the rest of the page, including the parts about what this wallet does *not* protect them from, so the cost of the habit is paid in the wrong place. The count belongs in exactly one file, next to the command that produces it, where a machine can compare the two.
 - The send and delegation paths were exercised on **preprod** with disposable funds (send tADA, mint + send a native token, delegate to a stake pool), each confirmed on-chain, before this spec was written. Governance signing carries the preprod caveat in §7.
 - Privacy: chain reads go to public Koios (which sees the queried addresses and the client IP). No data is sent to a Phoenix backend, and nothing sends a key anywhere — see §10 for the precise version of that sentence, which is narrower than "keys never leave the wallet".
