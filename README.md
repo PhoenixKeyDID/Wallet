@@ -59,8 +59,10 @@ for **small, hot balances** — for anything worth protecting, connect a
 hardware-backed extension instead.
 
 The self-custody code lives in `src/lib/keystore/` and is reachable only from
-`LocalWalletPanel`; no other mode imports it, so the three key-free modes stay
-key-free. `bun run check:keystore-boundary` fails CI if that ever stops being
+`LocalWalletPanel` and the extension's approval window; no other mode imports it,
+so the three key-free modes stay key-free. Nothing that runs inside a website can
+reach it — the content script and the injected provider relay bytes and hold
+nothing. `bun run check:keystore-boundary` fails CI if that ever stops being
 true: this sentence is what makes the other modes safe to describe as key-free,
 so it is checked rather than remembered. Full threat model:
 [`docs/Phoenix Wallet-Feat.md`](<docs/Phoenix Wallet-Feat.md>) §2.1 / §2.1a.
@@ -132,12 +134,12 @@ session at all — they never touch the Phoenix backend.
 
 ```bash
 bun install
-bun run test          # 299 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
+bun run test          # 353 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
 bun run typecheck
 bun run check:locales # 4 languages × 2 namespaces must stay in step
 bun run check:urls    # no ungated outbound URL ships at the repo root and under src/, extension/, scripts/, docs/
 bun run check:node-globals # the Node-globals shim is imported before @stricahq
-bun run check:keystore-boundary # only LocalWalletPanel may import the keystore
+bun run check:keystore-boundary # only the two key-holding screens may import the keystore
 bun run check:bundle  # the browser build runs with no Node globals (see below)
 bun run check:package # the built extension is loadable and claims no reach it does not use
 bun run check:readme  # the two claims above that go stale on their own

@@ -20,6 +20,10 @@ export default defineConfig({
 
     // The cardano core is pure TypeScript — no DOM needed.
     environment: "node",
-    include: ["src/**/*.test.ts"],
+    // `extension/` is included because the rules deciding which websites this
+    // wallet answers live there, in `rpc/protocol.ts`. Leaving them out of the
+    // test run would mean the one part of the extension that *can* be tested
+    // was the part nothing tested.
+    include: ["src/**/*.test.ts", "extension/**/*.test.ts"],
   },
 });

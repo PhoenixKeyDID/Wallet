@@ -26,6 +26,23 @@ const ALLOWED = [
   "src/lib/keystore/", // the module itself
   "src/components/wallet/LocalWalletPanel.tsx", // the one screen that holds a key
   "extension/smoke/", // the browser-bundle check, which must exercise the real thing
+  /*
+   * The approval window a website's request opens. It is the second screen that
+   * holds a key, and it exists because the first one cannot do this job: a
+   * password typed into a page served by a dApp is indistinguishable from a
+   * phishing copy of that page, so the unlock form has to live on a
+   * `chrome-extension://` origin. Signing for a dApp therefore has to happen
+   * where the keys are, and that is here.
+   *
+   * What this widening does NOT do, and what keeps the claim it changes true:
+   * the keystore is still unreachable from every Connect and Watch-only screen,
+   * and still unreachable from anything a web page loads. `content/bridge.ts`
+   * and `inpage/provider.ts` are the two files that run inside a website, and
+   * neither is on this list — they relay bytes and hold nothing. The sentence
+   * in README and in the spec (§2.1a) was updated in the same commit as this
+   * line, which is the trade the gate's failure message asks for.
+   */
+  "extension/src/approve.tsx",
 ];
 
 const SCAN = ["src", "extension"];
