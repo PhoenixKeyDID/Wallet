@@ -37,6 +37,8 @@ import {
   openVault,
   vaultToJson,
   MIN_PASSWORD_LENGTH,
+  localPort,
+  changeAddressHexFor,
   type Account,
 } from "@/lib/keystore";
 import {
@@ -53,6 +55,7 @@ import {
 } from "@/lib/keystore/session";
 import { fetchAddressBalance, type PhoenixNetwork } from "@/lib/cardano";
 import { BalanceView, type DisplayAsset } from "./BalanceView";
+import { WalletTabs } from "./WalletTabs";
 
 type Step = "list" | "words" | "confirm" | "password" | "restore" | "unlock" | "open";
 
@@ -104,6 +107,59 @@ export function LocalWalletPanel() {
   // the words without destroying them: see the `locked` subscriber below.
   const [concealed, setConcealed] = useState(false);
   const [lockMs, setLockMs] = useState<number>(DEFAULT_LOCK_TIMEOUT_MS);
+  /**
+   * Change address for the feature tabs, hex, resolved once per unlock.
+   *
+   * `null` while it is being resolved. The tabs stay hidden until it lands
+   * rather than mounting with an empty string: two of the panels decode this
+   * during render, and an empty string decodes to a throw inside a `useMemo`,
+   * which React surfaces as a blank screen rather than as an error anyone can
+   * act on.
+   */
+  const [changeAddrHex, setChangeAddrHex] = useState<string | null>(null);
+
+  /**
+   * The unlocked account, wrapped in the shape the feature tabs speak.
+   *
+   * This is the only place in the app allowed to build it: `check:keystore-
+   * boundary` permits exactly this file to import `@/lib/keystore`, which is
+   * what keeps "Connect, Watch-only and custody never touch a signing key" a
+   * property of the import graph rather than a promise in a document. The tabs
+   * receive a finished `WalletPort` and cannot reach back through it.
+   *
+   * `null` while locked, so the tabs unmount with the keys — a stale port would
+   * hold a reference to an account whose private keys were just zeroed.
+   */
+  const port = useMemo(
+    () => (account ? localPort(account) : null),
+    [account],
+  );
+
+  // Resolve the change address whenever a different account is unlocked, and
+  // drop it the moment there is no account — a change address outliving its
+  // keys would let the next unlocked wallet build a transaction paying its
+  // change to the previous wallet.
+  useEffect(() => {
+    if (!account) {
+      setChangeAddrHex(null);
+      return;
+    }
+    let alive = true;
+    setChangeAddrHex(null);
+    void changeAddressHexFor(account)
+      .then((hex) => {
+        if (alive) setChangeAddrHex(hex);
+      })
+      .catch(() => {
+        // `changeAddressHexFor` already swallows indexer failure and falls back
+        // to internal index 0; reaching here means the account has no internal
+        // addresses at all, which is a broken account, not a broken network.
+        if (alive) setChangeAddrHex(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [account]);
 
   const refresh = useCallback(async () => {
     setWallets(await store.list());
@@ -585,6 +641,18 @@ export function LocalWalletPanel() {
               <p className="text-xs text-amber-brand">⚠ {t("local_balance_partial")}</p>
             )}
           </div>
+
+          {/* Send / Receive / Staking / Governance / Connect, driven by the
+              local keys instead of an extension. The network is passed, not
+              offered: this account was derived for exactly one network, so the
+              testnet picker the CIP-30 path needs would be a way to choose
+              wrong here. Until the change address resolves, say the wallet is
+              getting ready rather than showing a form that cannot build. */}
+          {port && changeAddrHex ? (
+            <WalletTabs port={port} network={account.network} changeAddress={changeAddrHex} />
+          ) : (
+            <p className="text-xs text-text-hint">{t("local_tabs_preparing")}</p>
+          )}
 
           <div className="rounded-brand border border-border-soft bg-bg1 p-5 space-y-3">
             <label className="flex items-center gap-2 text-xs">

@@ -14,12 +14,9 @@ import {
 } from "@/components/wallet/ConfirmGate";
 import { reportSignError } from "@/components/wallet/signError";
 import {
-  type Cip30Api,
+  type WalletPort,
   type PhoenixNetwork,
   type BuiltTx,
-  decodeUtxosToInputs,
-  signAndSubmitCip30,
-  cip30NetworkId,
   fetchProtocolParams,
   fetchTipSlot,
   formatAda,
@@ -50,11 +47,11 @@ type WithdrawReview = { amount: bigint; built: BuiltTx };
  * connected wallet reports via `getRewardAddresses()[0]` — never an invented key.
  */
 export function StakingPanel({
-  api,
+  port,
   network,
   changeAddress,
 }: {
-  api: Cip30Api;
+  port: WalletPort;
   network: PhoenixNetwork;
   changeAddress: string;
 }) {
@@ -90,9 +87,7 @@ export function StakingPanel({
       setLoadingAccount(true);
       setLoadError(false);
       try {
-        const addrs = await api.getRewardAddresses();
-        const hex = addrs?.[0];
-        if (!hex) throw new Error(t("stake_account_error"));
+        const hex = await port.getRewardAddressHex();
         const bech32Addr = rewardAddressFromHex(hex).getBech32();
         if (cancelled) return;
         setRewardAddressHex(hex);
@@ -112,7 +107,7 @@ export function StakingPanel({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [api, network, reloadKey]);
+  }, [port, network, reloadKey]);
 
   const refreshAccountState = async () => {
     if (!rewardAddressBech32) return;
@@ -139,13 +134,12 @@ export function StakingPanel({
   };
 
   const prepareInputs = async () => {
-    const [utxosHex, params, tip] = await Promise.all([
-      api.getUtxos(),
+    const [inputs, params, tip] = await Promise.all([
+      port.getInputs(),
       fetchProtocolParams(network),
       fetchTipSlot(network),
     ]);
-    if (!utxosHex || utxosHex.length === 0) throw new Error(t("no_utxos"));
-    const inputs = decodeUtxosToInputs(utxosHex);
+    if (inputs.length === 0) throw new Error(t("no_utxos"));
     const changeAddr = tyUtils.getAddressFromHex(
       Buffer.from(changeAddress, "hex"),
     ) as tyTypes.ShelleyAddress;
@@ -183,7 +177,7 @@ export function StakingPanel({
     if (!poolReview) return;
     setBusy(true);
     try {
-      const hash = await signAndSubmitCip30(api, poolReview.built, cip30NetworkId(network));
+      const hash = await port.signAndSubmit(poolReview.built, network);
       toastSuccess("delegate_submitted", { hash: hash.slice(0, 12) });
       setPoolReview(null);
       setChecked(false);
@@ -229,7 +223,7 @@ export function StakingPanel({
     if (!withdrawReview) return;
     setBusy(true);
     try {
-      const hash = await signAndSubmitCip30(api, withdrawReview.built, cip30NetworkId(network));
+      const hash = await port.signAndSubmit(withdrawReview.built, network);
       toastSuccess("withdraw_submitted", { hash: hash.slice(0, 12) });
       setWithdrawReview(null);
       setChecked(false);

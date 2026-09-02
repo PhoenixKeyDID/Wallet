@@ -37,7 +37,18 @@ export type Cip30Wallet = {
   isEnabled(): Promise<boolean>;
 };
 
-type InjectedWallet = Omit<Cip30Wallet, "key">;
+/**
+ * The object a wallet actually injects, as opposed to the one we hand upward.
+ *
+ * The difference is the argument: CIP-30 defines `enable(extensions?)` on the
+ * injected object, while `Cip30Wallet.enable()` above is our own wrapper and
+ * takes none — callers should not be choosing extensions. Spelling this as
+ * `Omit<Cip30Wallet, "key">` made the two the same shape and made requesting an
+ * extension a type error.
+ */
+type InjectedWallet = Omit<Cip30Wallet, "key" | "enable"> & {
+  enable(extensions?: { extensions: { cip: number }[] }): Promise<Cip30Api>;
+};
 
 function cardanoRoot(): Record<string, InjectedWallet> | undefined {
   if (typeof window === "undefined") return undefined;
@@ -94,7 +105,24 @@ export function listWallets(): Cip30Wallet[] {
         apiVersion,
         name: readProp(w, "name"),
         icon: readProp(w, "icon"),
-        enable: () => w.enable(),
+        // Ask for CIP-95 by name. `api.cip95` does not exist unless the dApp
+        // requests the extension at enable time, so without this argument the
+        // governance path's CIP-95 probe can only ever find the older top-level
+        // spelling — and on a conformant wallet it finds nothing at all, which
+        // reads to the user as "your wallet does not support voting".
+        //
+        // Retry bare on failure rather than treating it as a refusal to connect:
+        // a wallet that does not know the extension may reject the argument, and
+        // losing the whole connection over an optional feature would be the
+        // worse trade. Governance then degrades to disabled, which is what it
+        // was before this argument existed.
+        enable: async () => {
+          try {
+            return await w.enable({ extensions: [{ cip: 95 }] });
+          } catch {
+            return await w.enable();
+          }
+        },
         isEnabled: () => w.isEnabled(),
       });
     } catch {
@@ -174,6 +202,14 @@ const REQUIRED_API_METHODS = [
   "getBalance",
   "getChangeAddress",
   "getRewardAddresses",
+  // Both address lists are CIP-30 mandatory, and the wallet port calls them on
+  // every receive and every ownership check. They were absent from this list
+  // while nothing called them; leaving them absent now would move the failure
+  // from "this wallet is not usable, pick another" at connect time to
+  // "`api.getUnusedAddresses is not a function`" thrown mid-screen, which is
+  // exactly the class of failure this gate was written to prevent.
+  "getUsedAddresses",
+  "getUnusedAddresses",
   "signTx",
   "submitTx",
 ] as const;

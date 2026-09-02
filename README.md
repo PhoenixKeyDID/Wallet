@@ -132,7 +132,7 @@ session at all — they never touch the Phoenix backend.
 
 ```bash
 bun install
-bun run test          # 261 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
+bun run test          # 299 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
 bun run typecheck
 bun run check:locales # 4 languages × 2 namespaces must stay in step
 bun run check:urls    # no ungated outbound URL ships at the repo root and under src/, extension/, scripts/, docs/
@@ -229,10 +229,14 @@ salt and ciphertext.
   auto-lock are implemented and covered by golden vectors against
   `cardano-serialization-lib`, so a phrase made here restores in Lace, Yoroi or
   Eternl. The popup was exercised in a real browser on 2026-08-29 (see the
-  extension section above). Unaudited. Local signing exists in
-  `src/lib/keystore/signer.ts` but **is not wired into Send, Staking or
-  Governance** — those still take a CIP-30 API, so a wallet created here cannot
-  yet spend from this page.
+  extension section above). Unaudited. Local signing is wired into Send,
+  Staking and Governance: those panels take a `WalletPort`, which either an
+  extension (`cip30Port`) or an unlocked local account (`localPort`) can
+  satisfy, so a wallet created here spends from here. **The local path's only
+  review is this page's own confirm screen** — there is no popup outside the
+  document the way an extension has one, so anything with script access to this
+  origin can mis-draw what you are approving. Amounts worth attacking belong in
+  hardware or an extension.
 - 🔴 CIP-30 injection — the extension does not yet present itself to dApps as a
   wallet. It signs from its own popup only.
 

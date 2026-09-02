@@ -16,5 +16,6 @@ export * from "./provider";
 export * from "./qr";
 export * from "./watchAddress";
 export * from "./tx";
+export * from "./walletPort";
 // Feature-tab builders (send/receive/staking/governance/connect) are imported
 // via their direct path `@/lib/cardano/<feature>` to avoid barrel name clashes.

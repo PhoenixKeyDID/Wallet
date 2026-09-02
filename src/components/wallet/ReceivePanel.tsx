@@ -7,7 +7,7 @@ import { useTranslation } from "react-i18next";
 import { QRCodeSVG } from "qrcode.react";
 import { utils as tyUtils } from "@stricahq/typhonjs";
 import { toastApiError } from "@/lib/toast";
-import { parseAcctXvk, type Cip30Api, type PhoenixNetwork } from "@/lib/cardano";
+import { parseAcctXvk, type PhoenixNetwork, type WalletPort } from "@/lib/cardano";
 import {
   deriveReceiveAddress,
   deriveReceiveRange,
@@ -56,10 +56,10 @@ function AddressCard({
 type Ownership = "checking" | "match" | "mismatch" | "unknown" | null;
 
 export function ReceivePanel({
-  api,
+  port,
   network,
 }: {
-  api: Cip30Api;
+  port: WalletPort;
   network: PhoenixNetwork;
   changeAddress: string;
 }) {
@@ -73,8 +73,7 @@ export function ReceivePanel({
   const loadWalletAddress = async () => {
     setLoadingWallet(true);
     try {
-      const unused = await api.getUnusedAddresses();
-      const hex = unused && unused.length > 0 ? unused[0] : (await api.getUsedAddresses())[0];
+      const hex = await port.getReceiveAddressHex();
       if (!hex) {
         setWalletAddress(null);
       } else {
@@ -127,9 +126,8 @@ export function ReceivePanel({
     };
     settle("checking");
     try {
-      const [used, unused] = await Promise.all([api.getUsedAddresses(), api.getUnusedAddresses()]);
       const owned = new Set(
-        [...(used ?? []), ...(unused ?? [])].map((hex) =>
+        (await port.getOwnedAddressesHex()).map((hex) =>
           tyUtils.getAddressFromHex(Buffer.from(hex, "hex")).getBech32(),
         ),
       );

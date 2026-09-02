@@ -30,12 +30,9 @@ import {
 } from "@/components/wallet/ConfirmGate";
 import { reportSignError } from "@/components/wallet/signError";
 import {
-  type Cip30Api,
+  type WalletPort,
   type PhoenixNetwork,
   type BuiltTx,
-  decodeUtxosToInputs,
-  signAndSubmitCip30,
-  cip30NetworkId,
   fetchProtocolParams,
   fetchTipSlot,
   formatAda,
@@ -107,11 +104,11 @@ type Pending = {
 };
 
 export function GovernancePanel({
-  api,
+  port,
   network,
   changeAddress,
 }: {
-  api: Cip30Api;
+  port: WalletPort;
   network: PhoenixNetwork;
   changeAddress: string;
 }) {
@@ -134,49 +131,37 @@ export function GovernancePanel({
     let alive = true;
     (async () => {
       try {
-        const rewards = await api.getRewardAddresses();
-        if (alive && rewards[0]) setRewardBech32(rewardAddressFrom(rewards[0]).getBech32());
+        const rewardHex = await port.getRewardAddressHex();
+        if (alive) setRewardBech32(rewardAddressFrom(rewardHex).getBech32());
       } catch {
         /* reward address unavailable — delegation still selectable, build will error clearly */
       }
-      // CIP-95 probe (optional extension). Never throws into the UI.
-      try {
-        const anyApi = api as unknown as {
-          getPubDRepKey?: () => Promise<string>;
-          cip95?: { getPubDRepKey?: () => Promise<string> };
-        };
-        const holder = anyApi.cip95 ?? anyApi;
-        const fn = anyApi.getPubDRepKey ?? anyApi.cip95?.getPubDRepKey;
-        if (fn) {
-          const pubHex = await fn.call(holder);
-          if (alive) setDrepKeyHash(toHex(blake2b224(fromHex(pubHex))));
-        } else if (alive) {
-          setDrepKeyHash("");
-        }
-      } catch {
-        if (alive) setDrepKeyHash("");
-      }
+      // The dRep key: a CIP-95 probe on the extension path, a derived chain-3
+      // key on the local one. `getDrepKeyHashHex` answers null rather than
+      // throwing, so a wallet without governance support still renders.
+      const drepHash = await port.getDrepKeyHashHex();
+      if (alive) setDrepKeyHash(drepHash ?? "");
     })();
     return () => {
       alive = false;
     };
-  }, [api]);
+  }, [port]);
 
   /** Load fresh inputs / params / ttl for a build. */
   const loadCtx = useCallback(async (): Promise<GovBuildCtx> => {
-    const [utxosHex, protocolParams, tip] = await Promise.all([
-      api.getUtxos(),
+    const [inputs, protocolParams, tip] = await Promise.all([
+      port.getInputs(),
       fetchProtocolParams(network),
       fetchTipSlot(network),
     ]);
-    if (!utxosHex || utxosHex.length === 0) throw new Error(t("no_utxos"));
+    if (inputs.length === 0) throw new Error(t("no_utxos"));
     return {
-      inputs: decodeUtxosToInputs(utxosHex),
+      inputs,
       protocolParams,
       changeAddress: changeAddr,
       ttl: tip + 7200,
     };
-  }, [api, network, changeAddr, t]);
+  }, [port, network, changeAddr, t]);
 
   const resetReview = () => {
     setPending(null);
@@ -199,7 +184,7 @@ export function GovernancePanel({
     if (!pending) return;
     setBusy(true);
     try {
-      const hash = await signAndSubmitCip30(api, pending.built, cip30NetworkId(network));
+      const hash = await port.signAndSubmit(pending.built, network);
       toastSuccess("gov_submitted", { hash: hash.slice(0, 12) });
       pending.onDone?.();
       resetReview();

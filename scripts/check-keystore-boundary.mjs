@@ -29,7 +29,35 @@ const ALLOWED = [
 ];
 
 const SCAN = ["src", "extension"];
+/**
+ * Static `import`/`export … from`, anchored at the start of a line.
+ *
+ * The anchor is why the second pattern below exists. This one only sees a
+ * statement beginning in column 0, which is every *static* import — but a
+ * module can also be pulled in from inside a function body, indented, and that
+ * is the shape someone reaches for when the obvious spelling is rejected.
+ */
 const IMPORT_RE = /^(?:import|export)\b[\s\S]*?["']([^"']+)["']/gm;
+/**
+ * Dynamic `import("…")` and `require("…")`, anywhere, at any indentation.
+ *
+ * Verified against this gate before it was added: a file containing only
+ * `export const CLS = "probe";` and `return import("@/lib/keystore/port")`
+ * inside a function was reported **OK**, as was the same file using
+ * `require(...)`. The pattern above cannot reach either — its `^` anchor skips
+ * indented code, and its lazy body stops at the first quote it meets, which in
+ * such a file is an unrelated string literal.
+ *
+ * An invariant a document asserts and a machine only half-checks is still a
+ * wish; it is just a wish that prints OK.
+ *
+ * What this still does not stop, stated so nobody mistakes the gate for more
+ * than it is: a specifier that is never written literally — `eval("require")(…)`,
+ * a path assembled from variables, a re-export laundered through a third module.
+ * This is a textual check, so it catches the accident and the shortcut, not the
+ * author who is deliberately hiding. That author is what code review is for.
+ */
+const DYNAMIC_RE = /\b(?:import|require)\s*\(\s*["']([^"']+)["']/g;
 /** Any spelling of the keystore path: `@/lib/keystore`, `../keystore/vault`, … */
 const KEYSTORE_RE = /(^|\/)lib\/keystore(\/|$)|(^|\/)keystore\/(vault|derive|signer|session|storage|mnemonic)$/;
 
@@ -51,10 +79,18 @@ for (const file of SCAN.flatMap((d) => [...walk(join(REPO, d))])) {
   const r = rel(file);
   if (allowed(r)) continue;
   const text = readFileSync(file, "utf8");
-  for (const m of text.matchAll(IMPORT_RE)) {
-    const spec = m[1];
-    if (KEYSTORE_RE.test(spec.replace(/^@\//, "src/").replace(/^\.\.?\//, ""))) {
-      offenders.push(`${r}:${lineOf(text, m.index)} imports "${spec}"`);
+  const seen = new Set();
+  for (const re of [IMPORT_RE, DYNAMIC_RE]) {
+    re.lastIndex = 0; // these are /g and shared across files
+    for (const m of text.matchAll(re)) {
+      const spec = m[1];
+      if (!KEYSTORE_RE.test(spec.replace(/^@\//, "src/").replace(/^\.\.?\//, ""))) continue;
+      const line = lineOf(text, m.index);
+      // A static import can match both patterns; report the site once.
+      const at = `${r}:${line}`;
+      if (seen.has(at)) continue;
+      seen.add(at);
+      offenders.push(`${at} imports "${spec}"`);
     }
   }
 }
