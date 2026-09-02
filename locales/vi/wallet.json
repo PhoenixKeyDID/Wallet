@@ -337,5 +337,7 @@
   "cip30_unsupported": "Ví không làm được điều trang web yêu cầu.",
   "cip30_no_collateral": "Ví này không giữ tài sản thế chấp, nên không ký được giao dịch hợp đồng thông minh.",
   "cip30_not_a_tx": "Thứ trang web gửi sang không phải một giao dịch.",
-  "cip30_cannot_read_tx": "Không đọc được giao dịch này, nên không ký gì cả."
+  "cip30_cannot_read_tx": "Không đọc được giao dịch này, nên không ký gì cả.",
+  "addr_unwatched_title": "Ví của bạn không kể tên địa chỉ này",
+  "addr_unwatched_body": "Khoá đúng là của bạn, nhưng ví đang kết nối không kể địa chỉ này trong số các địa chỉ nó theo dõi. Tiền gửi vào đây có thể không hiện trong số dư và có thể không tiêu được từ ví này — tiền không mất, vì khoá vẫn sinh ra được nó, nhưng muốn lấy lại có khi phải dùng ví khác. Thường là do địa chỉ chỉ-nhận (enterprise) hoặc chỉ số quá cao. Nếu không có lý do rõ ràng, hãy dùng “Hiện địa chỉ của tôi” ở trên."
 }

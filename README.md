@@ -134,7 +134,7 @@ session at all — they never touch the Phoenix backend.
 
 ```bash
 bun install
-bun run test          # 364 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
+bun run test          # 374 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
 bun run typecheck
 bun run check:locales # 4 languages × 2 namespaces must stay in step
 bun run check:urls    # no ungated outbound URL ships at the repo root and under src/, extension/, scripts/, docs/
