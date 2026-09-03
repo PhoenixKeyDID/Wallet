@@ -94,6 +94,11 @@ export function LocalWalletPanel() {
   const [lovelace, setLovelace] = useState<bigint>(BigInt("0"));
   const [assets, setAssets] = useState<DisplayAsset[]>([]);
   const [balanceOk, setBalanceOk] = useState(false);
+  // True when the last address inside the gap-limit window still holds funds,
+  // which proves the window is too small to be the whole wallet. See
+  // `loadBalance` — this exists so a balance that is smaller than the truth
+  // cannot be shown as if it were the truth.
+  const [balanceMayBePartial, setBalanceMayBePartial] = useState(false);
   const [revealed, setRevealed] = useState<string | null>(null);
   // Set when the wallet locks while a recovery phrase is on screen. It hides
   // the words without destroying them: see the `locked` subscriber below.
@@ -263,11 +268,34 @@ export function LocalWalletPanel() {
 
   const loadBalance = async (acct: Account) => {
     setBalanceOk(false);
+    setBalanceMayBePartial(false);
     try {
       const bal = await fetchAddressBalance(acct.network, allAddresses(acct));
       setLovelace(bal.lovelace);
       setAssets(bal.assets);
       setBalanceOk(true);
+
+      // `GAP_LIMIT` addresses are derived per chain and then the scan stops.
+      // BIP-44 asks for something else: keep going until twenty *consecutive*
+      // unused addresses. A wallet restored from a long-lived Lace or Eternl
+      // account can therefore hold funds past the window, and the number shown
+      // here would be smaller than the truth with nothing on screen saying so —
+      // which a user reads as "my money is gone".
+      //
+      // Extending the scan is the real fix and is the top item in the spec's
+      // roadmap. What this does is remove the *silence*: if the very last
+      // address in the window still holds a balance, the window provably ended
+      // too early. One extra request, no false alarms — it can only miss the
+      // case of an address that was used and later emptied, never invent one.
+      const tails = [acct.external.at(-1)?.address, acct.internal.at(-1)?.address].filter(
+        (a): a is string => Boolean(a),
+      );
+      if (tails.length > 0) {
+        const tail = await fetchAddressBalance(acct.network, tails);
+        if (tail.lovelace > BigInt("0") || tail.assets.length > 0) {
+          setBalanceMayBePartial(true);
+        }
+      }
     } catch (e) {
       // A dead indexer must not look like an empty wallet.
       toastApiError(e);
@@ -553,6 +581,9 @@ export function LocalWalletPanel() {
             </div>
             <BalanceView lovelace={lovelace} assets={assets} address={primaryAddress(account)} />
             {!balanceOk && <p className="text-xs text-text-hint">{t("local_balance_unavailable")}</p>}
+            {balanceOk && balanceMayBePartial && (
+              <p className="text-xs text-amber-brand">⚠ {t("local_balance_partial")}</p>
+            )}
           </div>
 
           <div className="rounded-brand border border-border-soft bg-bg1 p-5 space-y-3">

@@ -60,7 +60,10 @@ hardware-backed extension instead.
 
 The self-custody code lives in `src/lib/keystore/` and is reachable only from
 `LocalWalletPanel`; no other mode imports it, so the three key-free modes stay
-key-free. Full threat model: [`docs/Phoenix Wallet-Feat.md`](<docs/Phoenix Wallet-Feat.md>) §2.1 / §2.1a.
+key-free. `bun run check:keystore-boundary` fails CI if that ever stops being
+true: this sentence is what makes the other modes safe to describe as key-free,
+so it is checked rather than remembered. Full threat model:
+[`docs/Phoenix Wallet-Feat.md`](<docs/Phoenix Wallet-Feat.md>) §2.1 / §2.1a.
 
 - **Traditional use** — connect a standard Cardano extension (or watch an
   account key). No DID needed; no data goes to the Phoenix backend. (Reading
@@ -129,13 +132,23 @@ session at all — they never touch the Phoenix backend.
 
 ```bash
 bun install
-bun run test          # 241 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
+bun run test          # 261 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
 bun run typecheck
 bun run check:locales # 4 languages × 2 namespaces must stay in step
-bun run check:urls    # no ungated outbound URL ships under src/
+bun run check:urls    # no ungated outbound URL ships at the repo root and under src/, extension/, scripts/, docs/
 bun run check:node-globals # the Node-globals shim is imported before @stricahq
+bun run check:keystore-boundary # only LocalWalletPanel may import the keystore
 bun run check:bundle  # the browser build runs with no Node globals (see below)
+bun run check:package # the built extension is loadable and claims no reach it does not use
+bun run check:readme  # the two claims above that go stale on their own
 ```
+
+The last one exists because the test count in this file has read 98, 104, 130,
+218, 241 and 249 at various times — each correct when written, each wrong a week
+later. A figure nobody can trust is worse than no figure, because a reader who
+catches one stale number stops believing the rest of the page, including the
+parts about what this wallet does *not* protect you from. So the number and the
+list of gates are both checked mechanically rather than remembered.
 
 The address golden vectors are copied verbatim from the Rust core
 (`phoenix_address.rs`): if the browser derivation ever drifts from the canonical
@@ -212,11 +225,14 @@ salt and ciphertext.
   needs its fee re-confirmed on preprod before mainnet use.
 - 🟡 Air-gap QR co-sign — the web side is scaffolded; it turns on when the
   offline mobile signer is available.
-- 🟡 Local self-custody wallet (no DID required) — create, restore, unlock,
-  auto-lock, and local signing are implemented and covered by golden vectors
-  against `cardano-serialization-lib`, so a phrase made here restores in Lace,
-  Yoroi or Eternl. Unaudited; the popup UI has not yet been exercised in a real
-  browser.
+- 🟡 Local self-custody wallet (no DID required) — create, restore, unlock and
+  auto-lock are implemented and covered by golden vectors against
+  `cardano-serialization-lib`, so a phrase made here restores in Lace, Yoroi or
+  Eternl. The popup was exercised in a real browser on 2026-08-29 (see the
+  extension section above). Unaudited. Local signing exists in
+  `src/lib/keystore/signer.ts` but **is not wired into Send, Staking or
+  Governance** — those still take a CIP-30 API, so a wallet created here cannot
+  yet spend from this page.
 - 🔴 CIP-30 injection — the extension does not yet present itself to dApps as a
   wallet. It signs from its own popup only.
 

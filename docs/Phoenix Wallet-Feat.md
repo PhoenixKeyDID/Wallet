@@ -15,7 +15,9 @@ This document is the source of truth for the module's behaviour and security mod
 
 ## 1. What this is
 
-A pure-JavaScript Cardano wallet module for the browser. It lets a user **view balances** and **build/sign/submit transactions** (send, delegate, withdraw rewards, vote, register as a dRep) — and hand off to the Midnight NIGHT redemption portal. Three of its four modes do this **without the web page ever holding a spendable seed**; the fourth, local self-custody, holds one deliberately (§2.1a).
+A pure-JavaScript Cardano wallet module for the browser. It lets a user **view balances** and **build, sign and submit transactions** (send, delegate, withdraw rewards, vote, register as a dRep) — and hand off to the Midnight NIGHT redemption portal.
+
+**Which mode signs, today.** Every spending path in v1 signs through a connected CIP-30 extension. The local self-custody mode creates, restores, encrypts, unlocks and locks a wallet, and it can derive addresses and read balances — but it is **not wired into Send, Staking or Governance**, which take a `Cip30Api` and nothing else. The signing code exists and is tested (`src/lib/keystore/signer.ts`, golden vectors against `cardano-serialization-lib`); it has no caller in the UI. See §7 for what that means and what has to happen before it changes.
 
 It is designed to drop into a host application (the PhoenixKey Standard wallet / Frontend). It can be used **like a traditional wallet** (connect a standard Cardano extension, or watch an account public key) or alongside a **Phoenix DID** for the Phoenix-specific custody view — both at once.
 
@@ -49,6 +51,26 @@ For those three the old consequence still stands: the module holds no key, so a 
 
 The seed is generated in the page (BIP-39, 24 words by default, `crypto.getRandomValues` with no `Math.random` fallback), encrypted at rest with Argon2id + AES-256-GCM, and held in memory only while unlocked.
 
+**Parameters, so a reviewer can check them against the code rather than take this on trust** (`src/lib/keystore/vault.ts`):
+
+| | Value | Why this and not something else |
+|---|---|---|
+| KDF | Argon2id, `t=2`, `m=19456` KiB, `p=1` | The OWASP second-choice profile. Memory-hard, so a GPU farm loses most of its advantage over the defender's laptop. |
+| Salt | 32 bytes, fresh per vault | Twice the 16-byte minimum. Free, and it removes any multi-target guessing win. |
+| Cipher | AES-256-GCM via WebCrypto | The platform primitive gets hardware AES and the engine's own constant-time treatment. A cipher that is *not* our code is the safer one here. |
+| IV | 12 bytes, fresh per encryption | GCM's native size; never reused, because a reused GCM nonce is catastrophic rather than merely weak. |
+| AAD | the vault header | The header is stored in the clear. Binding it as additional data means editing the KDF parameters or the version breaks decryption instead of silently changing how the key is derived. |
+| Stored | BIP-39 **entropy**, not the derived key | Icarus/CIP-3 derives from entropy, so this is what round-trips to Lace/Yoroi/Eternl. It also means there is no place to hang a 25th-word passphrase, so the UI does not offer one it cannot honour. |
+| Minimum password | 10 characters | A floor, not a policy. Argon2id raises the cost per guess; it cannot rescue `password1`. |
+| Auto-lock | 5 minutes, configurable, "never" is opt-in | See `session.ts` for why this differs from Lace's extension default of never. |
+
+**Losing your password and losing your recovery phrase are different accidents, and only one of them is fatal.** Say it this way to a user, because the two get confused and the confusion costs money:
+
+- **Password lost, phrase kept** — the vault on this device is unopenable and stays that way; there is no reset, because a reset would mean somebody else could reset it too. Restore from the phrase, choose a new password, and nothing is lost. The funds were never in the vault; the vault only held the key to reach them.
+- **Phrase lost, password kept** — fine only for exactly as long as this browser profile survives. Clear site data, lose the laptop, or reinstall, and the money is gone permanently. Nobody — not Phoenix, not the platform — can recover it.
+
+The practical consequence: the phrase is the asset and the password is a convenience. Back up the phrase off the device.
+
 What this mode is **not** protected against, stated plainly because the mitigations do not reach it:
 
 - **Any script that executes in the page can reach an unlocked key.** A compromised dependency, a hostile browser extension with host access, or an XSS bug in the host app defeats the vault, because the vault protects data at rest, not a running page.
@@ -57,7 +79,7 @@ What this mode is **not** protected against, stated plainly because the mitigati
 
 The browser extension packaging (§ README) narrows the first bullet — its own origin, no remote code permitted by CSP — but does not remove it.
 
-**The self-custody code is confined to `src/lib/keystore/` and reachable only from `LocalWalletPanel`.** No other mode imports it, so the three key-free modes stay key-free. The on-screen assurance is swapped per mode for the same reason this section was rewritten: leaving "this page never asks for your recovery phrase" visible while the page asks for exactly that would train the habit the notice exists to prevent.
+**The self-custody code is confined to `src/lib/keystore/` and reachable only from `LocalWalletPanel`.** No other mode imports it, so the three key-free modes stay key-free. That sentence is the load-bearing one in this section, so it is **checked by machine, not asserted here**: `bun run check:keystore-boundary` walks every module under `src/` and `extension/` and fails CI when anything outside an explicit allow-list imports the keystore, whatever spelling the import uses. Widening that list is a diff in a CODEOWNERS-gated file — which is the review this claim deserves and previously did not get. The on-screen assurance is swapped per mode for the same reason this section was rewritten: leaving "this page never asks for your recovery phrase" visible while the page asks for exactly that would train the habit the notice exists to prevent.
 
 ### 2.2 Invariant M2-WATCH — watch-only cannot sign
 
@@ -92,7 +114,7 @@ The confirm button stays disabled until the retyped tail matches. For Send and D
 
 ---
 
-## 3. Architecture — three modes, none types a seed online
+## 3. Architecture — five modes, one of which holds a key
 
 | Mode | View | Sign / spend | v1 |
 |---|---|---|---|
@@ -100,7 +122,7 @@ The confirm button stays disabled until the retyped tail matches. For Send and D
 | **Watch-only (`acct_xvk`)** | ✅ derived client-side from the account public key | ❌ view only | ✅ |
 | **Phoenix custody (by DID)** | ✅ reads the script address + public balances | ❌ view only | ✅ view |
 | **Air-gap QR co-sign** | ✅ (reuses the watch-only key) | 🟡 offline device signs → QR witness | 🟡 web scaffolded; enabled when the offline signer ships |
-| **Local self-custody** 🔑 | ✅ | ✅ **this page signs** — the one mode that holds a key (§2.1a) | ✅ |
+| **Local self-custody** 🔑 | ✅ | 🟡 holds the key and can sign (`signer.ts`), but **is not connected to Send / Staking / Governance** — so in v1 it cannot spend from this UI (§7) | 🟡 |
 
 The Phoenix custody address is a **script** (enterprise) address spent by the `did_payment` validator, which requires a controller-key witness. A CIP-30 extension cannot sign for it, so v1 exposes the custody balance for viewing; spending goes through the air-gap / mobile signer path in a later phase.
 
@@ -124,10 +146,15 @@ Address assembly is cross-checked against the Rust reference (`phoenix_address.r
 
 ```
 payment_pub_i = CKDpub(acct_xvk, 0) → CKDpub(·, i)   -- chain 0 (external), index i
+change_pub_i  = CKDpub(acct_xvk, 1) → CKDpub(·, i)   -- chain 1 (internal / change)
 stake_pub     = CKDpub(acct_xvk, 2) → CKDpub(·, 0)   -- chain 2 (stake)
 drep_pub      = CKDpub(acct_xvk, 3) → CKDpub(·, 0)   -- chain 3 (dRep, CIP-105)
 addr_i        = base_addr(pkh(payment_pub_i), pkh(stake_pub))
 ```
+
+The **internal chain (role 1)** is listed because leaving it out of a derivation spec is how a wallet ends up unable to see its own change. Both chains are derived to `GAP_LIMIT` (20) addresses and both are scanned for balance; a restored wallet whose original had used more than 20 addresses on either chain will under-report — see §7.
+
+On the private path the account is reached through **hardened** derivation, `m/1852'/1815'/account'`, and only then does soft derivation continue for the roles above. This is not the same code as the watch-only path and deliberately does not share it: soft derivation is reversible, so an `acct_xvk` plus any one soft-derived child private key reconstructs the account key. Keeping the two implementations apart means a refactor cannot quietly hand the watch-only path a private key to be clever with.
 
 - `pkh` = blake2b-224 of the public key (28 bytes), CIP-19 credential.
 - Path label: `m/1852'/1815'/0'/0/i`.
@@ -168,7 +195,7 @@ Each fund-moving feature is **two-step**: build an unsigned transaction → show
 ### 5.5 Connect (dApp launcher)
 
 - A **curated** launcher of hand-reviewed dApps at their canonical URLs (currently [Minswap](https://minswap.org/) and [SundaeSwap](https://app.sundae.fi/)). Curation is the security boundary: the module does not connect to arbitrary user-supplied sites. The exact destination host is shown on each entry so a look-alike URL can be caught by eye.
-- Phoenix is a web page, not an extension, so it cannot inject `window.cardano` into another site. "Connect" opens the vetted dApp (`noopener,noreferrer`); the user connects their extension there.
+- **Phoenix does not present itself to dApps as a wallet.** This used to be stated as "Phoenix is a web page, not an extension", which stopped being the reason the day the extension shipped (`extension/`, README). The accurate reason is narrower and is a decision rather than a limit: the extension's manifest declares no `content_scripts`, no `background` service worker and no `web_accessible_resources`, so nothing injects `window.cardano.phoenix` into any page. "Connect" opens the vetted dApp (`noopener,noreferrer`) and the user connects their own extension there. What it would take to change that, and the constraints any such design has to satisfy, are in §7.
 - The CIP-30 provider bridge (`buildCip30Provider`) delegates reads and signing to the connected wallet. A real dApp transport must be built via `buildDappProvider(api, guards)`, which **refuses** to hand a dApp a signer without a plain-language review interposed — a guardless provider cannot be wired by accident.
 - The embedded dApp browser (loading a dApp in an iframe with an injected provider) is **off** (`EMBEDDED_DAPP_BROWSER_ENABLED = false`); it has real CSP/clickjacking implications and is not shipped in v1.
 
@@ -205,6 +232,9 @@ Assumptions this model depends on (documented so they are not forgotten): the CI
 
 - 🟡 **Send + staking** verified end-to-end on preprod (send ADA, mint + send a native token, delegate to a stake pool). Governance dRep register/vote fee needs one preprod submit to confirm the witness count before mainnet enable.
 - 🟡 **Air-gap QR co-sign** — web side scaffolded; turns on when the offline mobile signer ships. The QR transport contract (including the integrity binding in §6) is shared with the mobile signer.
+- 🔴 **Local self-custody cannot spend from this UI.** `signer.ts` signs correctly and is covered by golden vectors, but `SendPanel`, `StakingPanel` and `GovernancePanel` each take a `Cip30Api` and there is no adapter from a local `Account` to that shape. So a wallet created here holds funds it cannot move from this page — a user must restore the phrase into Lace or Eternl to spend. This is the single largest gap between what the wallet appears to offer and what it does, and it is listed at the top because a spec that buries it is a spec that misleads. Closing it means an adapter, plus the review screens the local path does not inherit from an extension popup.
+- 🔴 **Balance under-reports past 20 used addresses per chain.** `GAP_LIMIT = 20` is scanned once, not extended while addresses keep showing activity, which is what BIP-44 actually asks for. A wallet restored from a long-lived Lace or Eternl account will show a balance that is *smaller than the truth* with no indication anything was skipped — the failure mode users read as "my money is gone". Correct behaviour is to keep scanning until 20 consecutive unused addresses; until then this is a known wrong number, not a rounding difference.
+- ⬜ **CIP-30 injection (Phoenix as a provider to dApps)** — see §5.5 for why it does not exist today. Any design has to answer, at minimum: origin decided from the message sender and never from the message body; requests from sub-frames refused by default; a transaction decoder that refuses to sign what it cannot render in words, rather than showing raw CBOR; the approval screen showing the **net change to this wallet**, not the raw output total, which a change output inflates into a meaningless number; and no field anywhere in a web page that accepts a password or a recovery phrase. The approval window cannot be the toolbar popup, because the popup is destroyed when it loses focus and `LocalWalletPanel` locks on `visibilitychange`.
 - ⬜ **Phoenix custody spend** — needs the controller-key path (air-gap / mobile), phase 2.
 - ⬜ **Multi-pool / multiple stake keys** — v1 delegates a single stake key; multi-stake-key management is a v2 item.
 - ✅ **Watch-only by single address** — shipped, and it is the **default** of the two watch paths. A single address links nothing and amplifies nothing (§2.2), so it is offered ahead of the `acct_xvk` one rather than beside it; the account-key path now carries an explicit warning that it exposes every address and the whole history. `parseWatchAddress` refuses a wrong-network address (which would otherwise return a truthful, terrifying 0 ADA) and a stake address (which holds no UTxO, so it would read as an empty wallet).
@@ -230,14 +260,16 @@ Components use the host's Tailwind tokens (`bg-bg1`, `text-text-dim`, `teal-bran
 
 ## 9. Testing & verification
 
-- `bun run typecheck` (tsc, no emit) and `bun run test` (130 unit tests across 12 files) must both pass. Tests cover: address golden vectors vs the Rust reference, CKDpub derivation, UTxO decoding, send/stake/governance builders and their on-chain balance equations, the CIP-30 provider guards, the dApp URL pins, the retype-confirm tail (`ConfirmGate`), the indexer error mapping, and the air-gap integrity binding.
+- `bun run typecheck` (tsc, no emit) and `bun run test` must both pass, along with the `check:*` gates listed in the README. Tests cover: address golden vectors vs the Rust reference, CKDpub derivation, UTxO decoding, send/stake/governance builders and their on-chain balance equations, the CIP-30 provider guards, the dApp URL pins, the retype-confirm tail (`ConfirmGate`), the indexer error mapping, the air-gap integrity binding, the vault round-trip, what `lock()` actually scrubs, and the refusal to treat a web page as an extension context.
+- **No test count is written here on purpose.** This line has read 98, 104, 130, 218, 241 and 249 at various times — each correct on the day it was typed and wrong a week later. A reader who catches one stale number stops believing the rest of the page, including the parts about what this wallet does *not* protect them from, so the cost of the habit is paid in the wrong place. The count belongs in exactly one file, next to the command that produces it, where a machine can compare the two.
 - The send and delegation paths were exercised on **preprod** with disposable funds (send tADA, mint + send a native token, delegate to a stake pool), each confirmed on-chain, before this spec was written. Governance signing carries the preprod caveat in §7.
-- Privacy: chain reads go to public Koios (which sees the queried addresses and the client IP). No data is sent to a Phoenix backend and keys never leave the wallet.
+- Privacy: chain reads go to public Koios (which sees the queried addresses and the client IP). No data is sent to a Phoenix backend, and nothing sends a key anywhere — see §10 for the precise version of that sentence, which is narrower than "keys never leave the wallet".
 
 ---
 
 ## 10. Data & privacy
 
-- Keys: never held, never uploaded (§2).
+- **Keys: never uploaded. Held only in local self-custody mode, and only there** (§2.1a). This line used to read "never held, never uploaded", which contradicted §2.1a on the same page — the whole point of the fourth mode is that it *does* hold a key. Precisely: nothing in this module transmits key material to any server, in any mode. In the three key-free modes nothing holds one either. In local self-custody the encrypted vault sits in this browser profile (extension storage inside the extension, IndexedDB on a web page) and the decrypted key is in memory while unlocked.
+- **The user can export the encrypted vault to a file** (`exportVault`, in the local wallet's own screen). That is a deliberate backup path and it is still ciphertext — but "keys never leave the wallet" was false while that button existed, and a security document that overstates in the user's favour is the kind that gets believed at the wrong moment.
 - Chain reads: public Koios indexer (addresses queried + IP visible to Koios). Swappable for a backend proxy.
 - No analytics, no remote images (emoji stand-ins keep the CSP tight and avoid third-party requests).

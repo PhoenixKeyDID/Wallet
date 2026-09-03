@@ -267,6 +267,7 @@
   "local_wallet_missing": "该钱包已不在本设备上。",
   "local_address": "你的地址",
   "local_balance_unavailable": "暂时无法获取余额——链上索引器没有响应。这与你的资金无关。",
+  "local_balance_partial": "此钱包使用的地址多于 Phoenix 扫描的数量，因此显示的余额低于实际余额。用 Lace、Eternl 或 Yoroi 打开可查看全部。没有任何损失——Phoenix 只看到了其中一部分。",
   "local_autolock_label": "闲置后自动锁定",
   "local_autolock_minutes": "{{n}} 分钟",
   "local_autolock_never": "从不（不推荐）",

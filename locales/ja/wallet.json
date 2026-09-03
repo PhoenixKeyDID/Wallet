@@ -267,6 +267,7 @@
   "local_wallet_missing": "そのウォレットはこの端末にもう保存されていません。",
   "local_address": "あなたのアドレス",
   "local_balance_unavailable": "残高を取得できません — チェーンインデクサーが応答しませんでした。資金については何も意味しません。",
+  "local_balance_partial": "このウォレットはPhoenixが走査する数より多くのアドレスを使っているため、表示中の残高は実際より少なくなっています。Lace・Eternl・Yoroiで開くと全体を確認できます。失われたものはありません。Phoenixが見ているのは一部だけです。",
   "local_autolock_label": "操作がない場合にロック",
   "local_autolock_minutes": "{{n}} 分",
   "local_autolock_never": "しない（非推奨）",
