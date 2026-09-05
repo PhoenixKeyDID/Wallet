@@ -101,7 +101,7 @@ locales/            en · vi · ja · zh   (namespaces: wallet, night)
 ```
 
 The `src/lib/cardano` core has no host dependencies — it relies only on
-`@stricahq/*` and `@noble/hashes`.
+`@stricahq/*`, `@noble/hashes`, `bech32`, `bignumber.js` and the `buffer` shim.
 
 ## Host contract
 
@@ -134,12 +134,12 @@ session at all — they never touch the Phoenix backend.
 
 ```bash
 bun install
-bun run test          # 387 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
+bun run test          # 406 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
 bun run typecheck
 bun run check:locales # 4 languages × 2 namespaces must stay in step
-bun run check:urls    # no ungated outbound URL ships at the repo root and under src/, extension/, scripts/, docs/
+bun run check:urls    # no ungated outbound URL under src/, extension/, scripts/ — docs/ and root files are not scanned
 bun run check:node-globals # the Node-globals shim is imported before @stricahq
-bun run check:keystore-boundary # only the two key-holding screens may import the keystore
+bun run check:keystore-boundary # only the key-holding screens and the bundle smoke check may import the keystore
 bun run check:bundle  # the browser build runs with no Node globals (see below)
 bun run check:package # the built extension is loadable and claims no reach it does not use
 bun run check:readme  # the two claims above that go stale on their own
@@ -182,8 +182,10 @@ bundle cannot be read is open source in name only — you should be able to rebu
 from a tag and diff it against what you installed. That costs bundle size, and
 that trade is made on purpose.
 
-Keys live only while the popup is open. Closing it destroys the JavaScript
-context and the keys with it, so nothing sits unlocked in a background worker.
+Keys live only while a wallet window is open — the toolbar popup, or the
+approval window a site's request opens. Closing it destroys the JavaScript
+context and the keys with it. The background service worker holds the per-origin
+grants and never a key.
 
 ### `check:bundle` — why a separate check exists
 
@@ -239,8 +241,14 @@ salt and ciphertext.
   document the way an extension has one, so anything with script access to this
   origin can mis-draw what you are approving. Amounts worth attacking belong in
   hardware or an extension.
-- 🔴 CIP-30 injection — the extension does not yet present itself to dApps as a
-  wallet. It signs from its own popup only.
+- 🟡 CIP-30 injection — the extension injects `window.cardano.phoenix` into
+  every top-level `https` page (and loopback) through a content script, so a
+  dApp can connect to it. Reads sit behind a per-origin grant; `signTx` asks
+  every time, in a separate `chrome-extension://` window a page cannot draw
+  over, and the keys it uses are decided by what that window could describe —
+  never by what the transaction asks for. Not yet loaded into a real Chrome, so
+  every claim here rests on unit tests and `check:package`, not on a browser.
+  Details: spec §5.8.
 
 ## License
 
