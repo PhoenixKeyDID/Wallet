@@ -64,6 +64,13 @@ export type TxSummary = {
   certificates: number;
   withdrawals: number;
   mints: number;
+  /**
+   * Staking rewards this transaction pulls out of *this wallet's* reward
+   * account. It is money that arrives and can leave in the same transaction,
+   * so it belongs in `net` — and it is the one amount a screen reading only
+   * inputs and outputs would miss entirely.
+   */
+  withdrawalLovelace: bigint;
 };
 
 /** Thrown when the transaction cannot be described. Never a partial answer. */
@@ -256,9 +263,35 @@ export function summariseTx(
 
   const fee = asBigInt(b.get(2) ?? 0, "the fee");
 
+  // ── withdrawals ───────────────────────────────────────────────────────────
+  // A withdrawal takes staking rewards out of a reward account and hands them
+  // to the transaction to spend. Nothing about that shows up in the inputs, so
+  // a summary built from inputs and outputs alone reports a transaction that
+  // drains the rewards as costing nothing — and, once a change output is added,
+  // as money coming *in*. The reward account says whose rewards these are: one
+  // header byte then the 28-byte stake key hash, which is also the last 28
+  // bytes of every base address this wallet owns.
+  const ownStakeHashes = new Set<string>();
+  for (const hex of own) {
+    if (hex.length === 114) ownStakeHashes.add(hex.slice(58));
+  }
+  let withdrawnLovelace = BigInt(0);
+  const rawWithdrawals = b.get(5);
+  if (rawWithdrawals !== undefined) {
+    if (!(rawWithdrawals instanceof Map)) bad("this transaction withdraws in a shape this wallet cannot read");
+    for (const [rewardAccount, amount] of rawWithdrawals as Map<unknown, unknown>) {
+      const raw = Buffer.from(rewardAccount as Buffer);
+      if (raw.length !== 29) bad("this transaction withdraws from an account this wallet cannot read");
+      // Somebody else's rewards are somebody else's money; they neither arrive
+      // here nor leave here.
+      if (!ownStakeHashes.has(raw.subarray(1).toString("hex"))) continue;
+      withdrawnLovelace += asBigInt(amount, "a withdrawal amount");
+    }
+  }
+
   // ── net ───────────────────────────────────────────────────────────────────
   const net: NetChange[] = [];
-  const adaOut = spentLovelace - returnedLovelace;
+  const adaOut = spentLovelace + withdrawnLovelace - returnedLovelace;
   if (adaOut !== BigInt(0)) net.push({ ...ADA, amount: adaOut });
   const units = new Set([...spentAssets.keys(), ...returnedAssets.keys()]);
   for (const unit of units) {
@@ -289,5 +322,6 @@ export function summariseTx(
     certificates: countOf(b.get(4)),
     withdrawals: countOf(b.get(5)),
     mints: countOf(b.get(9)),
+    withdrawalLovelace: withdrawnLovelace,
   };
 }

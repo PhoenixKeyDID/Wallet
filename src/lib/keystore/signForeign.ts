@@ -142,13 +142,63 @@ export function requiredKeysFor(
     add(Buffer.from(hash).toString("hex"));
   }
 
-  // `required_signers` (field 14) names key hashes outright. A transaction can
-  // demand a signature from a key that owns none of the inputs — that is what
-  // the field is for — so it must be honoured or the signature is incomplete.
+  // Everything added above is justified by an input this wallet was able to
+  // attribute to itself. Two more keys can be justified, but only by the body
+  // saying what they are for — never by the transaction simply naming them.
+  const justified = new Set(need);
+
+  // A withdrawal moves this wallet's staking rewards. Signing it needs the
+  // stake key, and the reward account in the body says whose rewards they are:
+  // one header byte, then the 28-byte key hash.
+  const withdrawals = b.get(5);
+  if (withdrawals instanceof Map) {
+    for (const rewardAccount of withdrawals.keys()) {
+      const raw = Buffer.from(rewardAccount as Buffer);
+      if (raw.length !== 29) continue;
+      if (raw.subarray(1).toString("hex") === account.stakeKeyHashHex) {
+        justified.add(account.stakeKeyHashHex);
+      }
+    }
+  }
+
+  // A certificate carries the credential it acts on as `[0, hash]` — `0` being
+  // a key hash rather than a script. Only that exact shape justifies a key; any
+  // other certificate layout is one this wallet cannot read, and a key it
+  // cannot explain is a key it must not use.
+  const certs = b.get(4);
+  const certList = certs instanceof Set ? [...certs] : certs;
+  if (Array.isArray(certList)) {
+    for (const c of certList) {
+      if (!Array.isArray(c)) continue;
+      for (const part of c) {
+        if (!Array.isArray(part) || part.length !== 2 || Number(part[0]) !== 0) continue;
+        const hashHex = Buffer.from(part[1] as Buffer).toString("hex");
+        if (hashHex === account.stakeKeyHashHex || hashHex === account.drepKeyHashHex) {
+          justified.add(hashHex);
+        }
+      }
+    }
+  }
+
+  // `required_signers` (field 14) names key hashes outright, and the page that
+  // sent this transaction wrote that field. Honouring it as written turns the
+  // wallet into an oracle: name the stake key and the wallet signs the staking
+  // rewards away, while the approval screen — which reads inputs and outputs —
+  // describes a transaction that costs nothing. So a named hash is only ever
+  // *matched* against what the body already justified. A hash this wallet holds
+  // but cannot explain is a refusal, not a signature. A hash it does not hold is
+  // left alone, because that one is a genuine "another wallet must also sign",
+  // which is what `partialSign` exists to answer.
   const signers = b.get(14);
   const signerList = signers instanceof Set ? [...signers] : signers;
   if (Array.isArray(signerList)) {
-    for (const s of signerList) add(Buffer.from(s as Buffer).toString("hex"));
+    for (const s of signerList) {
+      const hashHex = Buffer.from(s as Buffer).toString("hex");
+      if (!justified.has(hashHex) && account.keyByHash.has(hashHex)) {
+        throw new LocalSignError("sign_unjustified_signer", hashHex);
+      }
+      add(hashHex);
+    }
   }
 
   return { keyHashes: need, bodyHashHex };
