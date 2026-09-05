@@ -22,13 +22,14 @@
  * `visibilitychange` — an approval flow there would lock the wallet at the exact
  * moment the user glanced at the site they were being asked about.
  */
-import { StrictMode, useCallback, useEffect, useMemo, useState } from "react";
+import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { I18nextProvider, useTranslation } from "react-i18next";
 import { i18n } from "./i18n";
 import {
   accountFromEntropy,
   allAddresses,
+  externalAddressesHex,
   localPort,
   openVault,
   primaryAddress,
@@ -91,6 +92,13 @@ function Approve() {
   const [account, setAccount] = useState<Account | null>(null);
   const [port, setPort] = useState<Port | null>(null);
   const [phase, setPhase] = useState<Phase>({ at: "unlock" });
+  /**
+   * Whether a request is already on screen. A ref rather than `phase`, because
+   * the port listener is installed once and would otherwise close over whatever
+   * `phase` was at the moment it was installed — which is exactly the stale
+   * value an attacker needs.
+   */
+  const decidingRef = useRef(false);
 
   useEffect(() => {
     void store.list().then((ws) => {
@@ -120,7 +128,12 @@ function Approve() {
             return { ok: true, value: acct.network === 1 ? 1 : 0 };
           case "getUsedAddresses":
           case "getUnusedAddresses":
-            return { ok: true, value: await wp.getOwnedAddressesHex() };
+            // Both answer with the receiving chain. Telling the two apart needs
+            // a chain query per address, which this wallet does not make here —
+            // so it answers the same honest superset to both rather than
+            // guessing. What it never answers with is the internal chain: see
+            // `externalAddressesHex`.
+            return { ok: true, value: externalAddressesHex(acct) };
           case "getChangeAddress": {
             const hex = await wp.getReceiveAddressHex();
             return hex ? { ok: true, value: hex } : { ok: false, error: internal("no address") };
@@ -159,6 +172,22 @@ function Approve() {
         return;
       }
       if (req.method === "signTx" || req.method === "signData" || req.method === "submitTx") {
+        // One screen describes one transaction. A second request arriving while
+        // the first is on screen used to overwrite it, and the summary a person
+        // had just finished reading was replaced under their cursor — a page
+        // that sends a harmless transaction, waits for the screen to settle,
+        // then sends the real one gets a signature for something nobody read.
+        // Refusing the second one costs a dApp a retry and costs an attacker
+        // the whole approach.
+        if (decidingRef.current) {
+          p.postMessage({
+            type: "result",
+            id: req.id,
+            result: { ok: false, error: refused("another request is already on screen") },
+          });
+          return;
+        }
+        decidingRef.current = true;
         setPhase({ at: "decide", req });
         return;
       }
@@ -236,6 +265,7 @@ function Approve() {
   const answer = (result: { ok: true; value: unknown } | { ok: false; error: ApiError }) => {
     if (phase.at !== "decide" || !port) return;
     port.postMessage({ type: "result", id: phase.req.id, result });
+    decidingRef.current = false;
     setPhase({ at: "idle" });
   };
 
@@ -356,13 +386,29 @@ function Approve() {
             <p className="approve-note">
               {t("cip30_fee")}: {formatAda(summary.fee)} ADA
             </p>
+            {summary.withdrawalLovelace > BigInt(0) && (
+              <p className="approve-note">
+                {t("cip30_withdrawal")}: {formatAda(summary.withdrawalLovelace)} ADA
+              </p>
+            )}
+            {summary.ownInputs < summary.totalInputs && (
+              <p className="approve-error">
+                {t("cip30_unknown_inputs", {
+                  known: summary.ownInputs,
+                  total: summary.totalInputs,
+                })}
+              </p>
+            )}
             {summary.toOthers.length > 0 && (
               <>
                 <p className="approve-heading">{t("cip30_paying")}</p>
                 <ul>
                   {summary.toOthers.map((r, i) => (
-                    <li key={i} className="mono approve-addr">
-                      {r.address}
+                    <li key={i} className="approve-payout">
+                      {/* Amount first: an address with no number beside it is a
+                          line people skim past, and the number is the decision. */}
+                      <b>{formatAda(r.lovelace)} ADA</b>
+                      <span className="mono approve-addr">{r.address}</span>
                     </li>
                   ))}
                 </ul>

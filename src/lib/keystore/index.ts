@@ -63,4 +63,5 @@ export {
   localPort,
   changeAddressFor,
   changeAddressHexFor,
+  externalAddressesHex,
 } from "./port";

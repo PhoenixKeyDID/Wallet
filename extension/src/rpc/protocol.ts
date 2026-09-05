@@ -155,6 +155,9 @@ export const declined = (info: string): ApiError => ({ code: TX_SIGN_ERROR.UserD
  * be an array, and nothing is coerced: a request that is not exactly right is
  * not a request.
  */
+/** Hex characters, so twice the ledger's 16 KB `maxTxSize`, doubled again. */
+export const MAX_PARAM_CHARS = 65_536;
+
 export function parseRequest(data: unknown): Request | null {
   if (!data || typeof data !== "object") return null;
   const d = data as Record<string, unknown>;
@@ -162,6 +165,15 @@ export function parseRequest(data: unknown): Request | null {
   if (typeof d.id !== "string" || d.id.length === 0 || d.id.length > 128) return null;
   if (typeof d.method !== "string" || d.method.length > 64) return null;
   if (!Array.isArray(d.params)) return null;
+  // A transaction bigger than the ledger will ever accept is not a transaction,
+  // it is a way to keep the approval window busy. Describing and signing both
+  // walk the CBOR, so a multi-megabyte string freezes the one window that is
+  // holding a private key in memory — measured at 30 seconds for 13 MB, during
+  // which even the Reject button does not respond. `maxTxSize` is 16 KB, so
+  // twice that in hex characters leaves generous room and still refuses this.
+  for (const p of d.params) {
+    if (typeof p === "string" && p.length > MAX_PARAM_CHARS) return null;
+  }
   return { channel: CHANNEL, kind: "req", id: d.id, method: d.method, params: d.params };
 }
 

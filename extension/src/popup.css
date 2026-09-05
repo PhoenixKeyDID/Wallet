@@ -193,6 +193,10 @@ body.approve-page {
 .approve-summary ul { display: flex; flex-direction: column; gap: 4px; }
 .approve-addr { font-size: 11px; overflow-wrap: anywhere; color: var(--text-dim); }
 
+/* Amount above address, not beside it: the address wraps to several lines on a
+   narrow window, and a number sharing a row with it ends up orphaned. */
+.approve-payout { display: flex; flex-direction: column; gap: 2px; margin-bottom: 6px; }
+
 .approve-error { color: var(--danger); font-size: 12px; }
 .approve-refuse {
   background: var(--danger-bg);

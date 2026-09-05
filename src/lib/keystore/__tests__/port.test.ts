@@ -29,7 +29,12 @@ vi.mock("../../cardano/provider", () => ({
 
 import { fetchUtxos, submitTx } from "../../cardano/provider";
 import { accountFromEntropy, allAddresses, type Account } from "../derive";
-import { localPort, changeAddressFor, changeAddressHexFor } from "../port";
+import {
+  localPort,
+  changeAddressFor,
+  changeAddressHexFor,
+  externalAddressesHex,
+} from "../port";
 import { buildMultiSend, buildSendOutputs } from "../../cardano/send";
 import { baseAddress, type PhoenixNetwork } from "../../cardano/address";
 import { SubmitUncertainError } from "../../cardano/tx";
@@ -158,6 +163,20 @@ describe("localPort — reads", () => {
     // A non-empty set is what makes the receive screen's ownership check
     // decidable — an empty one would render every verdict as "unknown".
     expect(owned.length).toBeGreaterThan(0);
+  });
+
+  /**
+   * What a site gets to see is not what the wallet knows. The change chain is
+   * what ties a wallet's transactions to each other, so handing it to a dApp
+   * that asked "where do I pay you" publishes the whole graph for the price of
+   * one grant.
+   */
+  it("hands a dApp the receiving chain and never the change chain", () => {
+    const shown = externalAddressesHex(preprod).map(bech32Of);
+    expect(shown.sort()).toEqual(preprod.external.map((a) => a.address).sort());
+    for (const internal of preprod.internal) {
+      expect(shown).not.toContain(internal.address);
+    }
   });
 
   it("knows its own reward address without asking anyone", async () => {

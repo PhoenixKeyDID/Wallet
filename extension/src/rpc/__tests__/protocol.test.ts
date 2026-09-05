@@ -11,6 +11,7 @@ import { describe, it, expect } from "vitest";
 import {
   CHANNEL,
   parseRequest,
+  MAX_PARAM_CHARS,
   requirementOf,
   originOf,
   displayOrigin,
@@ -71,6 +72,19 @@ describe("parseRequest — recognise without trusting", () => {
 
   it("refuses an oversized method name", () => {
     expect(parseRequest(req({ method: "x".repeat(65) }))).toBeNull();
+  });
+
+  /**
+   * A transaction larger than the ledger accepts is not a transaction, it is a
+   * way to freeze the window that is holding a private key: describing and
+   * signing both walk the CBOR, measured at 30 seconds for 13 MB, during which
+   * the Reject button does not respond either. The limit belongs here rather
+   * than in the window, because here is before any of that work starts.
+   */
+  it("refuses a param string larger than any real transaction", () => {
+    expect(parseRequest(req({ params: ["a".repeat(MAX_PARAM_CHARS + 1)] }))).toBeNull();
+    // And still accepts one at the limit, so the guard is a ceiling and not a ban.
+    expect(parseRequest(req({ params: ["a".repeat(MAX_PARAM_CHARS)] }))).not.toBeNull();
   });
 
   /**

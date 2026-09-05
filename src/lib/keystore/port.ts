@@ -40,6 +40,20 @@ const hexOf = (bech32: string): string =>
   (tyUtils.getAddressFromString(bech32) as { getHex(): string }).getHex();
 
 /**
+ * The receiving chain only, as address hex.
+ *
+ * What a dApp is entitled to know is where to pay this wallet. The internal
+ * chain is where change lands, and handing it over publishes the wallet's whole
+ * change graph to any site that got a grant — enough to tie together every
+ * transaction it will ever make. `getOwnedAddressesHex` stays the full set,
+ * because deciding whether an *output* comes home is a different question and
+ * needs both chains.
+ */
+export function externalAddressesHex(account: Account): string[] {
+  return account.external.map((a) => hexOf(a.address));
+}
+
+/**
  * First address in `candidates` that holds nothing right now, else the first.
  *
  * "Holds nothing" is not "never used" — an address that received and then spent
