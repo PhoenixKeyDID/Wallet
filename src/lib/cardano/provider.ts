@@ -27,13 +27,50 @@ function koiosBase(network: PhoenixNetwork): string {
   return KOIOS_BASE.preprod;
 }
 
+/**
+ * Thrown when Koios answered successfully with only part of the answer.
+ *
+ * Separate from a plain network error because it is the opposite failure: the
+ * request worked, the JSON parses, and the array is the wrong length. A wallet
+ * that treats it as data reports a balance smaller than the truth and offers
+ * coin selection over UTxOs the account does not appear to have — the failure a
+ * person reads as "my money is gone".
+ */
+export class KoiosTruncatedError extends Error {
+  constructor(path: string, got: number, total: number) {
+    super(`Koios ${path} returned ${got} of ${total} rows`);
+    this.name = "KoiosTruncatedError";
+  }
+}
+
 export async function koios<T>(network: PhoenixNetwork, path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${koiosBase(network)}${path}`, {
     method: body ? "POST" : "GET",
-    headers: { "content-type": "application/json", accept: "application/json" },
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json",
+      // Koios is PostgREST, and PostgREST caps a response at 1000 rows without
+      // saying so in the status: measured 2026-09-05 on `/pool_list`, HTTP 200
+      // with `content-range: 0-999/*` and exactly 1000 rows, the other 5163
+      // simply absent. Asking for an exact count is what makes the cap visible
+      // — the same request answers `206` with `content-range: 0-999/6163`.
+      prefer: "count=exact",
+    },
     body: body ? JSON.stringify(body) : undefined,
   });
+  // `res.ok` covers 200–299, so it is true for the 206 that says "partial".
+  // Checking the range rather than the status is what closes that.
   if (!res.ok) throw new Error(`Koios ${path} → HTTP ${res.status}`);
+
+  const range = res.headers?.get("content-range");
+  if (range) {
+    const m = /^(\d+)-(\d+)\/(\d+)$/.exec(range.trim());
+    if (m) {
+      const end = Number(m[2]);
+      const total = Number(m[3]);
+      if (end + 1 < total) throw new KoiosTruncatedError(path, end + 1, total);
+    }
+  }
   return (await res.json()) as T;
 }
 
