@@ -71,8 +71,10 @@ so it is checked rather than remembered. Full threat model:
 - **Traditional use** — connect a standard Cardano extension (or watch an
   account key). No DID needed; no data goes to the Phoenix backend. (Reading
   balances and building transactions does query a public Cardano indexer,
-  Koios — it sees the addresses you look up and your IP. Nothing is sent to a
-  Phoenix server, and your keys never leave your wallet.)
+  Koios — it sees the addresses you look up and your IP. The fiat estimate asks
+  a price service for the ADA rate and nothing else: no address, no amount, and
+  it can be switched off. Those two are the only hosts this wallet contacts.
+  Nothing is sent to a Phoenix server, and your keys never leave your wallet.)
 - **Phoenix use** — with a DID you can view your Phoenix custody wallet and your
   standard wallet in parallel, and add this wallet into the Standard wallet.
 
@@ -92,7 +94,7 @@ pay the fee. Phoenix never touches your funds.
 
 ```
 src/lib/cardano/   self-contained core: hash · address · xpub · gapScan · cip30 · provider ·
-                   tx · send · staking · governance · receive · history · txSummary ·
+                   tx · send · staking · governance · receive · history · price · txSummary ·
                    walletPort · watchAddress · connect · qr
 src/lib/night.ts   NIGHT redemption handoff (URL builder + info)
 src/lib/wallet.ts  read-path calls to the PhoenixKey backend wallet API
@@ -140,7 +142,7 @@ session at all — they never touch the Phoenix backend.
 
 ```bash
 bun install
-bun run test          # 429 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
+bun run test          # 436 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
 bun run typecheck
 bun run check:locales # 4 languages × 2 namespaces must stay in step
 bun run check:urls    # no ungated outbound URL under src/, extension/, scripts/ — docs/ and root files are not scanned
@@ -249,6 +251,13 @@ salt and ciphertext.
   it is on next to the address. Switching asks for your password because the
   seed is erased as soon as an account is opened; there is nothing left in
   memory to derive the next one from. Details: spec §5.10.
+- ✅ Balance in ordinary money (USD / VND / EUR / JPY) — and a switch to turn it
+  off. This is the wallet's **second outbound host** and the first that is not a
+  chain indexer, so it is worth being precise: the request carries the word
+  `cardano` and a currency code, nothing about your wallet, so what the other
+  end learns is your IP and that somebody asked. `Off` stops the request, not
+  just the display. A rate that cannot be read shows nothing rather than a stale
+  number or `0.00`, and every figure says when it was read. Details: spec §5.11.
 - 🟡 Air-gap QR co-sign — the web side is scaffolded; it turns on when the
   offline mobile signer is available.
 - 🟡 Local self-custody wallet (no DID required) — create, restore, unlock and

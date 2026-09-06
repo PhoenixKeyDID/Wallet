@@ -21,6 +21,26 @@ const KOIOS_BASE: Record<"mainnet" | "preprod" | "preview", string> = {
   preview: "https://preview.koios.rest/api/v1",
 };
 
+/**
+ * The one host this wallet contacts that is not a chain indexer.
+ *
+ * It lives in this file rather than beside the code that uses it because this
+ * file is the single answer to "who can this wallet talk to":
+ * `scripts/check-extension-package.mjs` requires every host in the extension's
+ * `host_permissions` to appear as a URL literal *here*, and CODEOWNERS gates
+ * this file. Putting the constant next to `price.ts` would either break that
+ * gate or force it to read a second file — and a gate that reads two files is a
+ * gate with two places to forget.
+ *
+ * What the request carries: the string `cardano` and a currency code. No
+ * address, no balance, no wallet identifier — the price of ADA is the same
+ * whether or not the asker holds any. What the other end sees is an IP and the
+ * fact that somebody asked. That is a smaller exposure than the indexer, which
+ * necessarily sees the addresses; it is not zero, which is why it is written
+ * down here and in §10 rather than left to be inferred from a fetch call.
+ */
+export const PRICE_BASE = "https://api.coingecko.com/api/v3";
+
 function koiosBase(network: PhoenixNetwork): string {
   if (network === 1) return KOIOS_BASE.mainnet;
   if (network === 2) return KOIOS_BASE.preview;

@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { QRCodeCanvas } from "qrcode.react";
 import { CopyBtn } from "@/components/CopyBtn";
 import { formatAda, assetLabel } from "@/lib/cardano";
+import { FiatValue } from "./FiatValue";
 
 export type DisplayAsset = { unit: string; policyId: string; assetNameHex: string; quantity: bigint };
 
@@ -27,6 +28,11 @@ export function BalanceView({
         <p className="text-3xl font-semibold mt-1">
           {formatAda(lovelace)} <span className="text-text-dim text-lg">ADA</span>
         </p>
+        {/* Under the ADA figure, never instead of it: the line above is what
+            the wallet holds, the one below is what someone was paying for it
+            at a moment. Only tokens with a known price would ever get one, and
+            none do — a native token's "value" is whatever its minter says. */}
+        <FiatValue lovelace={lovelace} />
       </div>
 
       {assets.length > 0 && (

@@ -29,7 +29,8 @@
   "host_permissions": [
     "https://api.koios.rest/*",
     "https://preprod.koios.rest/*",
-    "https://preview.koios.rest/*"
+    "https://preview.koios.rest/*",
+    "https://api.coingecko.com/*"
   ],
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'"
