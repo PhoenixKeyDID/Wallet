@@ -36,6 +36,7 @@ import {
   type Account,
 } from "../../src/lib/keystore";
 import { vaultStore, type StoredWallet } from "../../src/lib/keystore/storage";
+import { DEFAULT_LOCK_TIMEOUT_MS } from "../../src/lib/keystore/session";
 import { summariseTx, UndescribableTxError, type TxSummary } from "../../src/lib/cardano/txSummary";
 import { signForeignTx } from "../../src/lib/keystore/signForeign";
 import { assetLabel, formatAda } from "../../src/lib/cardano/provider";
@@ -64,6 +65,17 @@ const chromeRuntime = (
 type Phase =
   | { at: "unlock" }
   | { at: "idle" }
+  /**
+   * A site asked to connect and is waiting on a yes or a no.
+   *
+   * Separate from unlocking on purpose. Unlocking is between a person and their
+   * own wallet; granting a website access is between them and that website. When
+   * the two are the same act, the only human gesture in the whole flow is typing
+   * a wallet password into a window a *web page* caused to appear — which
+   * teaches exactly the habit every phishing kit needs, and hands over the
+   * address list of anyone curious enough to look at who was asking.
+   */
+  | { at: "connect"; req: Incoming }
   | { at: "decide"; req: Incoming; summary?: TxSummary; undescribable?: string };
 
 function Approve() {
@@ -120,7 +132,11 @@ function Approve() {
       try {
         switch (req.method) {
           case "enable":
-            return { ok: true, value: true };
+            // `enable` is answered by the connect screen, not from here. Two
+            // code paths that can both say yes to the same question is one path
+            // too many: whichever is reached first decides, and the one with a
+            // button on it should be the only one there is.
+            return { ok: false, error: refused(t("cip30_declined")) };
           case "getNetworkId":
             // Preview and preprod are both `0` to CIP-30. That is the standard's
             // limitation, not ours, and answering anything else would be a
@@ -157,6 +173,37 @@ function Approve() {
     [t],
   );
 
+  /**
+   * Lock this window back up after five idle minutes.
+   *
+   * A window this small is easy to leave behind a browser, and until it closes
+   * it holds an unlocked account — with a site already granted, a signature is
+   * then one click away from anyone at the keyboard. Locking on
+   * `visibilitychange` is wrong here for the reason the popup does it: this
+   * window is *meant* to sit behind the page it belongs to. Idle time is the
+   * measure that fits, and it is the same five minutes the web panel uses.
+   */
+  useEffect(() => {
+    if (!account) return;
+    let timer: ReturnType<typeof setTimeout>;
+    const relock = () => {
+      account.wipe();
+      setAccount(null);
+      decidingRef.current = false;
+      setPhase({ at: "unlock" });
+    };
+    const restart = () => {
+      clearTimeout(timer);
+      timer = setTimeout(relock, DEFAULT_LOCK_TIMEOUT_MS);
+    };
+    restart();
+    for (const ev of ["mousedown", "keydown"]) window.addEventListener(ev, restart);
+    return () => {
+      clearTimeout(timer);
+      for (const ev of ["mousedown", "keydown"]) window.removeEventListener(ev, restart);
+    };
+  }, [account]);
+
   // Connect to the background once unlocked, and answer what it forwards.
   useEffect(() => {
     if (!account || !chromeRuntime || port) return;
@@ -189,6 +236,22 @@ function Approve() {
         }
         decidingRef.current = true;
         setPhase({ at: "decide", req });
+        return;
+      }
+      if (req.method === "enable") {
+        // The grant is created by the background only once this window answers
+        // `ok`, so holding the answer here is what makes the button mean
+        // something. Same one-at-a-time rule as signing.
+        if (decidingRef.current) {
+          p.postMessage({
+            type: "result",
+            id: req.id,
+            result: { ok: false, error: refused("another request is already on screen") },
+          });
+          return;
+        }
+        decidingRef.current = true;
+        setPhase({ at: "connect", req });
         return;
       }
       void serve(account, req).then((result) =>
@@ -263,7 +326,7 @@ function Approve() {
   };
 
   const answer = (result: { ok: true; value: unknown } | { ok: false; error: ApiError }) => {
-    if (phase.at !== "decide" || !port) return;
+    if ((phase.at !== "decide" && phase.at !== "connect") || !port) return;
     port.postMessage({ type: "result", id: phase.req.id, result });
     decidingRef.current = false;
     setPhase({ at: "idle" });
@@ -349,6 +412,34 @@ function Approve() {
           {busy ? t("local_unlocking") : t("local_unlock_cta")}
         </button>
         <p className="approve-note">{t("cip30_window_note")}</p>
+      </div>
+    );
+  }
+
+  if (phase.at === "connect") {
+    return (
+      <div className="approve">
+        <OriginLine />
+        <p className="mono approve-account">{primaryAddress(account)}</p>
+        <div className="approve-summary">
+          <p className="approve-heading">{t("cip30_connect_asks")}</p>
+          <ul>
+            <li>{t("cip30_connect_reads")}</li>
+            <li>{t("cip30_connect_no_spend")}</li>
+          </ul>
+        </div>
+        <div className="approve-actions">
+          <button onClick={() => answer({ ok: false, error: declined(t("cip30_declined")) })}>
+            {t("cip30_reject")}
+          </button>
+          <button
+            disabled={busy}
+            onClick={() => answer({ ok: true, value: true })}
+            className="approve-primary"
+          >
+            {t("cip30_connect_allow")}
+          </button>
+        </div>
       </div>
     );
   }
