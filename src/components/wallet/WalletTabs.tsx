@@ -8,12 +8,14 @@ import { ReceivePanel } from "./ReceivePanel";
 import { StakingPanel } from "./StakingPanel";
 import { GovernancePanel } from "./GovernancePanel";
 import { ConnectPanel } from "./ConnectPanel";
+import { HistoryPanel } from "./HistoryPanel";
 
-type Tab = "send" | "receive" | "staking" | "governance" | "connect";
+type Tab = "send" | "receive" | "history" | "staking" | "governance" | "connect";
 
 const TABS: { id: Tab; labelKey: string; icon: string }[] = [
   { id: "send", labelKey: "tab_send", icon: "📤" },
   { id: "receive", labelKey: "tab_receive", icon: "📥" },
+  { id: "history", labelKey: "tab_history", icon: "🧾" },
   { id: "staking", labelKey: "tab_staking", icon: "🥩" },
   { id: "governance", labelKey: "tab_governance", icon: "🗳️" },
   { id: "connect", labelKey: "tab_connect", icon: "🔗" },
@@ -141,6 +143,7 @@ export function WalletTabs({
 
       {activeTab === "send" && <SendPanel {...panelProps} />}
       {activeTab === "receive" && <ReceivePanel {...panelProps} />}
+      {activeTab === "history" && <HistoryPanel {...panelProps} />}
       {activeTab === "staking" && <StakingPanel {...panelProps} />}
       {activeTab === "governance" && <GovernancePanel {...panelProps} />}
       {activeTab === "connect" && <ConnectPanel network={network} changeAddress={changeAddress} />}

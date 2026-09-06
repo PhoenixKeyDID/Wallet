@@ -35,6 +35,16 @@ export type StoredWallet = {
   firstAddress: string;
   network: number;
   createdAt: string;
+  /**
+   * BIP-44 account this wallet was last opened at, so unlocking returns the
+   * person to where their money is instead of always to account 0.
+   *
+   * Optional on purpose: records written before accounts existed have no such
+   * field, and `undefined` must mean account 0 rather than a broken record. It
+   * is a preference, not key material — the seed derives every account, so this
+   * grants nothing and losing it costs one menu selection.
+   */
+  accountIndex?: number;
 };
 
 export interface VaultStore {

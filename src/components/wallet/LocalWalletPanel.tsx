@@ -102,6 +102,18 @@ export function LocalWalletPanel() {
   // `loadBalance` — this exists so a balance that is smaller than the truth
   // cannot be shown as if it were the truth.
   const [balanceMayBePartial, setBalanceMayBePartial] = useState(false);
+  /**
+   * Which BIP-44 account is open (`m/1852'/1815'/n'`).
+   *
+   * Shown on screen rather than kept implicit: two accounts of one seed have
+   * different addresses and different balances, so a person who cannot see
+   * which one they are on can hand out an address from the wrong account or
+   * read one account's empty balance as the whole wallet being empty.
+   */
+  const [accountIndex, setAccountIndex] = useState(0);
+  /** Account the user asked to move to; `null` when the switch form is closed. */
+  const [switchTo, setSwitchTo] = useState<number | null>(null);
+  const [switchPw, setSwitchPw] = useState("");
   const [revealed, setRevealed] = useState<string | null>(null);
   // Set when the wallet locks while a recovery phrase is on screen. It hides
   // the words without destroying them: see the `locked` subscriber below.
@@ -188,6 +200,11 @@ export function LocalWalletPanel() {
         // lock means "locked" and "unlocked" differ by a boolean while the
         // secret that bridges them is still sitting there. It costs one retype.
         setPw("");
+        // Same secret, second field. The account-switch form has its own copy
+        // of the password, so clearing only `pw` would leave a lock that locks
+        // one input and not the other.
+        setSwitchPw("");
+        setSwitchTo(null);
         setPw2("");
         // A recovery phrase mid-creation is a different case: destroying it
         // would throw away a wallet the user is in the middle of writing down,
@@ -270,6 +287,7 @@ export function LocalWalletPanel() {
         firstAddress: primaryAddress(acct),
         network,
         createdAt: new Date().toISOString(),
+        accountIndex: 0,
       };
       await store.put(w);
       await refresh();
@@ -278,6 +296,9 @@ export function LocalWalletPanel() {
       session.unlock(w.id, acct);
       setActiveId(w.id);
       setAccount(acct);
+      // A newly created wallet starts at account 0, whatever account the
+      // previous wallet was left on.
+      setAccountIndex(0);
       setStep("open");
       void loadBalance(acct);
       resetDraft();
@@ -301,20 +322,62 @@ export function LocalWalletPanel() {
 
   // ── unlock ────────────────────────────────────────────────────────────────
 
+  /**
+   * Open one BIP-44 account of a stored wallet.
+   *
+   * One seed holds an unlimited number of accounts (`m/1852'/1815'/n'`), and
+   * they are separate wallets in every way that matters: separate addresses,
+   * separate balances, separate staking. Other wallets charge for this; the
+   * derivation was already here, only the way in was missing.
+   *
+   * Switching accounts asks for the password again, and that is not an
+   * oversight to be smoothed away later. The seed is wiped the moment the
+   * account is derived — that is the property the whole keystore is built on —
+   * so there is nothing left in memory to derive a second account from. Keeping
+   * the seed around to make switching seamless would trade the module's central
+   * guarantee for the removal of one prompt.
+   */
+  const openAccount = async (walletId: string, password: string, index: number) => {
+    const w = await store.get(walletId);
+    if (!w) throw new Error("local_wallet_missing");
+    const entropy = await openVault(w.vault, password);
+    const acct = await accountFromEntropy(entropy, index, w.network as PhoenixNetwork);
+    entropy.fill(0);
+    // `session.unlock` wipes whatever account was open before it stores the new
+    // one, so switching cannot leave the previous account's keys in the heap.
+    session.unlock(w.id, acct);
+    setAccount(acct);
+    setAccountIndex(index);
+    // Remember where they were, so the next unlock does not land on an empty
+    // account 0 and read as "my money is gone".
+    if ((w.accountIndex ?? 0) !== index) await store.put({ ...w, accountIndex: index });
+    setStep("open");
+    void loadBalance(acct);
+  };
+
   const unlock = async () => {
     if (!activeId) return;
     setBusy(true);
     try {
       const w = await store.get(activeId);
       if (!w) throw new Error("local_wallet_missing");
-      const entropy = await openVault(w.vault, pw);
-      const acct = await accountFromEntropy(entropy, 0, w.network as PhoenixNetwork);
-      entropy.fill(0);
-      session.unlock(w.id, acct);
-      setAccount(acct);
+      await openAccount(activeId, pw, w.accountIndex ?? 0);
       setPw("");
-      setStep("open");
-      void loadBalance(acct);
+    } catch (e) {
+      err(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Re-derive at a different account index. Needs the password; see above. */
+  const switchAccount = async () => {
+    if (!activeId || switchTo === null) return;
+    setBusy(true);
+    try {
+      await openAccount(activeId, switchPw, switchTo);
+      setSwitchPw("");
+      setSwitchTo(null);
     } catch (e) {
       err(e);
     } finally {
@@ -631,6 +694,75 @@ export function LocalWalletPanel() {
                 {t("local_lock_cta")}
               </button>
             </div>
+            {/* Which account this address belongs to, next to the address
+                itself. Account 2's address looks exactly like account 0's, so
+                the only thing separating "my receive address" from "someone
+                else's account" here is this line. */}
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="rounded-brand-sm border border-border-soft px-2 py-0.5 text-text-hint">
+                {t("local_account_n", { n: accountIndex })}
+              </span>
+              <span className="mono text-text-hint">m/1852&apos;/1815&apos;/{accountIndex}&apos;</span>
+              {switchTo === null && (
+                <button
+                  className="text-text-hint underline hover:text-text-dim"
+                  onClick={() => setSwitchTo(accountIndex)}
+                >
+                  {t("local_account_switch")}
+                </button>
+              )}
+            </div>
+            {switchTo !== null && (
+              <div className="rounded-brand border border-border-soft bg-bg0 p-3 space-y-2">
+                <p className="text-xs text-text-hint">{t("local_account_switch_help")}</p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="flex items-center gap-2 text-xs">
+                    <span className="text-text-hint">{t("local_account_label")}</span>
+                    <input
+                      type="number"
+                      min={0}
+                      step={1}
+                      value={switchTo}
+                      onChange={(e) => {
+                        const n = Number(e.target.value);
+                        // A hardened index must be a whole number below 2^31.
+                        // Clamping here rather than failing at derivation keeps
+                        // the error where the person can see what they typed.
+                        setSwitchTo(Number.isInteger(n) && n >= 0 && n < 2 ** 31 ? n : 0);
+                      }}
+                      className="w-20 rounded-brand-sm border border-border-soft bg-bg1 px-2 py-1 mono"
+                    />
+                  </label>
+                  <input
+                    className={`${inputCls} max-w-xs`}
+                    type="password"
+                    placeholder={t("local_password")}
+                    autoComplete="current-password"
+                    value={switchPw}
+                    onChange={(e) => setSwitchPw(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") void switchAccount();
+                    }}
+                  />
+                  <button
+                    className={primaryCls}
+                    disabled={busy || !switchPw}
+                    onClick={() => void switchAccount()}
+                  >
+                    {busy ? t("local_unlocking") : t("local_account_switch_cta")}
+                  </button>
+                  <button
+                    className={btnCls}
+                    onClick={() => {
+                      setSwitchTo(null);
+                      setSwitchPw("");
+                    }}
+                  >
+                    {t("local_cancel")}
+                  </button>
+                </div>
+              </div>
+            )}
             <div className="flex items-center gap-2">
               <code className="mono break-all text-xs">{primaryAddress(account)}</code>
               <CopyBtn value={primaryAddress(account)} />

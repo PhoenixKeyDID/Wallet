@@ -92,7 +92,7 @@ pay the fee. Phoenix never touches your funds.
 
 ```
 src/lib/cardano/   self-contained core: hash · address · xpub · gapScan · cip30 · provider ·
-                   tx · send · staking · governance · receive · txSummary ·
+                   tx · send · staking · governance · receive · history · txSummary ·
                    walletPort · watchAddress · connect · qr
 src/lib/night.ts   NIGHT redemption handoff (URL builder + info)
 src/lib/wallet.ts  read-path calls to the PhoenixKey backend wallet API
@@ -140,7 +140,7 @@ session at all — they never touch the Phoenix backend.
 
 ```bash
 bun install
-bun run test          # 415 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
+bun run test          # 429 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
 bun run typecheck
 bun run check:locales # 4 languages × 2 namespaces must stay in step
 bun run check:urls    # no ungated outbound URL under src/, extension/, scripts/ — docs/ and root files are not scanned
@@ -233,6 +233,22 @@ salt and ciphertext.
 - 🟡 Staking & governance signing — built and signable over CIP-30, same
   unaudited, preprod-first caveat as Send. dRep registration/voting additionally
   needs its fee re-confirmed on preprod before mainnet use.
+- ✅ Transaction history — every transaction that touched the wallet, with the
+  amount told from **your** side rather than the chain's. Change coming back to
+  you is not counted as money paid out, a staking withdrawal is counted as the
+  income it is (it never appears as an input), and the fee is counted once
+  because it is already inside the difference. No row links to a block
+  explorer: the transaction id is shown in full and copyable instead, since a
+  link is one click from handing an explorer the association between your
+  addresses and your browser. A connected extension only lists the addresses it
+  chooses to, which would make its own change look like a payment — so amounts
+  are withheld with a reason on screen rather than shown wrong. Details:
+  spec §5.9.
+- ✅ Multiple accounts from one recovery phrase (`m/1852'/1815'/n'`) — separate
+  addresses, balance and staking per account, and the open wallet says which one
+  it is on next to the address. Switching asks for your password because the
+  seed is erased as soon as an account is opened; there is nothing left in
+  memory to derive the next one from. Details: spec §5.10.
 - 🟡 Air-gap QR co-sign — the web side is scaffolded; it turns on when the
   offline mobile signer is available.
 - 🟡 Local self-custody wallet (no DID required) — create, restore, unlock and

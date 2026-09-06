@@ -15,6 +15,7 @@ export * from "./cip30";
 export * from "./provider";
 export * from "./qr";
 export * from "./watchAddress";
+export * from "./history";
 export * from "./tx";
 export * from "./walletPort";
 // Feature-tab builders (send/receive/staking/governance/connect) are imported

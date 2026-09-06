@@ -149,6 +149,23 @@ export async function fetchTipSlot(network: PhoenixNetwork): Promise<number> {
   return slot;
 }
 
+/**
+ * Block height of the chain tip.
+ *
+ * Separate from `fetchTipSlot` because they answer different questions and are
+ * not interchangeable: a slot is a time coordinate and is what a transaction's
+ * validity interval is expressed in, while a block height counts blocks and is
+ * what a confirmation count is measured in. Slots pass whether or not a block
+ * is minted, so subtracting slots would overstate confirmations — on mainnet by
+ * roughly a factor of twenty.
+ */
+export async function fetchTipBlockHeight(network: PhoenixNetwork): Promise<number> {
+  const rows = await koios<Array<{ block_no: number }>>(network, "/tip");
+  const height = rows[0]?.block_no;
+  if (typeof height !== "number") throw new Error("Koios returned no tip block height");
+  return height;
+}
+
 export type AddressBalance = {
   lovelace: bigint;
   assets: { unit: string; policyId: string; assetNameHex: string; quantity: bigint }[];
