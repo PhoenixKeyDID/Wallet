@@ -64,6 +64,19 @@ export type WalletPort = {
    */
   getOwnedAddressesHex(): Promise<string[]>;
   /**
+   * Whether `getOwnedAddressesHex` is the whole set or only what was admitted.
+   *
+   * The two implementations answer different questions, and subtracting one
+   * from the other is not a measurement. A local account knows every address it
+   * derived, so its answer is closed. A CIP-30 wallet answers with the
+   * addresses it chose to list — always a subset of what it watches, and a
+   * wallet listing four of them is behaving normally. Telling that person their
+   * perfectly ordinary address is unwatched trains them to dismiss the warning,
+   * and the case it exists for (an address outside the scanned range, where the
+   * money really does become unreachable) arrives looking identical.
+   */
+  readonly ownedIsComplete: boolean;
+  /**
    * blake2b-224 of the dRep public key, or `null` when this wallet cannot say.
    *
    * CIP-95 `getPubDRepKey` is an optional extension, so the CIP-30 side probes
@@ -159,6 +172,7 @@ export function cip30Port(api: Cip30Api): WalletPort {
       const [used, unused] = await Promise.all([api.getUsedAddresses(), api.getUnusedAddresses()]);
       return [...(used ?? []), ...(unused ?? [])];
     },
+    ownedIsComplete: false,
     async getDrepKeyHashHex() {
       try {
         // CIP-95 lives either on the api object or under a `cip95` namespace,

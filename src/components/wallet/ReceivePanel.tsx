@@ -179,11 +179,15 @@ export function ReceivePanel({
    * already reports).
    */
   const unwatched = useMemo(() => {
+    // A wallet that only lists some of its addresses cannot be subtracted from:
+    // every address it did not mention would look unwatched. See
+    // `WalletPort.ownedIsComplete`.
+    if (!port.ownedIsComplete) return null;
     if (ownership !== "match" || !ownedSet || ownedSet.size === 0) return null;
     const shown = [...(derived ? [derived] : []), ...(range ?? [])];
     const missing = unwatchedAmong(shown, ownedSet);
     return missing.length > 0 ? missing : null;
-  }, [ownership, ownedSet, derived, range]);
+  }, [port, ownership, ownedSet, derived, range]);
 
   const derive = () => {
     setAdvError(null);

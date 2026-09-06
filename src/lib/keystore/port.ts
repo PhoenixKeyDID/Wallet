@@ -146,6 +146,7 @@ export function localPort(account: Account): WalletPort {
     // which is the one place the local side is strictly better informed than
     // CIP-30: it cannot be a partial view.
     getOwnedAddressesHex: async () => allAddresses(account).map(hexOf),
+    ownedIsComplete: true,
     // No CIP-95 probe needed: chain 3 was derived alongside the payment and
     // stake keys, so this wallet is the one case that can answer without asking.
     getDrepKeyHashHex: async () => account.drepKeyHashHex,

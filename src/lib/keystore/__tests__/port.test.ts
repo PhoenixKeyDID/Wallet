@@ -179,6 +179,18 @@ describe("localPort — reads", () => {
     }
   });
 
+  /**
+   * The receive screen subtracts the addresses it is showing from the ones the
+   * wallet owns, and a difference is only a difference when the second set is
+   * whole. A local account derived every address it has, so it may be
+   * subtracted from; the CIP-30 side answers with what a wallet chose to list
+   * and must not be. Without this flag both look like sets and the warning
+   * fires on ordinary addresses of ordinary wallets.
+   */
+  it("declares its owned set complete, which is what makes the receive warning a measurement", () => {
+    expect(localPort(preprod).ownedIsComplete).toBe(true);
+  });
+
   it("knows its own reward address without asking anyone", async () => {
     const hex = await localPort(preprod).getRewardAddressHex();
     expect(bech32Of(hex)).toBe(preprod.rewardAddress);

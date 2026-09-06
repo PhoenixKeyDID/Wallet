@@ -117,6 +117,25 @@ describe("wallet session", () => {
     expect(seen).toContain("unlocked");
   });
 
+  /**
+   * The screen that shows a fresh recovery phrase runs *before* anything is
+   * unlocked, so there is no account to wipe and nothing for the idle timer to
+   * hold. What protects those 24 words is the panel hiding them when the tab
+   * goes away, and that only happens because `lock()` notifies subscribers even
+   * when the session was already locked. Take the notification away — an early
+   * return when the status is not "unlocked" reads like an obvious tidy-up —
+   * and the words stay legible on an unattended screen with nothing throwing.
+   */
+  it("notifies subscribers even when it was already locked, which is what hides a phrase mid-creation", () => {
+    const s = new WalletSession(1000);
+    let notifications = 0;
+    s.subscribe(() => (notifications += 1));
+    expect(s.get().status).toBe("locked"); // never unlocked: the create/restore flow
+    const afterSubscribe = notifications;
+    s.lock();
+    expect(notifications).toBe(afterSubscribe + 1);
+  });
+
   it("shortening the timeout takes effect on the open session immediately", () => {
     vi.useFakeTimers();
     const s = new WalletSession(60_000);

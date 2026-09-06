@@ -146,6 +146,18 @@ describe("cip30Port — reads", () => {
     expect(await cip30Port(fakeApi({ getUtxos: undef })).getInputs()).toEqual([]);
   });
 
+  /**
+   * `getUsedAddresses ∪ getUnusedAddresses` is what a wallet admits to, not
+   * what it watches — always a subset, and a wallet listing four addresses is
+   * behaving normally. Declaring the set incomplete is what stops the receive
+   * screen subtracting from it and calling perfectly ordinary addresses
+   * unwatched; a warning that cries wolf on the ordinary case is a warning
+   * nobody reads on the real one.
+   */
+  it("declares its owned set incomplete, because a wallet lists rather than enumerates", () => {
+    expect(cip30Port(fakeApi({})).ownedIsComplete).toBe(false);
+  });
+
   it("refuses to invent a reward address when the wallet has none", async () => {
     const port = cip30Port(fakeApi({ getRewardAddresses: vi.fn().mockResolvedValue([]) }));
     await expect(port.getRewardAddressHex()).rejects.toThrow("stake_account_error");
