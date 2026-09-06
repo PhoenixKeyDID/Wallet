@@ -12,7 +12,7 @@ and it can also be added alongside an existing Standard wallet.
 
 This is a **library package** (`@phoenixkey/wallet`), not an app and not a spec
 repo. It ships the Cardano core and the wallet UI, with its own tests and CI, and
-is consumed by more than one host — `PhoenixKey-Wakeme-Tech.md` §281 names
+is consumed by more than one host — `PhoenixKey-Wakeme-Tech.md` §5 "API backend" names
 **SuperApp / SDK / Frontend** as separate consumers that have to be coordinated
 together. That is why the host-contract layer below exists instead of the module
 simply importing the frontend's modules.
@@ -38,7 +38,7 @@ refers to (Wallet API v2, Rebirthme, DappConnector) are canonical in
 
 ## Design: where your keys live
 
-Four modes. **Three of them never hold a key**; the fourth does, on purpose, and
+Five modes. **Four of them never hold a key**; the fifth does, on purpose, and
 says so everywhere it can.
 
 | Mode | View | Sign / spend | Key held in the page? |
@@ -59,8 +59,9 @@ for **small, hot balances** — for anything worth protecting, connect a
 hardware-backed extension instead.
 
 The self-custody code lives in `src/lib/keystore/` and is reachable only from
-`LocalWalletPanel` and the extension's approval window; no other mode imports it,
-so the three key-free modes stay key-free. Nothing that runs inside a website can
+`LocalWalletPanel`, the extension's approval window, and the browser-bundle smoke
+check that has to exercise the real thing; no other mode imports it,
+so the four key-free modes stay key-free. Nothing that runs inside a website can
 reach it — the content script and the injected provider relay bytes and hold
 nothing. `bun run check:keystore-boundary` fails CI if that ever stops being
 true: this sentence is what makes the other modes safe to describe as key-free,
@@ -90,13 +91,18 @@ pay the fee. Phoenix never touches your funds.
 ## Layout
 
 ```
-src/lib/cardano/   self-contained core: hash · address · xpub · cip30 · provider · tx · qr
+src/lib/cardano/   self-contained core: hash · address · xpub · gapScan · cip30 · provider ·
+                   tx · send · staking · governance · receive · txSummary ·
+                   walletPort · watchAddress · connect · qr
 src/lib/night.ts   NIGHT redemption handoff (URL builder + info)
 src/lib/wallet.ts  read-path calls to the PhoenixKey backend wallet API
 src/components/     wallet/* and night/* UI (React)
 src/app/            example /wallet and /night pages
-src/lib/keystore/  local self-custody: mnemonic · derive · vault · signer · storage · session
-extension/          the browser extension — popup that mounts the same UI
+src/lib/keystore/  local self-custody: mnemonic · derive · vault · signer · storage ·
+                   session · port · signForeign
+extension/          the browser extension: popup + approval window (same UI), plus the
+                    content script, page-world provider and service worker that make
+                    it a CIP-30 wallet for dApps
 locales/            en · vi · ja · zh   (namespaces: wallet, night)
 ```
 
@@ -134,7 +140,7 @@ session at all — they never touch the Phoenix backend.
 
 ```bash
 bun install
-bun run test          # 406 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
+bun run test          # 415 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
 bun run typecheck
 bun run check:locales # 4 languages × 2 namespaces must stay in step
 bun run check:urls    # no ungated outbound URL under src/, extension/, scripts/ — docs/ and root files are not scanned
