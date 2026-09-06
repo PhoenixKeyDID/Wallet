@@ -21,6 +21,7 @@
  *    the watch/xpub path (`keyHashAt(xvk, 3, index)`). We never fabricate a key
  *    the wallet cannot sign — the caller must pass a real `drepKeyHash`.
  */
+import "../node-globals";
 import { Buffer } from "buffer";
 import BigNumber from "bignumber.js";
 import {

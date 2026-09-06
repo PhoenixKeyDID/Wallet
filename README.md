@@ -145,7 +145,7 @@ bun install
 bun run test          # 436 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
 bun run typecheck
 bun run check:locales # 4 languages × 2 namespaces must stay in step
-bun run check:urls    # no ungated outbound URL under src/, extension/, scripts/ — docs/ and root files are not scanned
+bun run check:urls    # no ungated outbound URL at the repo root or under src/, extension/, scripts/, docs/
 bun run check:node-globals # the Node-globals shim is imported before @stricahq
 bun run check:keystore-boundary # only the key-holding screens and the bundle smoke check may import the keystore
 bun run check:bundle  # the browser build runs with no Node globals (see below)

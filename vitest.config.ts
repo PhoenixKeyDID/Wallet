@@ -24,6 +24,12 @@ export default defineConfig({
     // wallet answers live there, in `rpc/protocol.ts`. Leaving them out of the
     // test run would mean the one part of the extension that *can* be tested
     // was the part nothing tested.
-    include: ["src/**/*.test.ts", "extension/**/*.test.ts"],
+    //
+    // `?(x)` matters even though no `.tsx` test exists yet: without it, the
+    // first component test anyone adds is collected by nobody and reported by
+    // nothing, which is worse than a missing test because the repo counts it as
+    // coverage. Both halves of this line were arrived at separately and both
+    // are kept — the directory and the extension.
+    include: ["src/**/*.test.ts?(x)", "extension/**/*.test.ts?(x)"],
   },
 });
