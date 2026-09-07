@@ -49,6 +49,28 @@ const CODEOWNERS = join(REPO, ".github", "CODEOWNERS");
  */
 const URL_RE = /https?:\/\/[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+/gi;
 
+/**
+ * A URL whose host is not in the file — assembled at runtime instead.
+ *
+ * The check above only sees hosts written down. Measured against this guard on
+ * 2026-09-08, two mutations were added to a source file and it still printed OK:
+ * a scheme string concatenated with a host string, and a scheme in a template
+ * literal with the host interpolated from a nearby constant. (Both are spelled
+ * out in the tests rather than here, because writing either one in this file
+ * would trip the rule it documents.)
+ *
+ * That is the whole guard defeated by a spacebar, and a gate that reports OK for
+ * exactly what it exists to block is worse than no gate: the commit message
+ * cites it as the constraint in force. Nothing in this repo has a reason to
+ * build a scheme by concatenation, so both forms are refused outright — in
+ * every scanned file, gated or not, because the point is that the host be
+ * *visible* to the other checks, not merely reviewed.
+ *
+ * `https://…` (ellipsis) and `https://*` (a manifest match pattern) carry no
+ * destination and are left alone.
+ */
+const ASSEMBLED_RE = /https?:\/\/(?:["'`]\s*\+|\$\{)/g;
+
 /** Repo-relative, POSIX-separated paths that CODEOWNERS assigns to someone. */
 function gatedPaths() {
   const rules = [];
@@ -112,12 +134,28 @@ const rootFiles = readdirSync(REPO)
   .map((entry) => join(REPO, entry))
   .filter((full) => !statSync(full).isDirectory() && SOURCE_EXT.test(full));
 
+const assembled = [];
+
 for (const file of [...rootFiles, ...SCAN_ROOTS.flatMap((root) => [...walk(join(REPO, root))])]) {
   const rel = relative(REPO, file).split(sep).join("/");
-  const found = new Set(readFileSync(file, "utf8").match(URL_RE) ?? []);
+  const text = readFileSync(file, "utf8");
+
+  for (const [i, line] of text.split("\n").entries()) {
+    if (ASSEMBLED_RE.test(line)) assembled.push(`${rel}:${i + 1}  ${line.trim()}`);
+    ASSEMBLED_RE.lastIndex = 0;
+  }
+
+  const found = new Set(text.match(URL_RE) ?? []);
   if (found.size === 0) continue;
   if (isGated(rel, rules)) continue;
   offenders.push({ rel, urls: [...found] });
+}
+
+if (assembled.length) {
+  console.error("Outbound-URL guard FAILED — URLs built at runtime, so no check can read the host:\n");
+  for (const line of assembled) console.error(`  • ${line}`);
+  console.error("\nWrite the full URL as one literal in a CODEOWNERS-gated file.");
+  process.exit(1);
 }
 
 if (offenders.length) {
@@ -134,5 +172,5 @@ if (offenders.length) {
 }
 
 console.log(
-  `Outbound-URL guard OK — every absolute URL at the repo root and under ${SCAN_ROOTS.map((r) => r + "/").join(", ")} sits in a CODEOWNERS-gated file.`,
+  `Outbound-URL guard OK — every absolute URL at the repo root and under ${SCAN_ROOTS.map((r) => r + "/").join(", ")} sits in a CODEOWNERS-gated file, and none is assembled at runtime.`,
 );

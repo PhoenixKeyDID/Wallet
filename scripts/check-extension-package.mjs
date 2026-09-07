@@ -255,7 +255,7 @@ for (const pattern of manifest.host_permissions ?? []) {
   const host = m[1].toLowerCase();
   if (!providerHosts.has(host)) {
     fail(
-      `host_permissions declares "${pattern}", but no \`https://${host}\` URL appears in ` +
+      `host_permissions declares "${pattern}", but no URL for host ${host} appears in ` +
         `src/lib/cardano/provider.ts — the manifest is claiming reach the code does not use`,
     );
   }
