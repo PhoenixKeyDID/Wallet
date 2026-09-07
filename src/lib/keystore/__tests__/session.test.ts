@@ -85,6 +85,61 @@ describe("wallet session", () => {
     expect((s.get() as { walletId: string }).walletId).toBe("w2");
   });
 
+  /**
+   * Opening an account is slow on purpose — Argon2id at the shipping cost, then
+   * a whole account derived — so there is a window of hundreds of milliseconds
+   * in which the user can press Lock, hide the tab, or let the idle timer fire.
+   * Without the epoch, the derivation finishes afterwards and unlocks the wallet
+   * again: the keys land in memory *after* the person deliberately put them
+   * away, and the screen shows an open wallet they did not reopen.
+   */
+  it("refuses an unlock whose derivation started before the wallet was locked", () => {
+    const s = new WalletSession(NEVER_LOCK_MS);
+    s.unlock("w1", fakeAccount());
+    const epoch = s.epoch(); // taken as a slow open begins
+    s.lock(); // …and the user locks while it is still running
+    const late = fakeAccount();
+    expect(s.unlock("w1", late, epoch)).toBe(false);
+    expect(s.get().status).toBe("locked");
+    // Refusing is not enough: the keys were derived either way, so the refusal
+    // has to be the thing that destroys them. Handing them back to a caller
+    // that was just told its work is stale is handing them to whoever forgets.
+    expect(late.wiped).toBe(1);
+  });
+
+  it("refuses an unlock overtaken by a second open of a different account", () => {
+    const s = new WalletSession(NEVER_LOCK_MS);
+    const epoch = s.epoch();
+    s.unlock("w2", fakeAccount()); // a later open finished first
+    const slow = fakeAccount();
+    expect(s.unlock("w1", slow, epoch)).toBe(false);
+    expect(slow.wiped).toBe(1);
+    expect((s.get() as { walletId: string }).walletId).toBe("w2");
+  });
+
+  it("still unlocks when nothing moved underneath the derivation", () => {
+    const s = new WalletSession(NEVER_LOCK_MS);
+    const epoch = s.epoch();
+    const acct = fakeAccount();
+    expect(s.unlock("w1", acct, epoch)).toBe(true);
+    expect(acct.wiped).toBe(0);
+    expect(s.get().status).toBe("unlocked");
+  });
+
+  /**
+   * `lock()` bumps the epoch even when already locked. A derivation started
+   * while locked — the create-and-open path — must not install itself either,
+   * and "was the wallet open when Lock was pressed" is not the question.
+   */
+  it("counts a lock that had nothing to lock", () => {
+    const s = new WalletSession(NEVER_LOCK_MS);
+    const epoch = s.epoch();
+    s.lock();
+    const late = fakeAccount();
+    expect(s.unlock("w1", late, epoch)).toBe(false);
+    expect(late.wiped).toBe(1);
+  });
+
   it("honours an explicit never — but only when asked", () => {
     vi.useFakeTimers();
     const s = new WalletSession(NEVER_LOCK_MS);

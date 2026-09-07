@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   fetchAdaPrice,
+  forgetPrice,
   formatFiat,
   FIAT_CURRENCIES,
   type AdaPrice,
@@ -16,25 +17,48 @@ const OFF = "off" as const;
 type Choice = FiatCurrency | typeof OFF;
 
 /**
- * Which currency to show, remembered across visits.
+ * The currency this reader last chose, or `off` if they have not chosen.
  *
- * The default follows the interface language rather than being USD for
- * everyone: a Vietnamese reader converting đồng in their head, from a dollar
- * figure, at a rate they have to guess, is being handed arithmetic instead of
- * an answer. `off` is a real option and it is honoured before any request is
- * made — a switch that stops the display but still asks the third party would
- * be a switch that lies.
+ * **Off until asked for.** The price service is this module's only outbound host
+ * that is not a chain indexer, and it is a third party. Defaulting it on would
+ * mean that opening the wallet for the first time sends a request to that host
+ * from the reader's address — at the same moment, from the same address, as the
+ * indexer requests carrying their addresses — for a convenience nobody asked
+ * for. The rest of this module already answers a question of exactly this shape
+ * the same way: the network selector starts on the testnet, "where a mistake
+ * costs nothing", and reaching mainnet is something the user does on purpose.
+ * In the extension it matters more, not less: the host permission is granted at
+ * install time, so there is no second prompt to notice.
+ *
+ * Once chosen, the choice is remembered, and it is remembered per browser — the
+ * request itself carries nothing but `cardano` and a currency code.
+ *
+ * The language is still used, but to pick the *sensible* currency rather than
+ * to decide whether to ask at all: a Vietnamese reader converting đồng in their
+ * head from a dollar figure, at a rate they have to guess, is being handed
+ * arithmetic instead of an answer.
  */
-function initialChoice(language: string): Choice {
-  if (typeof window !== "undefined") {
-    const saved = window.localStorage.getItem(STORE_KEY);
-    if (saved === OFF) return OFF;
-    if ((FIAT_CURRENCIES as readonly string[]).includes(saved ?? "")) return saved as FiatCurrency;
-  }
+function preferredCurrency(language: string): FiatCurrency {
   const lang = language.slice(0, 2);
   if (lang === "vi") return "vnd";
   if (lang === "ja") return "jpy";
   return "usd";
+}
+
+function initialChoice(): Choice {
+  // Reading `window.localStorage` *throws* — it does not return null — when the
+  // browser is set to block site data, and Firefox's "block cookies" does
+  // exactly that. Unguarded, and called during render as it is, that exception
+  // takes down the whole subtree: the balance screen goes blank because the
+  // reader declined a cookie.
+  try {
+    if (typeof window === "undefined") return OFF;
+    const saved = window.localStorage.getItem(STORE_KEY);
+    if ((FIAT_CURRENCIES as readonly string[]).includes(saved ?? "")) return saved as FiatCurrency;
+  } catch {
+    /* no stored choice is readable; fall through to off */
+  }
+  return OFF;
 }
 
 /**
@@ -53,7 +77,7 @@ function initialChoice(language: string): Choice {
  */
 export function FiatValue({ lovelace }: { lovelace: bigint }) {
   const { t, i18n } = useTranslation("wallet");
-  const [choice, setChoice] = useState<Choice>(() => initialChoice(i18n.language));
+  const [choice, setChoice] = useState<Choice>(initialChoice);
   const [price, setPrice] = useState<AdaPrice | null>(null);
   const [failed, setFailed] = useState(false);
 
@@ -61,6 +85,11 @@ export function FiatValue({ lovelace }: { lovelace: bigint }) {
     if (choice === OFF) {
       setPrice(null);
       setFailed(false);
+      // Drop the cached rate too. Off has to mean the module is holding nothing
+      // from the price service, not merely that one component stopped drawing
+      // it — otherwise switching back inside the cache window shows a figure
+      // that was fetched before the reader turned it on again.
+      forgetPrice();
       return;
     }
     let live = true;
@@ -85,8 +114,18 @@ export function FiatValue({ lovelace }: { lovelace: bigint }) {
 
   const choose = (next: Choice) => {
     setChoice(next);
-    if (typeof window !== "undefined") window.localStorage.setItem(STORE_KEY, next);
+    try {
+      if (typeof window !== "undefined") window.localStorage.setItem(STORE_KEY, next);
+    } catch {
+      // Storage blocked: the choice holds for this visit and is asked again
+      // next time. Not being able to remember it is not a reason to fail it.
+    }
   };
+
+  // The currency this reader most likely wants sits at the top of the list, so
+  // turning the line on is one choice rather than a hunt through four codes.
+  const preferred = preferredCurrency(i18n.language);
+  const ordered = [preferred, ...FIAT_CURRENCIES.filter((c) => c !== preferred)];
 
   return (
     <div className="flex flex-wrap items-baseline gap-2 text-xs">
@@ -107,12 +146,13 @@ export function FiatValue({ lovelace }: { lovelace: bigint }) {
         aria-label={t("fiat_currency_label")}
         className="rounded-brand-sm border border-border-soft bg-bg0 px-1.5 py-0.5 text-text-hint"
       >
-        {FIAT_CURRENCIES.map((c) => (
+        {/* Off is first because it is the state the wallet starts in. */}
+        <option value={OFF}>{t("fiat_off")}</option>
+        {ordered.map((c) => (
           <option key={c} value={c}>
             {c.toUpperCase()}
           </option>
         ))}
-        <option value={OFF}>{t("fiat_off")}</option>
       </select>
     </div>
   );

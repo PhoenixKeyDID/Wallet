@@ -96,6 +96,8 @@ export function LocalWalletPanel() {
   const [account, setAccount] = useState<Account | null>(null);
   const [lovelace, setLovelace] = useState<bigint>(BigInt("0"));
   const [assets, setAssets] = useState<DisplayAsset[]>([]);
+  /** Guards the balance read against being overtaken — see `loadBalance`. */
+  const balanceRun = useRef(0);
   const [balanceOk, setBalanceOk] = useState(false);
   // True when the last address inside the gap-limit window still holds funds,
   // which proves the window is too small to be the whole wallet. See
@@ -194,6 +196,13 @@ export function LocalWalletPanel() {
     const off = session.subscribe((s) => {
       if (s.status === "locked") {
         setAccount(null);
+        // A balance read started before the lock must not paint the previous
+        // wallet's money onto the screen after it.
+        balanceRun.current += 1;
+        setLovelace(BigInt("0"));
+        setAssets([]);
+        setBalanceOk(false);
+        setBalanceMayBePartial(false);
         setRevealed(null);
         setStep((cur) => (cur === "open" ? "list" : cur));
         // The password is what opens the vault. Keeping it in state through a
@@ -276,9 +285,17 @@ export function LocalWalletPanel() {
     try {
       const source = step === "password" && restoreText ? restoreText : phrase;
       const entropy = mnemonicToEntropyBytes(source);
-      const acct = await accountFromEntropy(entropy, 0, network);
-      const vault = await sealVault(entropy, pw, { label: label.trim() || undefined });
-      entropy.fill(0);
+      let acct;
+      let vault;
+      try {
+        acct = await accountFromEntropy(entropy, 0, network);
+        vault = await sealVault(entropy, pw, { label: label.trim() || undefined });
+      } finally {
+        // Either await can throw — a derivation error, or WebCrypto missing on
+        // a page served over plain http. Without `finally` the seed survives
+        // the failure, which is the one moment nobody is watching it.
+        entropy.fill(0);
+      }
 
       const w: StoredWallet = {
         id: newWalletId(),
@@ -340,13 +357,35 @@ export function LocalWalletPanel() {
   const openAccount = async (walletId: string, password: string, index: number) => {
     const w = await store.get(walletId);
     if (!w) throw new Error("local_wallet_missing");
+    // Taken before the slow part, checked after it. Argon2id plus a full
+    // account derivation is hundreds of milliseconds at best, and during that
+    // window the user can press Lock, hide the tab, or let the idle timer fire.
+    // Installing the result afterwards would put the keys back in memory
+    // *after* they deliberately put them away.
+    const epoch = session.epoch();
     const entropy = await openVault(w.vault, password);
-    const acct = await accountFromEntropy(entropy, index, w.network as PhoenixNetwork);
-    entropy.fill(0);
+    let acct;
+    try {
+      acct = await accountFromEntropy(entropy, index, w.network as PhoenixNetwork);
+    } finally {
+      // `finally`, not a plain next statement: a derivation that throws would
+      // otherwise leave the seed — the one secret that regenerates every key
+      // for every account — alive in the heap until the collector happens to
+      // run. This is the idiom `changeVaultPassword` already uses.
+      entropy.fill(0);
+    }
     // `session.unlock` wipes whatever account was open before it stores the new
-    // one, so switching cannot leave the previous account's keys in the heap.
-    session.unlock(w.id, acct);
+    // one, so switching cannot leave the previous account's keys in the heap —
+    // and with the epoch it wipes *this* one instead if the wallet was locked
+    // while we were deriving.
+    if (!session.unlock(w.id, acct, epoch)) return;
     setAccount(acct);
+    // Wipe the previous account's figures before showing the next one. A
+    // balance read takes seconds, and leaving the old numbers up under the new
+    // account's name and address is the same lie as letting a stale read win —
+    // it just tells it during the wait instead of after.
+    setLovelace(BigInt("0"));
+    setAssets([]);
     setAccountIndex(index);
     // Remember where they were, so the next unlock does not land on an empty
     // account 0 and read as "my money is gone".
@@ -355,8 +394,15 @@ export function LocalWalletPanel() {
     void loadBalance(acct);
   };
 
+  /**
+   * The buttons carry `disabled={busy}`, but Enter in the password field does
+   * not go through a button. Held down, the key repeats about thirty times a
+   * second, and each repeat starts an Argon2id at the shipping cost (19 MiB,
+   * ~1.4 s) plus a full account derivation. A user who is simply impatient can
+   * hang their own tab, or an extension popup, at the moment they open a wallet.
+   */
   const unlock = async () => {
-    if (!activeId) return;
+    if (!activeId || busy) return;
     setBusy(true);
     try {
       const w = await store.get(activeId);
@@ -372,7 +418,8 @@ export function LocalWalletPanel() {
 
   /** Re-derive at a different account index. Needs the password; see above. */
   const switchAccount = async () => {
-    if (!activeId || switchTo === null) return;
+    // Same key-repeat guard as `unlock`.
+    if (!activeId || switchTo === null || busy) return;
     setBusy(true);
     try {
       await openAccount(activeId, switchPw, switchTo);
@@ -385,11 +432,34 @@ export function LocalWalletPanel() {
     }
   };
 
+  /**
+   * Which balance read is the current one.
+   *
+   * Every read here is slow — dozens of addresses through a public indexer —
+   * and there are three ways to start a second one before the first returns:
+   * switch account, unlock a different wallet, or press refresh. Whichever
+   * *finishes* last wins the screen, and that is not the same as whichever the
+   * user asked for last. An empty account 5 answers in a moment while a busy
+   * account 0 is still going, so the screen ends up labelled "Account 5",
+   * showing account 5's address, over account 0's money — and Send, which reads
+   * the real UTxOs, then refuses to spend a balance the screen just promised.
+   *
+   * Worse is the failure direction: a read that sets `balanceOk = false` and
+   * then fails can be overwritten by an older read setting it back to `true`,
+   * which removes the "balance unavailable" warning from a screen whose account
+   * was never measured. The repo has paid for that shape once already.
+   *
+   * A counter rather than comparing accounts: the same account can be read
+   * twice, and the later read is still the one that should win.
+   */
   const loadBalance = async (acct: Account) => {
+    const run = (balanceRun.current += 1);
+    const current = () => balanceRun.current === run;
     setBalanceOk(false);
     setBalanceMayBePartial(false);
     try {
       const bal = await fetchAddressBalance(acct.network, allAddresses(acct));
+      if (!current()) return;
       setLovelace(bal.lovelace);
       setAssets(bal.assets);
       setBalanceOk(true);
@@ -411,11 +481,12 @@ export function LocalWalletPanel() {
       );
       if (tails.length > 0) {
         const tail = await fetchAddressBalance(acct.network, tails);
-        if (tail.lovelace > BigInt("0") || tail.assets.length > 0) {
+        if (current() && (tail.lovelace > BigInt("0") || tail.assets.length > 0)) {
           setBalanceMayBePartial(true);
         }
       }
     } catch (e) {
+      if (!current()) return;
       // A dead indexer must not look like an empty wallet.
       toastApiError(e);
     }
@@ -429,8 +500,11 @@ export function LocalWalletPanel() {
       const w = await store.get(activeId);
       if (!w) return;
       const entropy = await openVault(w.vault, pw);
-      setRevealed(entropyToMnemonicPhrase(entropy));
-      entropy.fill(0);
+      try {
+        setRevealed(entropyToMnemonicPhrase(entropy));
+      } finally {
+        entropy.fill(0);
+      }
       setPw("");
     } catch (e) {
       err(e);

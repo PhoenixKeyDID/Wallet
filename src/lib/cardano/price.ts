@@ -90,13 +90,27 @@ export function readPrice(body: unknown, currency: FiatCurrency, atMs: number): 
 const TTL_MS = 60_000;
 let cached: AdaPrice | null = null;
 
-/** Drop the cached reading. For tests, and for switching the feature off. */
+/**
+ * Drop the cached reading.
+ *
+ * Called when the reader switches the fiat line off, so that "off" means the
+ * module is holding nothing from the price service rather than merely that one
+ * component stopped drawing it. Also used by the tests.
+ */
 export function forgetPrice(): void {
   cached = null;
 }
 
 export async function fetchAdaPrice(currency: FiatCurrency, nowMs = Date.now()): Promise<AdaPrice> {
-  if (cached && cached.currency === currency && nowMs - cached.atMs < TTL_MS) return cached;
+  // `0 <= age < TTL`, not `age < TTL`. A clock that moves backwards — a manual
+  // change, an NTP correction, a laptop waking in another timezone — makes the
+  // age negative, and the naive comparison then holds the same reading until
+  // the clock catches up, printing an old rate next to a timestamp that says it
+  // is from the future.
+  if (cached && cached.currency === currency) {
+    const age = nowMs - cached.atMs;
+    if (age >= 0 && age < TTL_MS) return cached;
+  }
 
   const res = await fetch(`${PRICE_BASE}/simple/price?ids=cardano&vs_currencies=${currency}`, {
     headers: { accept: "application/json" },

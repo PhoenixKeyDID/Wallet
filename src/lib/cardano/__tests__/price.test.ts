@@ -8,8 +8,15 @@
  * several thousand đồng, which is the spread that makes a hard-coded two
  * decimal places wrong.
  */
-import { describe, it, expect, beforeEach } from "vitest";
-import { readPrice, formatFiat, forgetPrice, PriceError, type AdaPrice } from "../price";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import {
+  readPrice,
+  formatFiat,
+  forgetPrice,
+  fetchAdaPrice,
+  PriceError,
+  type AdaPrice,
+} from "../price";
 
 const AT = 1_788_710_000_000;
 const BODY = { cardano: { usd: 0.217973, vnd: 5680.07, eur: 0.187681, jpy: 34.13 } };
@@ -78,5 +85,42 @@ describe("formatFiat", () => {
 
   it("shows nothing owed on an empty wallet rather than a missing line", () => {
     expect(formatFiat(BigInt(0), usd, "en-US")).toBe("$0.00");
+  });
+});
+
+/**
+ * The cache is a minute long, which is only true while the clock moves forward.
+ */
+describe("the sixty-second cache", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const stub = () => {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      calls.push(url);
+      return { ok: true, json: async () => BODY };
+    });
+    return calls;
+  };
+
+  it("does not ask twice inside the window", async () => {
+    const calls = stub();
+    await fetchAdaPrice("usd", AT);
+    await fetchAdaPrice("usd", AT + 59_000);
+    expect(calls).toHaveLength(1);
+  });
+
+  /**
+   * A clock that moves *backwards* — a manual change, an NTP correction, a
+   * laptop waking in another timezone — makes the reading's age negative. Tested
+   * with `age < TTL` alone, a negative age passes, so the wallet keeps serving
+   * the same rate until the clock catches up, next to a timestamp claiming the
+   * reading is from the future.
+   */
+  it("re-asks when the clock has gone backwards", async () => {
+    const calls = stub();
+    await fetchAdaPrice("usd", AT);
+    await fetchAdaPrice("usd", AT - 3_600_000);
+    expect(calls).toHaveLength(2);
   });
 });
