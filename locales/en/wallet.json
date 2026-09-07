@@ -373,5 +373,9 @@
   "cip30_not_a_tx": "What the site sent is not a transaction.",
   "cip30_cannot_read_tx": "This transaction could not be read, so nothing was signed.",
   "addr_unwatched_title": "Your wallet did not list this address",
-  "addr_unwatched_body": "The key is yours, but the connected wallet did not name this address among the ones it watches. Money sent here can fail to appear in your balance and can be unspendable from this wallet — the funds are not lost, since the key derives them, but getting them back may need another wallet. Receive-only (enterprise) addresses and high indexes are the usual reasons. Unless you know why you need this one, use “Show my address” above."
+  "addr_unwatched_body": "The key is yours, but the connected wallet did not name this address among the ones it watches. Money sent here can fail to appear in your balance and can be unspendable from this wallet — the funds are not lost, since the key derives them, but getting them back may need another wallet. Receive-only (enterprise) addresses and high indexes are the usual reasons. Unless you know why you need this one, use “Show my address” above.",
+  "hist_source_note": "Read from a public chain indexer. Good for looking back at what you did; not proof that a payment arrived.",
+  "hist_failed_title": "History did not load",
+  "hist_failed_body": "The indexer could not be reached, so this list may be missing or out of date. This says nothing about your balance.",
+  "hist_amount_unknown_withdrawal": "amount not shown"
 }

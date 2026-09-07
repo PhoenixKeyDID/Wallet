@@ -63,8 +63,43 @@ export class KoiosTruncatedError extends Error {
   }
 }
 
-export async function koios<T>(network: PhoenixNetwork, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`${koiosBase(network)}${path}`, {
+/**
+ * A bound the *caller* asked for — not a bound the server imposed.
+ *
+ * The difference is the whole reason this exists. `KoiosTruncatedError` below
+ * catches a server that answered part of an unbounded question, which for a
+ * balance or a UTxO set is a wrong number wearing the clothes of a right one.
+ * But "the most recent 25 transactions" is a question that is *complete* at 25,
+ * and PostgREST answers a deliberate `limit` with the same `206` and the same
+ * short content-range as a truncation. Without a way to say which was asked,
+ * either the guard fires on every paged read, or it is switched off for all of
+ * them.
+ *
+ * Measured 2026-09-06 on the live indexer, and both halves matter:
+ * `/address_txs` unbounded on a busy script address answered **HTTP 504** after
+ * two minutes, and on an ordinary address answered `200` with rows ordered
+ * newest-first; the same request with `limit=5&order=block_height.desc`
+ * answered `206 content-range: 0-4/34` in under a second. So the bound is not
+ * only about the guard — unbounded is the shape that does not come back.
+ */
+export type KoiosPage = {
+  limit: number;
+  /** PostgREST ordering, e.g. `block_height.desc`. Ask explicitly: a page of
+   *  "some rows" is only the newest ones if the server was told to sort. */
+  order?: string;
+};
+
+export async function koios<T>(
+  network: PhoenixNetwork,
+  path: string,
+  body?: unknown,
+  page?: KoiosPage,
+): Promise<T> {
+  const query = page
+    ? `?limit=${encodeURIComponent(String(page.limit))}` +
+      (page.order ? `&order=${encodeURIComponent(page.order)}` : "")
+    : "";
+  const res = await fetch(`${koiosBase(network)}${path}${query}`, {
     method: body ? "POST" : "GET",
     headers: {
       "content-type": "application/json",
@@ -82,7 +117,11 @@ export async function koios<T>(network: PhoenixNetwork, path: string, body?: unk
   // Checking the range rather than the status is what closes that.
   if (!res.ok) throw new Error(`Koios ${path} → HTTP ${res.status}`);
 
-  const range = res.headers?.get("content-range");
+  // A short answer to a question that asked to be short is not a truncated
+  // answer. PostgREST reports both the same way — `206` and a content-range that
+  // stops before the total — so only the caller can tell them apart, and the
+  // caller says which it asked by passing `page`.
+  const range = page ? null : res.headers?.get("content-range");
   if (range) {
     const m = /^(\d+)-(\d+)\/(\d+)$/.exec(range.trim());
     if (m) {

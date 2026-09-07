@@ -20,6 +20,10 @@ import {
 
 const MINE = "addr1_mine";
 const OTHER = "addr1_someone_else";
+/** Real shape, from the measured mainnet row quoted above. */
+const MY_STAKE = "stake1uyckuvwthqs0yn3k0356n0wdhh395upurrfmlh4d6w4m68gjk2m5q";
+const THEIR_STAKE = "stake1uxv552uap8evl7adym6je4rpu5370u5vwd90r3lxwzmpjvchlk60c";
+const mine = new Set([MY_STAKE]);
 const NIGHT = { policy_id: "a".repeat(56), asset_name: "4e49474854", quantity: "214457817986" };
 const own = new Set([MINE]);
 
@@ -94,9 +98,10 @@ describe("readTx — the amount is this wallet's, not the transaction's", () => 
         tx_timestamp: 1788705807,
         inputs: [io(MINE, "2000000")],
         outputs: [io(MINE, "9931264", [NIGHT])],
-        withdrawals: [{ amount: "8112385" }],
+        withdrawals: [{ amount: "8112385", stake_addr: MY_STAKE }],
       },
       own,
+      mine,
     );
     // Returned 9931264, spent 2000000, of which 8112385 was reward money that
     // was never ours to begin with: the wallet's own ADA fell by the fee.
@@ -179,6 +184,132 @@ describe("readTx — the amount is this wallet's, not the transaction's", () => 
     ).toThrow(HistoryError);
   });
 
+  /**
+   * The indexer is an unauthenticated public service, so it can be made to
+   * return this: an asset row whose policy id and name are both empty. The unit
+   * key is `policyId + nameHex`, and ADA's key is the empty string — so the
+   * quantity lands on the ADA total itself, not on a token line anyone would
+   * look at twice. A real policy id is blake2b-224: 56 hex characters, always.
+   */
+  it("refuses an asset whose policy id would collide with the key ADA uses", () => {
+    expect(() =>
+      readTx(
+        {
+          tx_hash: "kk",
+          fee: "170000",
+          block_height: 1,
+          tx_timestamp: 1,
+          inputs: [io(MINE, "5000000")],
+          outputs: [
+            io(MINE, "4830000", [{ policy_id: "", asset_name: "", quantity: "999999999999" }]),
+          ],
+        },
+        own,
+      ),
+    ).toThrow(HistoryError);
+  });
+
+  it("refuses a policy id that is the wrong length to be one", () => {
+    expect(() =>
+      readTx(
+        {
+          tx_hash: "ll",
+          fee: "170000",
+          block_height: 1,
+          tx_timestamp: 1,
+          inputs: [io(MINE, "5000000")],
+          outputs: [io(MINE, "4830000", [{ policy_id: "abcd", asset_name: "", quantity: "1" }])],
+        },
+        own,
+      ),
+    ).toThrow(HistoryError);
+  });
+
+  /**
+   * The miscount that lets a stranger write a number onto your screen.
+   *
+   * A withdrawal belongs to whoever owns the stake address inside it, and one
+   * transaction can carry several people's. Anyone can build this shape without
+   * any special access: pay someone 5 ADA in the same transaction that claims
+   * your own 100 ADA of staking rewards. Summing every withdrawal and taking it
+   * off this wallet's total turns that into **"received −95 ADA"**, stated with
+   * as much confidence as any other row.
+   */
+  it("does not subtract a stranger's reward withdrawal from this wallet", () => {
+    const e = readTx(
+      {
+        tx_hash: "jj",
+        fee: "170000",
+        block_height: 1,
+        tx_timestamp: 1,
+        inputs: [io(OTHER, "200000000")],
+        outputs: [io(MINE, "5000000"), io(OTHER, "294830000")],
+        withdrawals: [{ amount: "100000000", stake_addr: THEIR_STAKE }],
+      },
+      own,
+      mine,
+    );
+    expect(ada(e)).toBe(BigInt(5000000)); // the 5 ADA they sent, and nothing else
+    expect(e.kind).toBe("received");
+    expect(e.withdrawnLovelace).toBe(BigInt(0)); // their rewards, not ours
+    expect(e.unattributed).toBeNull();
+  });
+
+  /**
+   * Same transaction, but the wallet does not know its own reward address — the
+   * case a CIP-30 connection can leave it in. It cannot tell whose withdrawal
+   * this is, so it must not produce a figure either way: counting it is
+   * "−95 ADA", ignoring it is wrong whenever the withdrawal really was ours.
+   */
+  it("shows no amount at all when it cannot tell whose withdrawal it is", () => {
+    const e = readTx(
+      {
+        tx_hash: "jj",
+        fee: "170000",
+        block_height: 1,
+        tx_timestamp: 1,
+        inputs: [io(OTHER, "200000000")],
+        outputs: [io(MINE, "5000000"), io(OTHER, "294830000")],
+        withdrawals: [{ amount: "100000000", stake_addr: THEIR_STAKE }],
+      },
+      own,
+      new Set(), // reward address unknown
+    );
+    expect(e.unattributed).toBe("withdrawal_owner_unknown");
+    const d = rowDisplay(e, true);
+    expect(d.show).toBe(false);
+    if (d.show) throw new Error("unreachable");
+    expect(d.reason).toBe("withdrawal_owner_unknown");
+  });
+
+  it("refuses a withdrawal with no owner named on it", () => {
+    expect(() =>
+      readTx(
+        {
+          tx_hash: "jj",
+          fee: "170000",
+          block_height: 1,
+          tx_timestamp: 1,
+          inputs: [io(MINE, "2000000")],
+          outputs: [io(MINE, "9931264")],
+          withdrawals: [{ amount: "8112385" }],
+        },
+        own,
+        mine,
+      ),
+    ).toThrow(HistoryError);
+  });
+
+  /**
+   * `?? 0` on either of these prints `1/1/1970` and `Block 0` as facts, in a
+   * module whose whole argument is that refusing beats a plausible wrong number.
+   */
+  it("refuses a row with no timestamp or no block height", () => {
+    const base = { tx_hash: "oo", fee: "1", inputs: [io(MINE, "2")], outputs: [io(MINE, "1")] };
+    expect(() => readTx({ ...base, block_height: 1 }, own)).toThrow(HistoryError);
+    expect(() => readTx({ ...base, tx_timestamp: 1 }, own)).toThrow(HistoryError);
+  });
+
   it("refuses an amount that is not a whole number", () => {
     expect(() =>
       readTx(
@@ -204,11 +335,53 @@ describe("readTx — the amount is this wallet's, not the transaction's", () => 
         tx_timestamp: 1,
         inputs: [io(MINE, "10000000")],
         outputs: [io(MINE, "9820000")],
-        certificates: [{ type: "delegation" }],
+        certificates: [{ type: "delegation", info: { stake_address: MY_STAKE } }],
       },
       own,
+      mine,
     );
     expect(e.kind).toBe("delegation");
+  });
+
+  /**
+   * A transaction has many parties. Someone else registering or deregistering
+   * their stake key in the same transaction that takes a fee from us did not
+   * change *our* staking, and the label is what a person uses to decide whether
+   * a row deserves a second look.
+   */
+  it("does not call it a delegation when the certificate is a stranger's", () => {
+    const e = readTx(
+      {
+        tx_hash: "mm",
+        fee: "180000",
+        block_height: 1,
+        tx_timestamp: 1,
+        inputs: [io(MINE, "10000000")],
+        outputs: [io(MINE, "9820000")],
+        certificates: [{ type: "stake_deregistration", info: { stake_address: THEIR_STAKE } }],
+      },
+      own,
+      mine,
+    );
+    expect(e.kind).toBe("internal");
+  });
+
+  it("does not call it a mint when the minted asset never reached this wallet", () => {
+    const e = readTx(
+      {
+        tx_hash: "nn",
+        fee: "180000",
+        block_height: 1,
+        tx_timestamp: 1,
+        inputs: [io(MINE, "10000000")],
+        outputs: [io(MINE, "9820000")],
+        // Minted in this transaction, and handed to someone else entirely.
+        assets_minted: [{ policy_id: "b".repeat(56), asset_name: "4e4654", quantity: "1" }],
+      },
+      own,
+      mine,
+    );
+    expect(e.kind).toBe("internal");
   });
 
   /**
@@ -251,6 +424,7 @@ describe("rowDisplay — a plausible wrong number is worse than an admission", (
     ],
     kind: "sent",
     counterparties: [OTHER],
+    unattributed: null,
   });
 
   it("shows the amount when the wallet knows all of its own addresses", () => {
@@ -285,6 +459,7 @@ describe("confirmationsOf", () => {
     net: [],
     kind: "internal",
     counterparties: [],
+    unattributed: null,
   });
 
   it("counts the block itself as the first confirmation", () => {

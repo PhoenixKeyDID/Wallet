@@ -373,5 +373,9 @@
   "cip30_not_a_tx": "Thứ trang web gửi sang không phải một giao dịch.",
   "cip30_cannot_read_tx": "Không đọc được giao dịch này, nên không ký gì cả.",
   "addr_unwatched_title": "Ví của bạn không kể tên địa chỉ này",
-  "addr_unwatched_body": "Khoá đúng là của bạn, nhưng ví đang kết nối không kể địa chỉ này trong số các địa chỉ nó theo dõi. Tiền gửi vào đây có thể không hiện trong số dư và có thể không tiêu được từ ví này — tiền không mất, vì khoá vẫn sinh ra được nó, nhưng muốn lấy lại có khi phải dùng ví khác. Thường là do địa chỉ chỉ-nhận (enterprise) hoặc chỉ số quá cao. Nếu không có lý do rõ ràng, hãy dùng “Hiện địa chỉ của tôi” ở trên."
+  "addr_unwatched_body": "Khoá đúng là của bạn, nhưng ví đang kết nối không kể địa chỉ này trong số các địa chỉ nó theo dõi. Tiền gửi vào đây có thể không hiện trong số dư và có thể không tiêu được từ ví này — tiền không mất, vì khoá vẫn sinh ra được nó, nhưng muốn lấy lại có khi phải dùng ví khác. Thường là do địa chỉ chỉ-nhận (enterprise) hoặc chỉ số quá cao. Nếu không có lý do rõ ràng, hãy dùng “Hiện địa chỉ của tôi” ở trên.",
+  "hist_source_note": "Đọc từ một dịch vụ tra cứu chuỗi khối công khai. Đủ để xem lại việc mình đã làm; không phải bằng chứng rằng một khoản đã tới.",
+  "hist_failed_title": "Không tải được lịch sử",
+  "hist_failed_body": "Không liên lạc được với dịch vụ tra cứu, nên danh sách này có thể thiếu hoặc cũ. Điều này không nói gì về số dư của bạn.",
+  "hist_amount_unknown_withdrawal": "không hiện số tiền"
 }

@@ -77,25 +77,46 @@ export function HistoryPanel({
 }: {
   port: WalletPort;
   network: PhoenixNetwork;
-  changeAddress: string;
 }) {
   const { t, i18n } = useTranslation("wallet");
   const [entries, setEntries] = useState<HistoryEntry[] | null>(null);
   const [tip, setTip] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState<string | null>(null);
+  /**
+   * Set when a read failed. Kept in state rather than left to a toast, because
+   * a toast is gone in seconds and the screen behind it is indistinguishable
+   * from a wallet that has never transacted. "You have no history" and "this
+   * did not load" are different facts about someone's money.
+   */
+  const [failed, setFailed] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
+    setFailed(false);
     try {
       const owned = (await port.getOwnedAddressesHex()).map((hex) =>
         tyUtils.getAddressFromHex(Buffer.from(hex, "hex")).getBech32(),
       );
-      const page = await fetchHistory(network, owned);
+      // The reward address is what says which withdrawals in a transaction are
+      // this wallet's. Without it, a stranger's reward claim riding along with a
+      // payment to us would be subtracted from our own total. A port that
+      // cannot answer gets an empty list, and rows carrying a withdrawal then
+      // show no amount rather than a wrong one — so this failing must not take
+      // the whole page down with it.
+      let stake: string[] = [];
+      try {
+        const hex = await port.getRewardAddressHex();
+        stake = [tyUtils.getAddressFromHex(Buffer.from(hex, "hex")).getBech32()];
+      } catch {
+        stake = [];
+      }
+      const page = await fetchHistory(network, owned, stake);
       setEntries(page.entries);
       setTip(page.tipBlockHeight);
     } catch (err) {
       toastApiError(err);
+      setFailed(true);
       // Leave `entries` as it was. Replacing a loaded list with an empty one on
       // a failed refresh would say "you have no transactions" because the
       // network blipped — the silent shell this repo has paid for before.
@@ -137,7 +158,32 @@ export function HistoryPanel({
         </div>
       )}
 
-      {entries !== null && entries.length === 0 && !loading && (
+      {/*
+        Where the numbers come from, said once and plainly. The indexer is a
+        public, unauthenticated service: it is not asked to prove anything, and
+        nothing here re-derives a transaction from the chain itself. That is
+        fine for looking back at what you did, and it is not proof that a
+        payment arrived — which matters because "the wallet says I received it"
+        is exactly what someone hands over goods on.
+      */}
+      <p className="text-xs text-text-hint">{t("hist_source_note")}</p>
+
+      {failed && (
+        <div className="rounded-brand border border-border-amber bg-amber-brand/10 p-4 text-sm text-amber-brand space-y-2">
+          <p className="font-semibold">⚠ {t("hist_failed_title")}</p>
+          <p className="text-xs">{t("hist_failed_body")}</p>
+          <button
+            type="button"
+            disabled={loading}
+            onClick={() => void load()}
+            className="rounded-brand-sm border border-border-amber px-3 py-1.5 text-xs disabled:opacity-50"
+          >
+            {loading ? t("loading") : t("hist_refresh")}
+          </button>
+        </div>
+      )}
+
+      {entries !== null && entries.length === 0 && !loading && !failed && (
         <div className="rounded-brand border border-border-soft bg-bg1 p-5 text-sm text-text-hint">
           {t("hist_empty")}
         </div>
@@ -172,7 +218,11 @@ export function HistoryPanel({
                     {display.show ? (
                       <AdaLine amount={display.ada} />
                     ) : (
-                      <span className="text-xs text-text-hint">{t("hist_amount_unknown")}</span>
+                      <span className="text-xs text-text-hint">
+                        {display.reason === "withdrawal_owner_unknown"
+                          ? t("hist_amount_unknown_withdrawal")
+                          : t("hist_amount_unknown")}
+                      </span>
                     )}
                     <span className="block text-[10px] text-text-hint">
                       {expanded ? "▾" : "▸"}
@@ -240,7 +290,14 @@ export function HistoryPanel({
                         <dd className="mono text-text-dim">{confirmations}</dd>
                       </div>
                     )}
-                    {e.counterparties.length > 0 && (
+                    {/*
+                      Only on a row that sent something. `counterparties` is
+                      every output address that is not ours, which on a *receive*
+                      is the sender's own change address — showing it under "To"
+                      tells the reader their money went somewhere it did not, and
+                      hands them an unrelated address in full, ready to copy.
+                    */}
+                    {e.kind === "sent" && e.counterparties.length > 0 && (
                       <div className="space-y-1">
                         <dt className="text-text-hint">{t("hist_to")}</dt>
                         {/* Never truncated: a shortened address is exactly what
