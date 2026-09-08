@@ -113,9 +113,21 @@ The `src/lib/cardano` core has no host dependencies — it relies only on
 
 ## Host contract
 
-The UI imports a few aliases the host app provides. This repo ships **minimal
-default implementations** so it type-checks and its core tests run standalone;
-when integrating, point these at the host's own modules:
+**The contract is a file, not this section:** [`docs/host-contract.json`](docs/host-contract.json),
+checked against the code by `check:host-contract`. Prose here can fall behind an
+import; that file cannot, because CI fails when it does. It happened: a
+`src/lib/keystore` directory and a new dependency were added, one host had
+neither, and the wallet-creation screen was simply absent from the running site
+while every gate in this repo stayed green.
+
+Two directions, and mixing them up is the failure above:
+
+- **Aliases the host must resolve *into* this module** — `@/lib/cardano`,
+  `@/lib/keystore`, `@/lib/night`, `@/lib/wallet`, `@/components/wallet`,
+  `@/components/night`. Miss one and the host's build fails on a file that
+  compiles fine here.
+- **Aliases the host *supplies*.** This repo ships minimal stand-ins so it
+  type-checks and its tests run standalone:
 
 | Alias | Ships here as | Host provides |
 |---|---|---|
@@ -123,8 +135,29 @@ when integrating, point these at the host's own modules:
 | `@/lib/toast` | console logger | react-hot-toast + i18n |
 | `@/components/CopyBtn` `Nav` `Footer` | placeholders | the host's styled components |
 
+Runtime dependencies live in the host's `node_modules` — the module is consumed
+as source. The list is `hostMustInstall` in the contract file.
+
 The components use the host's Tailwind design tokens (`bg-bg1`, `text-text-dim`,
 `teal-brand`, …); provide those in the host stylesheet.
+
+**Where the chain is read from.** By default, Koios — which a **browser cannot
+use**: measured 2026-09-08, all three Koios hosts answer the preflight with
+`access-control-allow-origin: *` and then omit that header from the response
+carrying the data, so a page-side `fetch` fails while `curl` succeeds. The
+extension is unaffected; its `host_permissions` put it outside same-origin rules.
+A host serving this on the web therefore has to point it somewhere else:
+
+```ts
+setChainSource(network, { kind: "blockfrost", base: "https://<your endpoint>/api/v0" });
+```
+
+The dialect is Blockfrost's REST API, which is what this platform's own chain
+access already speaks — Cnode runs Dolos, and Dolos serves a Blockfrost-compatible
+face from nodes the platform operates. That is the intended endpoint: no third
+party, no API key. Byte-level parity between a given Dolos build and Blockfrost's
+documented shapes is **not verified here** and must not be assumed — see
+`src/lib/cardano/blockfrost.ts`.
 
 **Pass the signed-in DID.** `GET /wallet/{did}/all` requires a Bearer session and
 the backend enforces `caller_did == path_did`, so the Phoenix custody view only
@@ -142,9 +175,10 @@ session at all — they never touch the Phoenix backend.
 
 ```bash
 bun install
-bun run test          # 453 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
+bun run test          # 477 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
 bun run typecheck
 bun run check:locales # 4 languages × 2 namespaces must stay in step
+bun run check:host-contract # what a host must wire up, checked against what the code imports
 bun run check:urls    # no ungated outbound URL at the repo root or under src/, extension/, scripts/, docs/
 bun run check:node-globals # the Node-globals shim is imported before @stricahq
 bun run check:keystore-boundary # only the key-holding screens and the bundle smoke check may import the keystore

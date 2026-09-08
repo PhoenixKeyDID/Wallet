@@ -1,7 +1,7 @@
 {
   "name": "@phoenixkey/wallet",
   "version": "0.1.0",
-  "description": "Phoenix Wallet \u2014 a pure-JS Cardano wallet module: use it like a traditional wallet (no DID, seed/keys never leave your device) or with a Phoenix DID in parallel.",
+  "description": "Phoenix Wallet — a pure-JS Cardano wallet module: use it like a traditional wallet (no DID, seed/keys never leave your device) or with a Phoenix DID in parallel.",
   "license": "Apache-2.0",
   "type": "module",
   "sideEffects": [
@@ -12,6 +12,7 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "check:locales": "node scripts/check-locales.mjs",
+    "check:host-contract": "node scripts/check-host-contract.mjs",
     "check:urls": "node scripts/check-urls.mjs",
     "check:node-globals": "node scripts/check-node-globals.mjs",
     "check:keystore-boundary": "node scripts/check-keystore-boundary.mjs",
