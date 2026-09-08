@@ -24,11 +24,16 @@ type Choice = FiatCurrency | typeof OFF;
  * mean that opening the wallet for the first time sends a request to that host
  * from the reader's address — at the same moment, from the same address, as the
  * indexer requests carrying their addresses — for a convenience nobody asked
- * for. The rest of this module already answers a question of exactly this shape
- * the same way: the network selector starts on the testnet, "where a mistake
- * costs nothing", and reaching mainnet is something the user does on purpose.
- * In the extension it matters more, not less: the host permission is granted at
- * install time, so there is no second prompt to notice.
+ * for. In the extension it matters more, not less: the host permission is
+ * granted at install time, so there is no second prompt to notice.
+ *
+ * (An earlier draft justified this by analogy with the network selector
+ * "defaulting to the testnet". That analogy was wrong and is recorded here so
+ * nobody restores it: that picker never chooses between mainnet and a testnet —
+ * it only runs once the extension has already reported network id 0, to
+ * separate preprod from preview, which CIP-30 genuinely cannot distinguish. It
+ * disambiguates two equally safe options; it is not a safe default against an
+ * unsafe one. The argument above stands on its own and does not need it.)
  *
  * Once chosen, the choice is remembered, and it is remembered per browser — the
  * request itself carries nothing but `cardano` and a currency code.
@@ -110,7 +115,12 @@ export function FiatValue({ lovelace }: { lovelace: bigint }) {
     return () => {
       live = false;
     };
-  }, [choice]);
+    // `lovelace` is a dependency because the figure shown is the rate applied to
+    // it: a balance refreshed hours later against a rate read this morning is a
+    // stale conversion, and this component's own contract is that it never shows
+    // one. The sixty-second cache in `price.ts` keeps that from meaning a
+    // request per refresh.
+  }, [choice, lovelace]);
 
   const choose = (next: Choice) => {
     setChoice(next);

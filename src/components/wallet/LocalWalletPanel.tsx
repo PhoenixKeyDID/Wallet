@@ -283,6 +283,8 @@ export function LocalWalletPanel() {
     }
     setBusy(true);
     try {
+      // Taken before the slow part, checked after it — see the unlock below.
+      const epoch = session.epoch();
       const source = step === "password" && restoreText ? restoreText : phrase;
       const entropy = mnemonicToEntropyBytes(source);
       let acct;
@@ -310,7 +312,17 @@ export function LocalWalletPanel() {
       await refresh();
 
       // Straight into the open wallet — the user just proved they hold it.
-      session.unlock(w.id, acct);
+      //
+      // With the epoch, for the same reason `openAccount` has one. Creating a
+      // wallet also runs Argon2id plus a derivation, and the lock that lands in
+      // the middle of it needs no button: the effect above locks on
+      // `visibilitychange` and on `pagehide`. Without the check, switching tabs
+      // during those seconds and coming back finds the new wallet *open*, keys
+      // in memory, after the very event this panel treats as walking away.
+      if (!session.unlock(w.id, acct, epoch)) {
+        resetDraft();
+        return;
+      }
       setActiveId(w.id);
       setAccount(acct);
       // A newly created wallet starts at account 0, whatever account the
@@ -380,6 +392,14 @@ export function LocalWalletPanel() {
     // while we were deriving.
     if (!session.unlock(w.id, acct, epoch)) return;
     setAccount(acct);
+    // Invalidate any read still in flight, in the same breath as clearing the
+    // figures. Clearing alone leaves `balanceOk` true from the previous account,
+    // so during the IndexedDB write below the screen shows "0 ADA" with no
+    // "balance unavailable" line — a zero presented as measured, for an account
+    // nothing has measured yet.
+    balanceRun.current += 1;
+    setBalanceOk(false);
+    setBalanceMayBePartial(false);
     // Wipe the previous account's figures before showing the next one. A
     // balance read takes seconds, and leaving the old numbers up under the new
     // account's name and address is the same lie as letting a stale read win —
@@ -786,6 +806,30 @@ export function LocalWalletPanel() {
                 </button>
               )}
             </div>
+
+            {/*
+              An empty account looks exactly like a robbed one, and this is the
+              screen where someone would conclude the second. The index is
+              remembered, so a person who typed 7 out of curiosity lands there
+              again on their next unlock and is met by 0 ADA — with nothing to
+              distinguish it from loss but a grey chip sitting beside a
+              derivation path. Say it plainly, and offer the one step back.
+            */}
+            {balanceOk && lovelace === BigInt("0") && assets.length === 0 && accountIndex > 0 && (
+              <div className="rounded-brand border border-border-soft bg-bg0 p-3 space-y-2 text-xs">
+                <p className="text-text-dim">
+                  {t("local_account_empty_note", { n: accountIndex })}
+                </p>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setSwitchTo(0)}
+                  className="rounded-brand-sm border border-border-soft px-3 py-1.5 text-text-hint hover:text-text-dim disabled:opacity-50"
+                >
+                  {t("local_account_back_zero")}
+                </button>
+              </div>
+            )}
             {switchTo !== null && (
               <div className="rounded-brand border border-border-soft bg-bg0 p-3 space-y-2">
                 <p className="text-xs text-text-hint">{t("local_account_switch_help")}</p>

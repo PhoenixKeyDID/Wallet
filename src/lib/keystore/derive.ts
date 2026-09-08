@@ -196,7 +196,20 @@ export async function accountFromEntropy(
   depth: number = GAP_LIMIT,
 ): Promise<Account> {
   const root = await rootKeyFromEntropy(entropy);
-  const account = buildAccount(root, accountIndex, network, depth);
+  // The scrub below only happens on the way out through `wipe()`, and `wipe()`
+  // only exists once this function returns. `buildAccount` throws for a bad
+  // depth (three of the existing tests take exactly that path) and for a network
+  // byte that fails address encoding — and on those paths the root, which
+  // regenerates every key of every account, is left in the heap with nothing
+  // able to reach it. The caller's `finally` scrubs the *entropy*; this is the
+  // secret derived from it, and it is worth the same.
+  let account;
+  try {
+    account = buildAccount(root, accountIndex, network, depth);
+  } catch (e) {
+    zeroLiveBytes(root);
+    throw e;
+  }
   // The root belongs to this function, not to `buildAccount`, so this is the
   // only place allowed to scrub it — `buildAccount` is also called with a root
   // the caller still owns and must not destroy. The root regenerates every key
