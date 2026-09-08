@@ -58,8 +58,18 @@ export type HistoryEntry = {
   /** Milliseconds since the epoch, so a caller can format it in the user's locale. */
   timeMs: number;
   blockHeight: number;
-  /** Lovelace paid to the network. Always positive; already included in `net`. */
+  /** Lovelace paid to the network. Always positive. */
   fee: bigint;
+  /**
+   * Whether *this wallet* paid that fee.
+   *
+   * The fee comes out of the transaction's inputs, so it is only ours when we
+   * funded the transaction. On a row where nothing of ours was spent — an
+   * ordinary receive — the sender paid it, it is not inside `net`, and printing
+   * it with a minus sign tells someone who just received 5 ADA that they got
+   * 4.83. Kept as a field rather than re-derived in the panel so a test can bite.
+   */
+  feePaidByUs: boolean;
   /** Staking rewards this transaction pulled into the wallet. */
   withdrawnLovelace: bigint;
   /**
@@ -93,6 +103,9 @@ export type HistoryEntry = {
    */
   unattributed: null | "withdrawal_owner_unknown";
 };
+
+/** A transaction the indexer named but this module could not turn into an entry. */
+export type UnreadableTx = { txHash: string; reason: string };
 
 /** Thrown when a row cannot be read. Never a partial entry. */
 export class HistoryError extends Error {
@@ -264,8 +277,21 @@ export function readTx(
   // the same transaction that takes a fee from us would otherwise put "Minted a
   // token" on a row where this wallet minted nothing, and the label is what a
   // person uses to decide whether a row is worth looking at twice.
-  const mintedUnits = new Set((row.assets_minted ?? []).map(unitOf));
-  const minted = net.some((n) => n.unit !== "" && mintedUnits.has(n.unit));
+  // Only units actually *created* here. Koios reports a burn in the same field
+  // with a negative quantity, and a burn is the opposite event — labelling it
+  // "Minted a token" tells the reader a token appeared when one was destroyed.
+  const mintedUnits = new Set(
+    (row.assets_minted ?? [])
+      .filter((a) => asBigInt(a.quantity ?? 0, "a minted amount") > BigInt(0))
+      .map(unitOf),
+  );
+  // `touchedUs` as well as the unit landing in `net`: minting requires signing
+  // and paying for it, so a mint of ours always spends inputs of ours. Without
+  // it, anyone can relabel a payment to you — send ADA and mint one unit of a
+  // junk token into the same transaction, and the row reads "Minted a token"
+  // instead of "Received", which is exactly how a real incoming payment gets
+  // filed away as noise.
+  const minted = touchedUs && net.some((n) => n.unit !== "" && mintedUnits.has(n.unit));
   const delegated = (row.certificates ?? []).some((c) => {
     const stake = c.info?.stake_address;
     return typeof stake === "string" && ownStakeAddresses.has(stake);
@@ -294,6 +320,7 @@ export function readTx(
     timeMs: Number(asBigInt(row.tx_timestamp, "a timestamp")) * 1000,
     blockHeight: Number(asBigInt(row.block_height, "a block height")),
     fee,
+    feePaidByUs: touchedUs,
     withdrawnLovelace: withdrawn,
     net,
     kind,
@@ -371,7 +398,13 @@ export async function fetchAddressTxHashes(
     network,
     "/address_txs",
     { _addresses: addresses },
-    { limit, order: "block_height.desc" },
+    // `tx_hash` breaks the tie inside a block. Without a second key the order of
+    // rows sharing a block height is whatever the database felt like, so the
+    // cut at `limit` lands somewhere different on each refresh and a row can
+    // appear, vanish and reappear without anything having changed on the chain.
+    // Measured 2026-09-08: the indexer accepts the compound order (HTTP 200);
+    // it rejects `epoch_slot` on this endpoint with a 400, so `tx_hash` it is.
+    { limit, order: "block_height.desc,tx_hash.desc" },
   );
   const out: string[] = [];
   for (const r of rows) {
@@ -403,8 +436,8 @@ export async function fetchTxDetails(
   txHashes: string[],
   ownAddresses: Iterable<string>,
   ownStakeAddresses: Iterable<string> = [],
-): Promise<HistoryEntry[]> {
-  if (txHashes.length === 0) return [];
+): Promise<{ entries: HistoryEntry[]; unreadable: UnreadableTx[] }> {
+  if (txHashes.length === 0) return { entries: [], unreadable: [] };
   const own = new Set(ownAddresses);
   const ownStake = new Set(ownStakeAddresses);
   const rows = await koios<KoiosTx[]>(network, "/tx_info", {
@@ -420,7 +453,38 @@ export async function fetchTxDetails(
   if (rows.length !== txHashes.length) {
     bad("the indexer did not describe every transaction it listed");
   }
-  return rows.map((r) => readTx(r, own, ownStake)).sort((a, b) => b.timeMs - a.timeMs);
+
+  /*
+   * One unreadable row must not take the page down with it — and must not
+   * disappear either.
+   *
+   * `readTx` refuses rather than guesses, which is right. But mapping the array
+   * straight through means the *first* refusal throws away the other twenty-four
+   * transactions, and the page then fails identically on every retry: the same
+   * newest-first window returns the same offending row. A single cheap payment
+   * carrying a shape this module cannot read would freeze someone's history
+   * indefinitely, and the module deliberately ships no block-explorer link to
+   * fall back on.
+   *
+   * Skipping it quietly is the other wrong answer, and the one this file exists
+   * to avoid. So each row is read on its own, and the ones that failed come back
+   * named: the caller shows them by id, and the reader can see the list is short
+   * and by exactly how much.
+   */
+  const entries: HistoryEntry[] = [];
+  const unreadable: UnreadableTx[] = [];
+  for (const [i, r] of rows.entries()) {
+    try {
+      entries.push(readTx(r, own, ownStake));
+    } catch (err) {
+      unreadable.push({
+        txHash: typeof r.tx_hash === "string" ? r.tx_hash : (txHashes[i] ?? "unknown"),
+        reason: err instanceof HistoryError ? err.message : "this transaction could not be read",
+      });
+    }
+  }
+  entries.sort((a, b) => b.timeMs - a.timeMs);
+  return { entries, unreadable };
 }
 
 /**
@@ -434,8 +498,24 @@ export async function fetchTxDetails(
  */
 export type HistoryPage = {
   entries: HistoryEntry[];
+  /**
+   * Transactions in this window that could not be read. Carried alongside the
+   * entries rather than thrown, so one bad row costs one row instead of the
+   * whole page — and is still stated on screen instead of vanishing.
+   */
+  unreadable: UnreadableTx[];
   /** Block height of the chain tip when this page was read. */
   tipBlockHeight: number;
+  /**
+   * Whether the indexer had at least as many transactions as were asked for.
+   *
+   * True means there is very likely more history behind this window, so the
+   * screen can offer to widen it. Without this, the newest N are all anyone can
+   * ever see: a wallet with more than N transactions loses the older ones with
+   * nothing saying so, and someone can bury a real payment simply by sending N
+   * cheap ones after it.
+   */
+  mayHaveMore: boolean;
 };
 
 /**
@@ -446,6 +526,10 @@ export type HistoryPage = {
  * each one. Asking for detail on a thousand transactions to show twenty is how
  * a wallet becomes slow on exactly the accounts that have the most history.
  */
+/** Rows in one page of history, and how far "Show more" may widen it. */
+export const HISTORY_PAGE = 25;
+export const HISTORY_MAX = 200;
+
 export async function fetchHistory(
   network: PhoenixNetwork,
   addresses: string[],
@@ -454,15 +538,26 @@ export async function fetchHistory(
    * cannot show an amount at all — see `HistoryEntry.unattributed`.
    */
   stakeAddresses: string[] = [],
-  limit = 25,
+  requestedLimit = HISTORY_PAGE,
 ): Promise<HistoryPage> {
+  // Bounded from both ends. The floor stops a caller asking for nothing; the
+  // ceiling stops it walking into the indexer's own 1000-row cap, where a
+  // deliberate page and a truncated answer become indistinguishable again — the
+  // exact confusion `KoiosPage` exists to keep apart.
+  const limit = Math.min(Math.max(Math.trunc(requestedLimit), 1), HISTORY_MAX);
   const [hashes, tipBlockHeight] = await Promise.all([
     fetchAddressTxHashes(network, addresses, limit),
     fetchTipBlockHeight(network),
   ]);
-  if (hashes.length === 0) return { entries: [], tipBlockHeight };
-  return {
-    entries: await fetchTxDetails(network, hashes.slice(0, limit), addresses, stakeAddresses),
-    tipBlockHeight,
-  };
+  const mayHaveMore = hashes.length >= limit;
+  if (hashes.length === 0) {
+    return { entries: [], unreadable: [], tipBlockHeight, mayHaveMore: false };
+  }
+  const { entries, unreadable } = await fetchTxDetails(
+    network,
+    hashes.slice(0, limit),
+    addresses,
+    stakeAddresses,
+  );
+  return { entries, unreadable, tipBlockHeight, mayHaveMore };
 }

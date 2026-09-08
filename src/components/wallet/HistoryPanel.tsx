@@ -1,18 +1,22 @@
 "use client";
 
 import "../../lib/node-globals";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Buffer } from "buffer";
 import { useTranslation } from "react-i18next";
 import { utils as tyUtils } from "@stricahq/typhonjs";
 import { toastApiError } from "@/lib/toast";
 import { CopyBtn } from "@/components/CopyBtn";
 import { formatAda, assetLabel, type PhoenixNetwork, type WalletPort } from "@/lib/cardano";
+import { rewardAddressFromHex } from "@/lib/cardano/staking";
 import {
   fetchHistory,
   rowDisplay,
   confirmationsOf,
+  HISTORY_PAGE,
+  HISTORY_MAX,
   type HistoryEntry,
+  type UnreadableTx,
   type TxKind,
 } from "@/lib/cardano/history";
 
@@ -90,10 +94,27 @@ export function HistoryPanel({
    * did not load" are different facts about someone's money.
    */
   const [failed, setFailed] = useState(false);
+  const [unreadable, setUnreadable] = useState<UnreadableTx[]>([]);
+  const [limit, setLimit] = useState(HISTORY_PAGE);
+  const [mayHaveMore, setMayHaveMore] = useState(false);
+  /**
+   * Which read owns the screen.
+   *
+   * Same reason the balance read carries one: switching account or wallet, or
+   * pressing refresh, starts a second read while the first is still going, and
+   * whichever *finishes* last would otherwise win — which is not the same as
+   * whichever the user asked for last. Here that would put one account's
+   * transactions under another account's name, and the failure path is worse
+   * still: this panel deliberately keeps the previous list when a read fails,
+   * so a failed read on account B would leave account A's history on screen
+   * with a warning that says nothing about whose it is.
+   */
+  const run = useRef(0);
 
   const load = useCallback(async () => {
+    const mine = (run.current += 1);
+    const current = () => run.current === mine;
     setLoading(true);
-    setFailed(false);
     try {
       const owned = (await port.getOwnedAddressesHex()).map((hex) =>
         tyUtils.getAddressFromHex(Buffer.from(hex, "hex")).getBech32(),
@@ -104,30 +125,64 @@ export function HistoryPanel({
       // cannot answer gets an empty list, and rows carrying a withdrawal then
       // show no amount rather than a wrong one — so this failing must not take
       // the whole page down with it.
+      //
+      // `rewardAddressFromHex` rather than the generic decoder, and that is not
+      // a style preference. CIP-30 defines an address as `cbor<address>`, and
+      // some wallets answer with the CBOR bytestring wrapper still on. Measured
+      // with this repo's own typhonjs: the bare hex decodes to a RewardAddress,
+      // while `581d` + the same bytes decodes — without throwing — to a
+      // PointerAddress with a completely different bech32 string. Fed in here
+      // that produces a non-empty set of "our" reward addresses that matches
+      // nothing, so the wallet's own reward withdrawals are filed as strangers'
+      // and `unattributed` never fires: a withdrawal of 100 ADA reads as
+      // "Received", with "Rewards collected: 0". The strict version checks the
+      // decoded type and is already used by the staking and governance panels.
       let stake: string[] = [];
       try {
-        const hex = await port.getRewardAddressHex();
-        stake = [tyUtils.getAddressFromHex(Buffer.from(hex, "hex")).getBech32()];
-      } catch {
-        stake = [];
+        stake = [rewardAddressFromHex(await port.getRewardAddressHex()).getBech32()];
+      } catch (err) {
+        // A wallet with no reward address is an ordinary answer; anything else
+        // is this module failing to read something it was given, which the
+        // reader should hear about. Both leave `stake` empty, so a row carrying
+        // a withdrawal shows no amount either way — the difference is whether
+        // it is reported.
+        if (!(err instanceof Error) || !/stake_account/.test(err.message)) toastApiError(err);
       }
-      const page = await fetchHistory(network, owned, stake);
+      const page = await fetchHistory(network, owned, stake, limit);
+      if (!current()) return;
       setEntries(page.entries);
+      setUnreadable(page.unreadable);
       setTip(page.tipBlockHeight);
+      setMayHaveMore(page.mayHaveMore);
+      // Cleared here, not at the start of the read. Clearing it up front unmounts
+      // the failure box — and the retry button inside it — the instant it is
+      // pressed, so the press reads as a miss and the box reappears a moment
+      // later as if nothing had happened.
+      setFailed(false);
     } catch (err) {
+      if (!current()) return;
       toastApiError(err);
       setFailed(true);
       // Leave `entries` as it was. Replacing a loaded list with an empty one on
       // a failed refresh would say "you have no transactions" because the
       // network blipped — the silent shell this repo has paid for before.
     } finally {
-      setLoading(false);
+      if (current()) setLoading(false);
     }
-  }, [port, network]);
+  }, [port, network, limit]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  // A new wallet or account starts at the first page again. Without this, opening
+  // a fresh account inherits a widened window and asks for far more history than
+  // it has.
+  useEffect(() => {
+    setEntries(null);
+    setUnreadable([]);
+    setLimit(HISTORY_PAGE);
+  }, [port]);
 
   return (
     <div className="space-y-4">
@@ -180,6 +235,27 @@ export function HistoryPanel({
           >
             {loading ? t("loading") : t("hist_refresh")}
           </button>
+        </div>
+      )}
+
+      {/*
+        Named, not dropped. One transaction this module cannot read no longer
+        takes the other twenty-four with it — but a list that is quietly short
+        is the thing this whole file argues against, so the ones it could not
+        read are stated with their ids.
+      */}
+      {unreadable.length > 0 && (
+        <div className="rounded-brand border border-border-amber bg-amber-brand/10 p-4 text-sm text-amber-brand space-y-2">
+          <p className="font-semibold">⚠ {t("hist_unreadable_title")}</p>
+          <p className="text-xs">{t("hist_unreadable_body", { count: unreadable.length })}</p>
+          <ul className="space-y-1">
+            {unreadable.map((u) => (
+              <li key={u.txHash} className="flex items-center gap-2 text-xs min-w-0">
+                <span className="mono truncate">{u.txHash}</span>
+                <CopyBtn value={u.txHash} />
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 
@@ -261,6 +337,17 @@ export function HistoryPanel({
 
                 {expanded && (
                   <dl className="space-y-1.5 text-xs border-t border-border-soft pt-2">
+                    {/*
+                      The one hidden-amount case with no explanation anywhere
+                      else on the screen. The partial-address case has a banner
+                      at the top of the tab; this one had four grey words and
+                      nothing to read next, in a row about someone's money.
+                    */}
+                    {!display.show && display.reason === "withdrawal_owner_unknown" && (
+                      <p className="text-text-hint leading-relaxed">
+                        {t("hist_amount_unknown_withdrawal_why")}
+                      </p>
+                    )}
                     <div className="flex items-start justify-between gap-2">
                       <dt className="text-text-hint shrink-0">{t("hist_tx_id")}</dt>
                       <dd className="flex items-center gap-2 min-w-0">
@@ -268,9 +355,21 @@ export function HistoryPanel({
                         <CopyBtn value={e.txHash} />
                       </dd>
                     </div>
+                    {/*
+                      The minus sign only when this wallet actually paid it. On a
+                      receive the sender funded the transaction, so the fee never
+                      came out of this wallet and is not inside the amount above;
+                      printing "−0.170000" there tells someone who just received
+                      5 ADA that they got 4.83.
+                    */}
                     <div className="flex items-center justify-between gap-2">
-                      <dt className="text-text-hint">{t("hist_fee")}</dt>
-                      <dd className="mono text-text-dim">-{formatAda(e.fee)} ADA</dd>
+                      <dt className="text-text-hint">
+                        {e.feePaidByUs ? t("hist_fee") : t("hist_fee_paid_by_sender")}
+                      </dt>
+                      <dd className="mono text-text-dim">
+                        {e.feePaidByUs ? "-" : ""}
+                        {formatAda(e.fee)} ADA
+                      </dd>
                     </div>
                     {e.withdrawnLovelace > BigInt(0) && (
                       <div className="flex items-center justify-between gap-2">
@@ -297,7 +396,16 @@ export function HistoryPanel({
                       tells the reader their money went somewhere it did not, and
                       hands them an unrelated address in full, ready to copy.
                     */}
-                    {e.kind === "sent" && e.counterparties.length > 0 && (
+                    {/*
+                      …and only when the wallet knows all of its own addresses.
+                      `counterparties` is "every output address not in the set we
+                      were given", so an extension that withheld one of its own
+                      puts the reader's *own* change address in this list, in
+                      full, ready to copy. Hiding the amount while publishing an
+                      address derived from the same untrusted set would be two
+                      different answers to one question.
+                    */}
+                    {port.ownedIsComplete && e.kind === "sent" && e.counterparties.length > 0 && (
                       <div className="space-y-1">
                         <dt className="text-text-hint">{t("hist_to")}</dt>
                         {/* Never truncated: a shortened address is exactly what
@@ -316,6 +424,30 @@ export function HistoryPanel({
             );
           })}
         </ul>
+      )}
+
+      {/*
+        Without this the newest 25 are all anyone can ever see, and there is no
+        block-explorer link to fall back on — that omission is deliberate and is
+        what makes this control necessary rather than a convenience. It also
+        closes a cheap attack: about 25 dust payments after a real one push it
+        out of the window for good, and the addresses share a single window, so
+        spamming one of them buries the whole wallet's history.
+      */}
+      {entries !== null && entries.length > 0 && (
+        <div className="flex flex-wrap items-center gap-3 text-xs text-text-hint">
+          <span>{t("hist_shown_recent", { count: entries.length })}</span>
+          {mayHaveMore && limit < HISTORY_MAX && (
+            <button
+              type="button"
+              disabled={loading}
+              onClick={() => setLimit((n) => Math.min(n * 2, HISTORY_MAX))}
+              className="rounded-brand-sm border border-border-soft px-3 py-1.5 hover:text-text-dim disabled:opacity-50"
+            >
+              {loading ? t("loading") : t("hist_show_more")}
+            </button>
+          )}
+        </div>
       )}
     </div>
   );

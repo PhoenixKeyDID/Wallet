@@ -366,6 +366,87 @@ describe("readTx — the amount is this wallet's, not the transaction's", () => 
     expect(e.kind).toBe("internal");
   });
 
+  /**
+   * The fee comes out of the transaction's inputs. On a receive we funded
+   * nothing, so the sender paid it and it is not inside our net — a screen
+   * printing "−0.170000" there tells someone who just received 5 ADA they got
+   * 4.83, and they go looking for the missing 0.17.
+   */
+  it("knows the sender paid the fee when nothing of ours was spent", () => {
+    const received = readTx(
+      {
+        tx_hash: "pp",
+        fee: "170000",
+        block_height: 1,
+        tx_timestamp: 1,
+        inputs: [io(OTHER, "10000000")],
+        outputs: [io(MINE, "9830000")],
+      },
+      own,
+      mine,
+    );
+    expect(received.feePaidByUs).toBe(false);
+    expect(ada(received)).toBe(BigInt(9830000)); // and the fee is not in it
+
+    const sent = readTx(
+      {
+        tx_hash: "qq",
+        fee: "170000",
+        block_height: 1,
+        tx_timestamp: 1,
+        inputs: [io(MINE, "10000000")],
+        outputs: [io(OTHER, "5000000"), io(MINE, "4830000")],
+      },
+      own,
+      mine,
+    );
+    expect(sent.feePaidByUs).toBe(true);
+  });
+
+  /**
+   * Anyone can relabel a payment to you: send ADA and mint one unit of a junk
+   * token into the same transaction. Without checking that *we* funded it, the
+   * row reads "Minted a token" — and a real incoming payment gets filed away as
+   * noise by the one label the reader uses to triage.
+   */
+  it("does not let a stranger's mint relabel money arriving", () => {
+    const e = readTx(
+      {
+        tx_hash: "rr",
+        fee: "170000",
+        block_height: 1,
+        tx_timestamp: 1,
+        inputs: [io(OTHER, "10000000")],
+        outputs: [io(MINE, "9830000", [NIGHT])],
+        assets_minted: [NIGHT],
+      },
+      own,
+      mine,
+    );
+    expect(e.kind).toBe("received");
+  });
+
+  /**
+   * Koios reports a burn in `assets_minted` with a negative quantity. Matching
+   * on the unit alone calls destroying a token "Minted a token".
+   */
+  it("does not call a burn a mint", () => {
+    const e = readTx(
+      {
+        tx_hash: "ss",
+        fee: "170000",
+        block_height: 1,
+        tx_timestamp: 1,
+        inputs: [io(MINE, "5000000", [NIGHT])],
+        outputs: [io(MINE, "4830000")],
+        assets_minted: [{ ...NIGHT, quantity: "-214457817986" }],
+      },
+      own,
+      mine,
+    );
+    expect(e.kind).toBe("internal");
+  });
+
   it("does not call it a mint when the minted asset never reached this wallet", () => {
     const e = readTx(
       {
@@ -425,6 +506,7 @@ describe("rowDisplay — a plausible wrong number is worse than an admission", (
     kind: "sent",
     counterparties: [OTHER],
     unattributed: null,
+    feePaidByUs: true,
   });
 
   it("shows the amount when the wallet knows all of its own addresses", () => {
@@ -460,6 +542,7 @@ describe("confirmationsOf", () => {
     kind: "internal",
     counterparties: [],
     unattributed: null,
+    feePaidByUs: true,
   });
 
   it("counts the block itself as the first confirmation", () => {

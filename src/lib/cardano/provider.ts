@@ -82,6 +82,14 @@ export class KoiosTruncatedError extends Error {
  * answered `206 content-range: 0-4/34` in under a second. So the bound is not
  * only about the guard — unbounded is the shape that does not come back.
  */
+/**
+ * PostgREST's own ceiling on rows per response, measured twice against the live
+ * indexer (2026-09-05 `/pool_list` → `0-999/6163`; 2026-09-08 the same endpoint
+ * asked for 2000 → `206 content-range: 0-999/6163`). Asking for more does not
+ * get more; it gets a short answer that looks like an answer.
+ */
+export const KOIOS_ROW_CAP = 1000;
+
 export type KoiosPage = {
   limit: number;
   /** PostgREST ordering, e.g. `block_height.desc`. Ask explicitly: a page of
@@ -95,6 +103,14 @@ export async function koios<T>(
   body?: unknown,
   page?: KoiosPage,
 ): Promise<T> {
+  if (page && (!Number.isInteger(page.limit) || page.limit < 1 || page.limit > KOIOS_ROW_CAP)) {
+    // These are exported library functions: a caller outside this repo can ask
+    // for 5000 rows, and PostgREST would answer with 1000 and a `206` that the
+    // guard below would now correctly reject — but refusing up front says which
+    // number is impossible instead of reporting a truncation for a question
+    // that could never have been answered.
+    throw new Error(`Koios ${path} → a page must be 1..${KOIOS_ROW_CAP} rows, not ${page.limit}`);
+  }
   const query = page
     ? `?limit=${encodeURIComponent(String(page.limit))}` +
       (page.order ? `&order=${encodeURIComponent(page.order)}` : "")
@@ -118,16 +134,19 @@ export async function koios<T>(
   if (!res.ok) throw new Error(`Koios ${path} → HTTP ${res.status}`);
 
   // A short answer to a question that asked to be short is not a truncated
-  // answer. PostgREST reports both the same way — `206` and a content-range that
-  // stops before the total — so only the caller can tell them apart, and the
-  // caller says which it asked by passing `page`.
-  const range = page ? null : res.headers?.get("content-range");
+  // answer — but "shorter than the caller asked for" still is, and switching the
+  // guard off entirely loses that second case. PostgREST caps at 1000 rows no
+  // matter what: measured 2026-09-08, `/pool_list?limit=2000` answered
+  // `206 content-range: 0-999/6163`. So the bar moves rather than disappears —
+  // the answer must reach whichever is smaller, the total or what was asked.
+  const range = res.headers?.get("content-range");
   if (range) {
     const m = /^(\d+)-(\d+)\/(\d+)$/.exec(range.trim());
     if (m) {
       const end = Number(m[2]);
       const total = Number(m[3]);
-      if (end + 1 < total) throw new KoiosTruncatedError(path, end + 1, total);
+      const wanted = page ? Math.min(total, page.limit) : total;
+      if (end + 1 < wanted) throw new KoiosTruncatedError(path, end + 1, wanted);
     }
   }
   return (await res.json()) as T;
