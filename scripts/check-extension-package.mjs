@@ -104,6 +104,43 @@ const csp = manifest.content_security_policy?.extension_pages ?? "";
 if (!/(^|;)\s*script-src\s+'self'\s*(;|$)/.test(csp)) {
   fail(`extension_pages CSP must be exactly \`script-src 'self'\`, got: ${csp || "(none)"}`);
 }
+
+/*
+ * `connect-src` must name the same hosts as `host_permissions`, and no others.
+ *
+ * Everything else in this file gates the *source*: a host has to be written down
+ * in `provider.ts`, and the outbound-URL check requires it to be a literal there.
+ * That is a text gate, and text gates lose to anyone willing to assemble a host
+ * at runtime — the outbound-URL check now blocks several ways of doing that, and
+ * cannot block all of them (base64, a reversed string, a value read from the
+ * build environment). None of those survive a browser refusing the connection.
+ *
+ * So the two lists say the same thing in two enforcement layers, and the
+ * agreement is checked rather than trusted: a duplicated list nobody compares is
+ * a list that drifts, and it would drift in the direction of the CSP being the
+ * stale one — the permissive failure.
+ */
+const cspConnect = /(^|;)\s*connect-src\s+([^;]+)/.exec(csp);
+if (!cspConnect) {
+  fail("extension_pages CSP has no `connect-src` — the browser would allow any host");
+} else {
+  const declared = new Set(
+    cspConnect[2].trim().split(/\s+/).filter((s) => s !== "'self'"),
+  );
+  const permitted = new Set(
+    (manifest.host_permissions ?? []).map((p) => p.replace(/\/\*$/, "")),
+  );
+  for (const host of declared) {
+    if (!permitted.has(host)) {
+      fail(`CSP connect-src allows ${host}, which is not in host_permissions`);
+    }
+  }
+  for (const host of permitted) {
+    if (!declared.has(host)) {
+      fail(`host_permissions declares ${host}, which CSP connect-src does not allow`);
+    }
+  }
+}
 if (popup && existsSync(join(DIST, popup))) {
   const html = readFileSync(join(DIST, popup), "utf8");
   for (const [, url] of html.matchAll(/(?:src|href)\s*=\s*"([^"]+)"/g)) {

@@ -69,7 +69,36 @@ const URL_RE = /https?:\/\/[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a
  * `https://…` (ellipsis) and `https://*` (a manifest match pattern) carry no
  * destination and are left alone.
  */
-const ASSEMBLED_RE = /https?:\/\/(?:["'`]\s*\+|\$\{)/g;
+const ASSEMBLED = [
+  // A string literal ending in a scheme separator, handed straight to `+` or
+  // `.concat` — on the same line, or on the next one where a formatter wrapped
+  // it. Anchoring on the separator rather than on the word "https" also catches
+  // a scheme torn in half across two literals, which otherwise reads as two
+  // harmless fragments. The joiner must be an operator: a comma after a scheme
+  // is ordinary prose and ordinary arguments, and matching it flags both.
+  [
+    /:\/\/["'`][ \t]*(?:\r?\n[ \t]*)?(?:\+|\.concat\b)/,
+    "a scheme string joined to something else",
+  ],
+  // The array form of the same thing: a scheme string as the first element,
+  // on its way to `.join`. Requiring the opening bracket is what separates it
+  // from a comma in a sentence.
+  [/\[[ \t]*["'`][^"'`\n]*:\/\/["'`][ \t]*,/, "a scheme string as an array element"],
+  // A template literal starting with a scheme, interpolating anywhere in the
+  // host — putting the placeholder after a subdomain hides the registrable part
+  // just as well as putting it first.
+  [/`https?:\/\/[^`\n]*\$\{/, "a host interpolated into a template literal"],
+  // The scheme without its separator, glued to it afterwards. Only `+` here,
+  // never a comma: a bare protocol literal is an ordinary argument — this repo
+  // passes several to a test helper — and matching commas would flag every one.
+  [/["'`]https?:["'`][ \t]*\+/, "a scheme split across string literals"],
+  // Protocol-relative. `//host/path` inherits https on a page served over https,
+  // so it reaches the network exactly like an absolute URL while containing no
+  // scheme for anything above to find.
+  [/["'`]\/\/[a-z0-9][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)+\//i, "a protocol-relative URL"],
+  // Slashes spelled as escape sequences.
+  [/https?:(?:\\u002f|\\x2f){2}/i, "a scheme whose slashes are escape sequences"],
+];
 
 /** Repo-relative, POSIX-separated paths that CODEOWNERS assigns to someone. */
 function gatedPaths() {
@@ -140,9 +169,19 @@ for (const file of [...rootFiles, ...SCAN_ROOTS.flatMap((root) => [...walk(join(
   const rel = relative(REPO, file).split(sep).join("/");
   const text = readFileSync(file, "utf8");
 
-  for (const [i, line] of text.split("\n").entries()) {
-    if (ASSEMBLED_RE.test(line)) assembled.push(`${rel}:${i + 1}  ${line.trim()}`);
-    ASSEMBLED_RE.lastIndex = 0;
+  // Two lines at a time, overlapping, rather than the whole file: enough to see
+  // a concatenation that wrapped onto the next line, while still naming the line
+  // the offending text is on. Whole-file matching finds the same things and can
+  // only report "somewhere in this file".
+  const lines = text.split("\n");
+  for (let i = 0; i < lines.length; i += 1) {
+    const window = lines[i] + "\n" + (lines[i + 1] ?? "");
+    for (const [re, why] of ASSEMBLED) {
+      if (re.test(window)) {
+        assembled.push(`${rel}:${i + 1}  ${why}\n      ${lines[i].trim()}`);
+        break;
+      }
+    }
   }
 
   const found = new Set(text.match(URL_RE) ?? []);
