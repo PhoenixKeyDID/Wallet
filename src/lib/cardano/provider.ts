@@ -24,6 +24,15 @@ import { types as tyTypes, utils as tyUtils } from "@stricahq/typhonjs";
 
 type ProtocolParams = tyTypes.ProtocolParams;
 import type { PhoenixNetwork } from "./address";
+import { getChainSource } from "./chainSource";
+import {
+  bfProtocolParams,
+  bfTipSlot,
+  bfTipBlockHeight,
+  bfAddressBalance,
+  bfUtxos,
+  bfSubmitTx,
+} from "./blockfrost";
 
 const KOIOS_BASE: Record<"mainnet" | "preprod" | "preview", string> = {
   mainnet: "https://api.koios.rest/api/v1",
@@ -234,6 +243,8 @@ function checked(name: keyof typeof PARAM_CEILING, raw: string | number): BigNum
  * `/epoch_params` returns the latest epoch first.
  */
 export async function fetchProtocolParams(network: PhoenixNetwork): Promise<ProtocolParams> {
+  const src = getChainSource(network);
+  if (src.kind === "blockfrost") return bfProtocolParams(src);
   const rows = await koios<
     Array<{
       min_fee_a: number;
@@ -266,6 +277,8 @@ export async function fetchProtocolParams(network: PhoenixNetwork): Promise<Prot
 
 /** Current chain tip absolute slot — used to set a transaction TTL. */
 export async function fetchTipSlot(network: PhoenixNetwork): Promise<number> {
+  const src = getChainSource(network);
+  if (src.kind === "blockfrost") return bfTipSlot(src);
   const rows = await koios<Array<{ abs_slot: number }>>(network, "/tip");
   const slot = rows[0]?.abs_slot;
   if (typeof slot !== "number") throw new Error("Koios returned no tip slot");
@@ -283,6 +296,8 @@ export async function fetchTipSlot(network: PhoenixNetwork): Promise<number> {
  * roughly a factor of twenty.
  */
 export async function fetchTipBlockHeight(network: PhoenixNetwork): Promise<number> {
+  const src = getChainSource(network);
+  if (src.kind === "blockfrost") return bfTipBlockHeight(src);
   const rows = await koios<Array<{ block_no: number }>>(network, "/tip");
   const height = rows[0]?.block_no;
   if (typeof height !== "number") throw new Error("Koios returned no tip block height");
@@ -300,6 +315,8 @@ export async function fetchAddressBalance(
   addresses: string[],
 ): Promise<AddressBalance> {
   if (addresses.length === 0) return { lovelace: BigInt("0"), assets: [] };
+  const src = getChainSource(network);
+  if (src.kind === "blockfrost") return bfAddressBalance(src, addresses);
   const rows = await koios<
     Array<{
       balance: string;
@@ -358,6 +375,8 @@ export async function fetchUtxos(
   addresses: string[],
 ): Promise<tyTypes.Input[]> {
   if (addresses.length === 0) return [];
+  const src = getChainSource(network);
+  if (src.kind === "blockfrost") return bfUtxos(src, addresses);
   const rows = await koios<
     Array<{
       tx_hash: string;
@@ -398,6 +417,8 @@ export async function fetchUtxos(
  * into the error rather than swallowed behind the status code.
  */
 export async function submitTx(network: PhoenixNetwork, signedCborHex: string): Promise<string> {
+  const src = getChainSource(network);
+  if (src.kind === "blockfrost") return bfSubmitTx(src, signedCborHex);
   const body = Buffer.from(signedCborHex, "hex");
   const res = await fetch(`${koiosBase(network)}/submittx`, {
     method: "POST",
