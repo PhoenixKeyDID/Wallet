@@ -7,10 +7,11 @@ import { useTranslation } from "react-i18next";
 import { QRCodeSVG } from "qrcode.react";
 import { utils as tyUtils } from "@stricahq/typhonjs";
 import { toastApiError } from "@/lib/toast";
-import { parseAcctXvk, type Cip30Api, type PhoenixNetwork } from "@/lib/cardano";
+import { parseAcctXvk, type PhoenixNetwork, type WalletPort } from "@/lib/cardano";
 import {
   deriveReceiveAddress,
   deriveReceiveRange,
+  unwatchedAmong,
   type DerivedReceiveAddress,
   type ReceiveAddressKind,
 } from "@/lib/cardano/receive";
@@ -56,10 +57,10 @@ function AddressCard({
 type Ownership = "checking" | "match" | "mismatch" | "unknown" | null;
 
 export function ReceivePanel({
-  api,
+  port,
   network,
 }: {
-  api: Cip30Api;
+  port: WalletPort;
   network: PhoenixNetwork;
   changeAddress: string;
 }) {
@@ -73,8 +74,7 @@ export function ReceivePanel({
   const loadWalletAddress = async () => {
     setLoadingWallet(true);
     try {
-      const unused = await api.getUnusedAddresses();
-      const hex = unused && unused.length > 0 ? unused[0] : (await api.getUsedAddresses())[0];
+      const hex = await port.getReceiveAddressHex();
       if (!hex) {
         setWalletAddress(null);
       } else {
@@ -103,6 +103,24 @@ export function ReceivePanel({
   // attacker's key and receiving your funds to THEIR address).
   const [ownership, setOwnership] = useState<Ownership>(null);
   /**
+   * The addresses the connected wallet said it watches.
+   *
+   * Kept, not just reduced to a verdict, because the ✓ answers a narrower
+   * question than the one a person reading this screen is actually asking. It
+   * says *this key is yours*; they read *this address is safe to use*. Those
+   * come apart: the advanced panel derives any kind at any index, while a local
+   * wallet watches base addresses 0..GAP_LIMIT-1 and nothing else, so an
+   * enterprise address — or index 40 — is genuinely the user's and genuinely
+   * invisible to the balance and to the spend path (`localPort.getInputs`).
+   * Money sent there is stranded rather than lost: the key is derivable. But it
+   * is stranded silently, next to a green tick.
+   *
+   * Comparing the derived address against this set answers the real question by
+   * measurement rather than by guessing at the wallet's scanning rules, which
+   * matters because a CIP-30 wallet's rules are not ours.
+   */
+  const [ownedSet, setOwnedSet] = useState<Set<string> | null>(null);
+  /**
    * Which derivation the on-screen verdict belongs to.
    *
    * The check is async and the address is rendered immediately, so two runs in
@@ -122,14 +140,15 @@ export function ReceivePanel({
   // is almost certainly not this wallet's — warn loudly.
   const checkOwnership = async (acctXvk: Parameters<typeof deriveReceiveAddress>[0]["acctXvk"]) => {
     const run = ++checkRun.current;
-    const settle = (v: Ownership) => {
-      if (checkRun.current === run) setOwnership(v);
+    const settle = (v: Ownership, owned?: Set<string>) => {
+      if (checkRun.current !== run) return;
+      setOwnership(v);
+      setOwnedSet(owned ?? null);
     };
     settle("checking");
     try {
-      const [used, unused] = await Promise.all([api.getUsedAddresses(), api.getUnusedAddresses()]);
       const owned = new Set(
-        [...(used ?? []), ...(unused ?? [])].map((hex) =>
+        (await port.getOwnedAddressesHex()).map((hex) =>
           tyUtils.getAddressFromHex(Buffer.from(hex, "hex")).getBech32(),
         ),
       );
@@ -144,16 +163,37 @@ export function ReceivePanel({
       const mine = deriveReceiveRange({ acctXvk, kind: "base", start: 0, count: 24, network }).some((d) =>
         owned.has(d.address),
       );
-      settle(mine ? "match" : "mismatch");
+      settle(mine ? "match" : "mismatch", owned);
     } catch {
       settle("unknown");
     }
   };
 
+  /**
+   * Which derived addresses the connected wallet did not list.
+   *
+   * Only meaningful once the key itself checked out — when the key is not ours
+   * at all, the mismatch warning already says the stronger thing and a second
+   * box would bury it. `null` means there is nothing to say (no verdict yet,
+   * or the wallet listed no addresses to compare against, which `unknown`
+   * already reports).
+   */
+  const unwatched = useMemo(() => {
+    // A wallet that only lists some of its addresses cannot be subtracted from:
+    // every address it did not mention would look unwatched. See
+    // `WalletPort.ownedIsComplete`.
+    if (!port.ownedIsComplete) return null;
+    if (ownership !== "match" || !ownedSet || ownedSet.size === 0) return null;
+    const shown = [...(derived ? [derived] : []), ...(range ?? [])];
+    const missing = unwatchedAmong(shown, ownedSet);
+    return missing.length > 0 ? missing : null;
+  }, [port, ownership, ownedSet, derived, range]);
+
   const derive = () => {
     setAdvError(null);
     setRange(null);
     setOwnership(null);
+    setOwnedSet(null);
     if (parsedIndex === null) {
       setAdvError(t("invalid_index"));
       setDerived(null);
@@ -172,6 +212,7 @@ export function ReceivePanel({
   const deriveNext5 = () => {
     setAdvError(null);
     setOwnership(null);
+    setOwnedSet(null);
     if (parsedIndex === null) {
       setAdvError(t("invalid_index"));
       setRange(null);
@@ -314,6 +355,15 @@ export function ReceivePanel({
       )}
       {ownership === "match" && (
         <p className="text-xs text-teal-brand">✓ {t("xvk_match_note")}</p>
+      )}
+      {unwatched && (
+        <div className="rounded-brand border border-border-amber bg-amber-brand/10 p-4 text-sm text-amber-brand space-y-1">
+          <p className="font-semibold">⚠ {t("addr_unwatched_title")}</p>
+          <p className="text-xs">{t("addr_unwatched_body")}</p>
+          <p className="text-xs mono break-all">
+            {unwatched.map((d) => d.path).join(" · ")}
+          </p>
+        </div>
       )}
 
       {derived && <AddressCard address={derived.address} path={derived.path} labelKey="derived_address" />}

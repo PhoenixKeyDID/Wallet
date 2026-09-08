@@ -49,6 +49,57 @@ const CODEOWNERS = join(REPO, ".github", "CODEOWNERS");
  */
 const URL_RE = /https?:\/\/[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+/gi;
 
+/**
+ * A URL whose host is not in the file — assembled at runtime instead.
+ *
+ * The check above only sees hosts written down. Measured against this guard on
+ * 2026-09-08, two mutations were added to a source file and it still printed OK:
+ * a scheme string concatenated with a host string, and a scheme in a template
+ * literal with the host interpolated from a nearby constant. (Both are spelled
+ * out in the tests rather than here, because writing either one in this file
+ * would trip the rule it documents.)
+ *
+ * That is the whole guard defeated by a spacebar, and a gate that reports OK for
+ * exactly what it exists to block is worse than no gate: the commit message
+ * cites it as the constraint in force. Nothing in this repo has a reason to
+ * build a scheme by concatenation, so both forms are refused outright — in
+ * every scanned file, gated or not, because the point is that the host be
+ * *visible* to the other checks, not merely reviewed.
+ *
+ * `https://…` (ellipsis) and `https://*` (a manifest match pattern) carry no
+ * destination and are left alone.
+ */
+const ASSEMBLED = [
+  // A string literal ending in a scheme separator, handed straight to `+` or
+  // `.concat` — on the same line, or on the next one where a formatter wrapped
+  // it. Anchoring on the separator rather than on the word "https" also catches
+  // a scheme torn in half across two literals, which otherwise reads as two
+  // harmless fragments. The joiner must be an operator: a comma after a scheme
+  // is ordinary prose and ordinary arguments, and matching it flags both.
+  [
+    /:\/\/["'`][ \t]*(?:\r?\n[ \t]*)?(?:\+|\.concat\b)/,
+    "a scheme string joined to something else",
+  ],
+  // The array form of the same thing: a scheme string as the first element,
+  // on its way to `.join`. Requiring the opening bracket is what separates it
+  // from a comma in a sentence.
+  [/\[[ \t]*["'`][^"'`\n]*:\/\/["'`][ \t]*,/, "a scheme string as an array element"],
+  // A template literal starting with a scheme, interpolating anywhere in the
+  // host — putting the placeholder after a subdomain hides the registrable part
+  // just as well as putting it first.
+  [/`https?:\/\/[^`\n]*\$\{/, "a host interpolated into a template literal"],
+  // The scheme without its separator, glued to it afterwards. Only `+` here,
+  // never a comma: a bare protocol literal is an ordinary argument — this repo
+  // passes several to a test helper — and matching commas would flag every one.
+  [/["'`]https?:["'`][ \t]*\+/, "a scheme split across string literals"],
+  // Protocol-relative. `//host/path` inherits https on a page served over https,
+  // so it reaches the network exactly like an absolute URL while containing no
+  // scheme for anything above to find.
+  [/["'`]\/\/[a-z0-9][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)+\//i, "a protocol-relative URL"],
+  // Slashes spelled as escape sequences.
+  [/https?:(?:\\u002f|\\x2f){2}/i, "a scheme whose slashes are escape sequences"],
+];
+
 /** Repo-relative, POSIX-separated paths that CODEOWNERS assigns to someone. */
 function gatedPaths() {
   const rules = [];
@@ -112,12 +163,38 @@ const rootFiles = readdirSync(REPO)
   .map((entry) => join(REPO, entry))
   .filter((full) => !statSync(full).isDirectory() && SOURCE_EXT.test(full));
 
+const assembled = [];
+
 for (const file of [...rootFiles, ...SCAN_ROOTS.flatMap((root) => [...walk(join(REPO, root))])]) {
   const rel = relative(REPO, file).split(sep).join("/");
-  const found = new Set(readFileSync(file, "utf8").match(URL_RE) ?? []);
+  const text = readFileSync(file, "utf8");
+
+  // Two lines at a time, overlapping, rather than the whole file: enough to see
+  // a concatenation that wrapped onto the next line, while still naming the line
+  // the offending text is on. Whole-file matching finds the same things and can
+  // only report "somewhere in this file".
+  const lines = text.split("\n");
+  for (let i = 0; i < lines.length; i += 1) {
+    const window = lines[i] + "\n" + (lines[i + 1] ?? "");
+    for (const [re, why] of ASSEMBLED) {
+      if (re.test(window)) {
+        assembled.push(`${rel}:${i + 1}  ${why}\n      ${lines[i].trim()}`);
+        break;
+      }
+    }
+  }
+
+  const found = new Set(text.match(URL_RE) ?? []);
   if (found.size === 0) continue;
   if (isGated(rel, rules)) continue;
   offenders.push({ rel, urls: [...found] });
+}
+
+if (assembled.length) {
+  console.error("Outbound-URL guard FAILED — URLs built at runtime, so no check can read the host:\n");
+  for (const line of assembled) console.error(`  • ${line}`);
+  console.error("\nWrite the full URL as one literal in a CODEOWNERS-gated file.");
+  process.exit(1);
 }
 
 if (offenders.length) {
@@ -134,5 +211,5 @@ if (offenders.length) {
 }
 
 console.log(
-  `Outbound-URL guard OK — every absolute URL at the repo root and under ${SCAN_ROOTS.map((r) => r + "/").join(", ")} sits in a CODEOWNERS-gated file.`,
+  `Outbound-URL guard OK — every absolute URL at the repo root and under ${SCAN_ROOTS.map((r) => r + "/").join(", ")} sits in a CODEOWNERS-gated file, and none is assembled at runtime.`,
 );

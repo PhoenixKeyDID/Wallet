@@ -17,6 +17,8 @@
   --text: #e8eaed;
   --text-dim: #b6bcc6;
   --text-hint: #7e8794;
+  --danger: #ff6b6b;
+  --danger-bg: #2a1618;
 }
 @media (prefers-color-scheme: light) {
   :root {
@@ -29,6 +31,8 @@
     --text: #14161a;
     --text-dim: #444a54;
     --text-hint: #6b7280;
+    --danger: #b3261e;
+    --danger-bg: #fdeceb;
   }
 }
 
@@ -123,3 +127,109 @@ button:disabled { cursor: default; opacity: .5; }
  * browser default on showed every word numbered twice — "1. 1. entire".
  */
 ol, ul { margin: 0; padding: 0; list-style: none; }
+
+/*
+ * The approval window.
+ *
+ * A different page from the popup, in a different window, so it sizes itself:
+ * the popup is a fixed 400×600 panel hanging off the toolbar, while this is a
+ * real 420×680 window opened by the background. `body.approve-page` undoes the
+ * panel geometry rather than fighting it.
+ *
+ * Two rules here are security, not decoration, and both come from the same
+ * place — a person reading this screen is deciding whether to give money away:
+ *
+ * - **Nothing that identifies the counterparty may be truncated.** The origin
+ *   and every payee address wrap instead of ellipsing. A look-alike puts its
+ *   difference at the end (`pay.bank.example` vs `pay.bank.example.evil.tld`),
+ *   so an ellipsis hides exactly the part that matters. This is the same rule
+ *   `displayOrigin` enforces in code; a stylesheet could otherwise undo it.
+ * - **Reject is never the harder button to hit.** Both buttons are the same
+ *   size and Reject comes first in the tab order. Colour marks which one signs;
+ *   it does not shrink the one that does not.
+ */
+body.approve-page {
+  width: auto;
+  max-height: none;
+  min-height: 100vh;
+}
+.approve { padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+
+/* Who is asking — the first thing read, so it is the first thing rendered. */
+.approve-origin {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.approve-origin-label { font-size: 11px; color: var(--text-hint); }
+.approve-origin strong {
+  font-size: 15px;
+  overflow-wrap: anywhere; /* wrap, never ellipsis — see note above */
+}
+
+.approve-account {
+  font-size: 11px;
+  color: var(--text-hint);
+  overflow-wrap: anywhere;
+  margin: 0;
+}
+.approve p { margin: 0; }
+.approve-heading { font-size: 11px; color: var(--text-hint); text-transform: uppercase; letter-spacing: .04em; }
+.approve-note { font-size: 11px; color: var(--text-hint); }
+
+.approve-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--bg1);
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  padding: 12px;
+}
+/* The amount is the decision. Nothing else on this screen is this size. */
+.approve-summary > ul:first-of-type > li { font-size: 20px; font-weight: 600; }
+.approve-summary ul { display: flex; flex-direction: column; gap: 4px; }
+.approve-addr { font-size: 11px; overflow-wrap: anywhere; color: var(--text-dim); }
+
+/* Amount above address, not beside it: the address wraps to several lines on a
+   narrow window, and a number sharing a row with it ends up orphaned. */
+.approve-payout { display: flex; flex-direction: column; gap: 2px; margin-bottom: 6px; }
+
+.approve-error { color: var(--danger); font-size: 12px; }
+.approve-refuse {
+  background: var(--danger-bg);
+  border: 1px solid var(--danger);
+  border-radius: 10px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.approve-refuse .approve-note { color: var(--text); }
+
+.approve-actions { display: flex; gap: 10px; margin-top: 2px; }
+.approve-actions button {
+  flex: 1 1 0; /* equal width: rejecting is never the harder target */
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg1);
+}
+.approve-actions button:hover:not(:disabled) { border-color: var(--border-amber); }
+.approve-actions .approve-primary {
+  background: var(--amber);
+  border-color: var(--border-amber);
+  color: var(--bg0);
+  font-weight: 600;
+}
+.approve input, .approve select { padding: 9px; border-radius: 10px; width: 100%; }
+.approve > button {
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border-amber);
+  background: var(--amber);
+  color: var(--bg0);
+  font-weight: 600;
+}

@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { Buffer } from "buffer";
 import { Bip32PrivateKey } from "@stricahq/bip32ed25519";
 import { parseAcctXvk, deriveWatchWallet } from "./xpub";
-import { deriveReceiveAddress, deriveReceiveRange } from "./receive";
+import { deriveReceiveAddress, deriveReceiveRange, unwatchedAmong } from "./receive";
 
 /**
  * Same test acct_xvk construction as `__tests__/xpub.test.ts`: a fixed 16-byte
@@ -75,5 +75,59 @@ describe("deriveReceiveRange", () => {
       const single = deriveReceiveAddress({ acctXvk: xvk, kind: "enterprise", index: r.index, network: 0 });
       expect(r.address).toBe(single.address);
     }
+  });
+});
+
+/**
+ * The green tick and the address it sits beside answer different questions.
+ *
+ * These tests exist because the screen showed ✓ — correctly, the key *was* the
+ * user's — above an address the connected wallet does not watch. The first two
+ * establish that the gap is real rather than theoretical, using the wallet's
+ * own derivation; the rest pin the behaviour of the warning.
+ */
+describe("unwatchedAmong — the tick is about the key, the warning is about the address", () => {
+  const AS_OWNED = async (kind: "base" | "enterprise", start: number, count: number) => {
+    const xvk = parseAcctXvk(await acctXvkHex());
+    return deriveReceiveRange({ acctXvk: xvk, kind, start, count, network: 0 });
+  };
+
+  it("flags an enterprise address even though the key is the wallet's own", async () => {
+    // A local account watches base addresses only, so this address is derived
+    // from the user's own key and is invisible to the balance query and to the
+    // inputs the spend path collects. Silence here is the failure.
+    const watched = new Set((await AS_OWNED("base", 0, 20)).map((d) => d.address));
+    const shown = await AS_OWNED("enterprise", 0, 1);
+    expect(unwatchedAmong(shown, watched)).toEqual(shown);
+  });
+
+  it("flags an index past the wallet's scan, at the same address kind", async () => {
+    // GAP_LIMIT is 20. Index 40 is the same kind, the same key, and not scanned.
+    const watched = new Set((await AS_OWNED("base", 0, 20)).map((d) => d.address));
+    const shown = await AS_OWNED("base", 40, 1);
+    expect(unwatchedAmong(shown, watched)).toHaveLength(1);
+    expect(unwatchedAmong(shown, watched)[0]!.path).toBe("m/1852'/1815'/0'/0/40");
+  });
+
+  it("says nothing about an address the wallet did list", async () => {
+    const watched = new Set((await AS_OWNED("base", 0, 20)).map((d) => d.address));
+    expect(unwatchedAmong(await AS_OWNED("base", 3, 1), watched)).toEqual([]);
+    expect(unwatchedAmong(await AS_OWNED("base", 0, 20), watched)).toEqual([]);
+  });
+
+  it("reports only the addresses that are missing, not the whole batch", async () => {
+    // "Show next 5" from index 18 straddles the boundary: 18 and 19 are watched,
+    // 20-22 are not. Warning about all five would train people to ignore it.
+    const watched = new Set((await AS_OWNED("base", 0, 20)).map((d) => d.address));
+    const shown = await AS_OWNED("base", 18, 5);
+    expect(unwatchedAmong(shown, watched).map((d) => d.index)).toEqual([20, 21, 22]);
+  });
+
+  it("stays silent when the wallet listed nothing, because that is undecidable", async () => {
+    // An empty list means "we could not compare", which the screen already
+    // reports as "could not verify". Reading it as "unwatched" would put a
+    // funds-at-risk warning on a perfectly ordinary address.
+    const shown = await AS_OWNED("base", 0, 3);
+    expect(unwatchedAmong(shown, new Set())).toEqual([]);
   });
 });

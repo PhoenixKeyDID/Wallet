@@ -21,19 +21,134 @@ const KOIOS_BASE: Record<"mainnet" | "preprod" | "preview", string> = {
   preview: "https://preview.koios.rest/api/v1",
 };
 
+/**
+ * The one host this wallet contacts that is not a chain indexer.
+ *
+ * It lives in this file rather than beside the code that uses it because this
+ * file is the single answer to "who can this wallet talk to":
+ * `scripts/check-extension-package.mjs` requires every host in the extension's
+ * `host_permissions` to appear as a URL literal *here*, and CODEOWNERS gates
+ * this file. Putting the constant next to `price.ts` would either break that
+ * gate or force it to read a second file — and a gate that reads two files is a
+ * gate with two places to forget.
+ *
+ * What the request carries: the string `cardano` and a currency code. No
+ * address, no balance, no wallet identifier — the price of ADA is the same
+ * whether or not the asker holds any. What the other end sees is an IP and the
+ * fact that somebody asked. That is a smaller exposure than the indexer, which
+ * necessarily sees the addresses; it is not zero, which is why it is written
+ * down here and in §10 rather than left to be inferred from a fetch call.
+ */
+export const PRICE_BASE = "https://api.coingecko.com/api/v3";
+
 function koiosBase(network: PhoenixNetwork): string {
   if (network === 1) return KOIOS_BASE.mainnet;
   if (network === 2) return KOIOS_BASE.preview;
   return KOIOS_BASE.preprod;
 }
 
-export async function koios<T>(network: PhoenixNetwork, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`${koiosBase(network)}${path}`, {
+/**
+ * Thrown when Koios answered successfully with only part of the answer.
+ *
+ * Separate from a plain network error because it is the opposite failure: the
+ * request worked, the JSON parses, and the array is the wrong length. A wallet
+ * that treats it as data reports a balance smaller than the truth and offers
+ * coin selection over UTxOs the account does not appear to have — the failure a
+ * person reads as "my money is gone".
+ */
+export class KoiosTruncatedError extends Error {
+  constructor(path: string, got: number, total: number) {
+    super(`Koios ${path} returned ${got} of ${total} rows`);
+    this.name = "KoiosTruncatedError";
+  }
+}
+
+/**
+ * A bound the *caller* asked for — not a bound the server imposed.
+ *
+ * The difference is the whole reason this exists. `KoiosTruncatedError` below
+ * catches a server that answered part of an unbounded question, which for a
+ * balance or a UTxO set is a wrong number wearing the clothes of a right one.
+ * But "the most recent 25 transactions" is a question that is *complete* at 25,
+ * and PostgREST answers a deliberate `limit` with the same `206` and the same
+ * short content-range as a truncation. Without a way to say which was asked,
+ * either the guard fires on every paged read, or it is switched off for all of
+ * them.
+ *
+ * Measured 2026-09-06 on the live indexer, and both halves matter:
+ * `/address_txs` unbounded on a busy script address answered **HTTP 504** after
+ * two minutes, and on an ordinary address answered `200` with rows ordered
+ * newest-first; the same request with `limit=5&order=block_height.desc`
+ * answered `206 content-range: 0-4/34` in under a second. So the bound is not
+ * only about the guard — unbounded is the shape that does not come back.
+ */
+/**
+ * PostgREST's own ceiling on rows per response, measured twice against the live
+ * indexer (2026-09-05 `/pool_list` → `0-999/6163`; 2026-09-08 the same endpoint
+ * asked for 2000 → `206 content-range: 0-999/6163`). Asking for more does not
+ * get more; it gets a short answer that looks like an answer.
+ */
+export const KOIOS_ROW_CAP = 1000;
+
+export type KoiosPage = {
+  limit: number;
+  /** PostgREST ordering, e.g. `block_height.desc`. Ask explicitly: a page of
+   *  "some rows" is only the newest ones if the server was told to sort. */
+  order?: string;
+};
+
+export async function koios<T>(
+  network: PhoenixNetwork,
+  path: string,
+  body?: unknown,
+  page?: KoiosPage,
+): Promise<T> {
+  if (page && (!Number.isInteger(page.limit) || page.limit < 1 || page.limit > KOIOS_ROW_CAP)) {
+    // These are exported library functions: a caller outside this repo can ask
+    // for 5000 rows, and PostgREST would answer with 1000 and a `206` that the
+    // guard below would now correctly reject — but refusing up front says which
+    // number is impossible instead of reporting a truncation for a question
+    // that could never have been answered.
+    throw new Error(`Koios ${path} → a page must be 1..${KOIOS_ROW_CAP} rows, not ${page.limit}`);
+  }
+  const query = page
+    ? `?limit=${encodeURIComponent(String(page.limit))}` +
+      (page.order ? `&order=${encodeURIComponent(page.order)}` : "")
+    : "";
+  const res = await fetch(`${koiosBase(network)}${path}${query}`, {
     method: body ? "POST" : "GET",
-    headers: { "content-type": "application/json", accept: "application/json" },
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json",
+      // Koios is PostgREST, and PostgREST caps a response at 1000 rows without
+      // saying so in the status: measured 2026-09-05 on `/pool_list`, HTTP 200
+      // with `content-range: 0-999/*` and exactly 1000 rows, the other 5163
+      // simply absent. Asking for an exact count is what makes the cap visible
+      // — the same request answers `206` with `content-range: 0-999/6163`.
+      prefer: "count=exact",
+    },
     body: body ? JSON.stringify(body) : undefined,
   });
+  // `res.ok` covers 200–299, so it is true for the 206 that says "partial".
+  // Checking the range rather than the status is what closes that.
   if (!res.ok) throw new Error(`Koios ${path} → HTTP ${res.status}`);
+
+  // A short answer to a question that asked to be short is not a truncated
+  // answer — but "shorter than the caller asked for" still is, and switching the
+  // guard off entirely loses that second case. PostgREST caps at 1000 rows no
+  // matter what: measured 2026-09-08, `/pool_list?limit=2000` answered
+  // `206 content-range: 0-999/6163`. So the bar moves rather than disappears —
+  // the answer must reach whichever is smaller, the total or what was asked.
+  const range = res.headers?.get("content-range");
+  if (range) {
+    const m = /^(\d+)-(\d+)\/(\d+)$/.exec(range.trim());
+    if (m) {
+      const end = Number(m[2]);
+      const total = Number(m[3]);
+      const wanted = page ? Math.min(total, page.limit) : total;
+      if (end + 1 < wanted) throw new KoiosTruncatedError(path, end + 1, wanted);
+    }
+  }
   return (await res.json()) as T;
 }
 
@@ -110,6 +225,23 @@ export async function fetchTipSlot(network: PhoenixNetwork): Promise<number> {
   const slot = rows[0]?.abs_slot;
   if (typeof slot !== "number") throw new Error("Koios returned no tip slot");
   return slot;
+}
+
+/**
+ * Block height of the chain tip.
+ *
+ * Separate from `fetchTipSlot` because they answer different questions and are
+ * not interchangeable: a slot is a time coordinate and is what a transaction's
+ * validity interval is expressed in, while a block height counts blocks and is
+ * what a confirmation count is measured in. Slots pass whether or not a block
+ * is minted, so subtracting slots would overstate confirmations — on mainnet by
+ * roughly a factor of twenty.
+ */
+export async function fetchTipBlockHeight(network: PhoenixNetwork): Promise<number> {
+  const rows = await koios<Array<{ block_no: number }>>(network, "/tip");
+  const height = rows[0]?.block_no;
+  if (typeof height !== "number") throw new Error("Koios returned no tip block height");
+  return height;
 }
 
 export type AddressBalance = {
@@ -237,3 +369,24 @@ export async function submitTx(network: PhoenixNetwork, signedCborHex: string): 
 }
 
 export { tyTypes };
+
+/**
+ * Does any address in this batch hold anything?
+ *
+ * The probe `gapScan` runs on. It asks `fetchAddressBalance`, whose response
+ * shape is already load-bearing elsewhere in this file, rather than a
+ * per-address history endpoint whose row format would have to be taken on
+ * trust — a wrong assumption there would silently under-report a balance, which
+ * is the exact bug the scan exists to fix.
+ *
+ * Every UTxO carries min-ADA, so an address holding anything at all has a
+ * positive lovelace balance; there is no "holds only tokens" case to miss.
+ */
+export async function anyAddressFunded(
+  network: PhoenixNetwork,
+  addresses: string[],
+): Promise<boolean> {
+  if (addresses.length === 0) return false;
+  const { lovelace } = await fetchAddressBalance(network, addresses);
+  return lovelace > BigInt("0");
+}

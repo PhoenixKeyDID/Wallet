@@ -15,18 +15,15 @@ import {
 } from "@/components/wallet/ConfirmGate";
 import { reportSignError } from "@/components/wallet/signError";
 import {
-  type Cip30Api,
+  type WalletPort,
   type PhoenixNetwork,
   type BuiltTx,
   type AssetAmount,
-  decodeUtxosToInputs,
-  signAndSubmitCip30,
-  cip30NetworkId,
+  sumAssets,
   fetchProtocolParams,
   fetchTipSlot,
   formatAda,
   assetLabel,
-  readBalance,
 } from "@/lib/cardano";
 import {
   buildSendOutputs,
@@ -55,11 +52,11 @@ function blankRecipient(id: number): Recipient {
 }
 
 export function SendPanel({
-  api,
+  port,
   network,
   changeAddress,
 }: {
-  api: Cip30Api;
+  port: WalletPort;
   network: PhoenixNetwork;
   changeAddress: string;
 }) {
@@ -77,15 +74,16 @@ export function SendPanel({
 
   useEffect(() => {
     let cancelled = false;
-    readBalance(api)
-      .then((bal) => {
-        if (!cancelled) setHeldAssets(bal.assets);
+    port
+      .getInputs()
+      .then((inputs) => {
+        if (!cancelled) setHeldAssets(sumAssets(inputs));
       })
       .catch((err) => toastApiError(err));
     return () => {
       cancelled = true;
     };
-  }, [api]);
+  }, [port]);
 
   const addRecipient = () => setRecipients((rs) => [...rs, blankRecipient(nextId.current++)]);
   const removeRecipient = (id: number) => setRecipients((rs) => rs.filter((r) => r.id !== id));
@@ -155,13 +153,12 @@ export function SendPanel({
         throw new Error(t(key));
       }
 
-      const [utxosHex, params, tip] = await Promise.all([
-        api.getUtxos(),
+      const [inputs, params, tip] = await Promise.all([
+        port.getInputs(),
         fetchProtocolParams(network),
         fetchTipSlot(network),
       ]);
-      if (!utxosHex || utxosHex.length === 0) throw new Error(t("no_utxos"));
-      const inputs = decodeUtxosToInputs(utxosHex);
+      if (inputs.length === 0) throw new Error(t("no_utxos"));
       const changeAddr = tyUtils.getAddressFromHex(
         Buffer.from(changeAddress, "hex"),
       ) as tyTypes.ShelleyAddress;
@@ -189,7 +186,7 @@ export function SendPanel({
     if (!built) return;
     setBusy(true);
     try {
-      const hash = await signAndSubmitCip30(api, built, cip30NetworkId(network));
+      const hash = await port.signAndSubmit(built, network);
       toastSuccess("send_submitted", { hash: hash.slice(0, 12) });
       setTxHash(hash);
       setBuilt(null);

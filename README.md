@@ -12,7 +12,7 @@ and it can also be added alongside an existing Standard wallet.
 
 This is a **library package** (`@phoenixkey/wallet`), not an app and not a spec
 repo. It ships the Cardano core and the wallet UI, with its own tests and CI, and
-is consumed by more than one host — `PhoenixKey-Wakeme-Tech.md` §281 names
+is consumed by more than one host — `PhoenixKey-Wakeme-Tech.md` §5 "API backend" names
 **SuperApp / SDK / Frontend** as separate consumers that have to be coordinated
 together. That is why the host-contract layer below exists instead of the module
 simply importing the frontend's modules.
@@ -38,7 +38,7 @@ refers to (Wallet API v2, Rebirthme, DappConnector) are canonical in
 
 ## Design: where your keys live
 
-Four modes. **Three of them never hold a key**; the fourth does, on purpose, and
+Five modes. **Four of them never hold a key**; the fifth does, on purpose, and
 says so everywhere it can.
 
 | Mode | View | Sign / spend | Key held in the page? |
@@ -59,14 +59,22 @@ for **small, hot balances** — for anything worth protecting, connect a
 hardware-backed extension instead.
 
 The self-custody code lives in `src/lib/keystore/` and is reachable only from
-`LocalWalletPanel`; no other mode imports it, so the three key-free modes stay
-key-free. Full threat model: [`docs/Phoenix Wallet-Feat.md`](<docs/Phoenix Wallet-Feat.md>) §2.1 / §2.1a.
+`LocalWalletPanel`, the extension's approval window, and the browser-bundle smoke
+check that has to exercise the real thing; no other mode imports it,
+so the four key-free modes stay key-free. Nothing that runs inside a website can
+reach it — the content script and the injected provider relay bytes and hold
+nothing. `bun run check:keystore-boundary` fails CI if that ever stops being
+true: this sentence is what makes the other modes safe to describe as key-free,
+so it is checked rather than remembered. Full threat model:
+[`docs/Phoenix Wallet-Feat.md`](<docs/Phoenix Wallet-Feat.md>) §2.1 / §2.1a.
 
 - **Traditional use** — connect a standard Cardano extension (or watch an
   account key). No DID needed; no data goes to the Phoenix backend. (Reading
   balances and building transactions does query a public Cardano indexer,
-  Koios — it sees the addresses you look up and your IP. Nothing is sent to a
-  Phoenix server, and your keys never leave your wallet.)
+  Koios — it sees the addresses you look up and your IP. The fiat estimate asks
+  a price service for the ADA rate and nothing else: no address, no amount, and
+  it can be switched off. Those two are the only hosts this wallet contacts.
+  Nothing is sent to a Phoenix server, and your keys never leave your wallet.)
 - **Phoenix use** — with a DID you can view your Phoenix custody wallet and your
   standard wallet in parallel, and add this wallet into the Standard wallet.
 
@@ -85,18 +93,23 @@ pay the fee. Phoenix never touches your funds.
 ## Layout
 
 ```
-src/lib/cardano/   self-contained core: hash · address · xpub · cip30 · provider · tx · qr
+src/lib/cardano/   self-contained core: hash · address · xpub · gapScan · cip30 · provider ·
+                   tx · send · staking · governance · receive · history · price · txSummary ·
+                   walletPort · watchAddress · connect · qr
 src/lib/night.ts   NIGHT redemption handoff (URL builder + info)
 src/lib/wallet.ts  read-path calls to the PhoenixKey backend wallet API
 src/components/     wallet/* and night/* UI (React)
 src/app/            example /wallet and /night pages
-src/lib/keystore/  local self-custody: mnemonic · derive · vault · signer · storage · session
-extension/          the browser extension — popup that mounts the same UI
+src/lib/keystore/  local self-custody: mnemonic · derive · vault · signer · storage ·
+                   session · port · signForeign
+extension/          the browser extension: popup + approval window (same UI), plus the
+                    content script, page-world provider and service worker that make
+                    it a CIP-30 wallet for dApps
 locales/            en · vi · ja · zh   (namespaces: wallet, night)
 ```
 
 The `src/lib/cardano` core has no host dependencies — it relies only on
-`@stricahq/*` and `@noble/hashes`.
+`@stricahq/*`, `@noble/hashes`, `bech32`, `bignumber.js` and the `buffer` shim.
 
 ## Host contract
 
@@ -129,13 +142,23 @@ session at all — they never touch the Phoenix backend.
 
 ```bash
 bun install
-bun run test          # 241 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
+bun run test          # 453 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
 bun run typecheck
 bun run check:locales # 4 languages × 2 namespaces must stay in step
-bun run check:urls    # no ungated outbound URL ships under src/
+bun run check:urls    # no ungated outbound URL at the repo root or under src/, extension/, scripts/, docs/
 bun run check:node-globals # the Node-globals shim is imported before @stricahq
+bun run check:keystore-boundary # only the key-holding screens and the bundle smoke check may import the keystore
 bun run check:bundle  # the browser build runs with no Node globals (see below)
+bun run check:package # the built extension is loadable and claims no reach it does not use
+bun run check:readme  # the two claims above that go stale on their own
 ```
+
+The last one exists because the test count in this file has read 98, 104, 130,
+218, 241 and 249 at various times — each correct when written, each wrong a week
+later. A figure nobody can trust is worse than no figure, because a reader who
+catches one stale number stops believing the rest of the page, including the
+parts about what this wallet does *not* protect you from. So the number and the
+list of gates are both checked mechanically rather than remembered.
 
 The address golden vectors are copied verbatim from the Rust core
 (`phoenix_address.rs`): if the browser derivation ever drifts from the canonical
@@ -167,8 +190,10 @@ bundle cannot be read is open source in name only — you should be able to rebu
 from a tag and diff it against what you installed. That costs bundle size, and
 that trade is made on purpose.
 
-Keys live only while the popup is open. Closing it destroys the JavaScript
-context and the keys with it, so nothing sits unlocked in a background worker.
+Keys live only while a wallet window is open — the toolbar popup, or the
+approval window a site's request opens. Closing it destroys the JavaScript
+context and the keys with it. The background service worker holds the per-origin
+grants and never a key.
 
 ### `check:bundle` — why a separate check exists
 
@@ -210,15 +235,51 @@ salt and ciphertext.
 - 🟡 Staking & governance signing — built and signable over CIP-30, same
   unaudited, preprod-first caveat as Send. dRep registration/voting additionally
   needs its fee re-confirmed on preprod before mainnet use.
+- ✅ Transaction history — every transaction that touched the wallet, with the
+  amount told from **your** side rather than the chain's. Change coming back to
+  you is not counted as money paid out, a staking withdrawal is counted as the
+  income it is (it never appears as an input), and the fee is counted once
+  because it is already inside the difference. No row links to a block
+  explorer: the transaction id is shown in full and copyable instead, since a
+  link is one click from handing an explorer the association between your
+  addresses and your browser. A connected extension only lists the addresses it
+  chooses to, which would make its own change look like a payment — so amounts
+  are withheld with a reason on screen rather than shown wrong. Details:
+  spec §5.9.
+- ✅ Multiple accounts from one recovery phrase (`m/1852'/1815'/n'`) — separate
+  addresses, balance and staking per account, and the open wallet says which one
+  it is on next to the address. Switching asks for your password because the
+  seed is erased as soon as an account is opened; there is nothing left in
+  memory to derive the next one from. Details: spec §5.10.
+- ✅ Balance in ordinary money (USD / VND / EUR / JPY) — and a switch to turn it
+  off. This is the wallet's **second outbound host** and the first that is not a
+  chain indexer, so it is worth being precise: the request carries the word
+  `cardano` and a currency code, nothing about your wallet, so what the other
+  end learns is your IP and that somebody asked. `Off` stops the request, not
+  just the display. A rate that cannot be read shows nothing rather than a stale
+  number or `0.00`, and every figure says when it was read. Details: spec §5.11.
 - 🟡 Air-gap QR co-sign — the web side is scaffolded; it turns on when the
   offline mobile signer is available.
-- 🟡 Local self-custody wallet (no DID required) — create, restore, unlock,
-  auto-lock, and local signing are implemented and covered by golden vectors
-  against `cardano-serialization-lib`, so a phrase made here restores in Lace,
-  Yoroi or Eternl. Unaudited; the popup UI has not yet been exercised in a real
-  browser.
-- 🔴 CIP-30 injection — the extension does not yet present itself to dApps as a
-  wallet. It signs from its own popup only.
+- 🟡 Local self-custody wallet (no DID required) — create, restore, unlock and
+  auto-lock are implemented and covered by golden vectors against
+  `cardano-serialization-lib`, so a phrase made here restores in Lace, Yoroi or
+  Eternl. The popup was exercised in a real browser on 2026-08-29 (see the
+  extension section above). Unaudited. Local signing is wired into Send,
+  Staking and Governance: those panels take a `WalletPort`, which either an
+  extension (`cip30Port`) or an unlocked local account (`localPort`) can
+  satisfy, so a wallet created here spends from here. **The local path's only
+  review is this page's own confirm screen** — there is no popup outside the
+  document the way an extension has one, so anything with script access to this
+  origin can mis-draw what you are approving. Amounts worth attacking belong in
+  hardware or an extension.
+- 🟡 CIP-30 injection — the extension injects `window.cardano.phoenix` into
+  every top-level `https` page (and loopback) through a content script, so a
+  dApp can connect to it. Reads sit behind a per-origin grant; `signTx` asks
+  every time, in a separate `chrome-extension://` window a page cannot draw
+  over, and the keys it uses are decided by what that window could describe —
+  never by what the transaction asks for. Not yet loaded into a real Chrome, so
+  every claim here rests on unit tests and `check:package`, not on a browser.
+  Details: spec §5.8.
 
 ## License
 

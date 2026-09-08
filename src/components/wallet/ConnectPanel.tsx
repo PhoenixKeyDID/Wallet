@@ -5,7 +5,7 @@ import { useMemo } from "react";
 import { Buffer } from "buffer";
 import { useTranslation } from "react-i18next";
 import { utils as tyUtils } from "@stricahq/typhonjs";
-import { type Cip30Api, type PhoenixNetwork } from "@/lib/cardano";
+import { type PhoenixNetwork } from "@/lib/cardano";
 import {
   KNOWN_DAPPS,
   EMBEDDED_DAPP_BROWSER_ENABLED,
@@ -15,29 +15,32 @@ import {
 /**
  * Connect — a curated launcher for dApps (Minswap, SundaeSwap…).
  *
- * Honest by design. Phoenix is a web PAGE, not an extension, and holds no
- * spendable seed, so it cannot silently inject itself into another site the way
- * an extension does. What it CAN do safely today: bridge to the browser
- * extension wallet you already connected, tell you exactly which account that
- * would share, and open the vetted dApp so you connect there. No auto-injection
- * into arbitrary sites; the embedded dApp browser is deliberately disabled.
+ * Honest by design: this screen never puts a signer in a dApp's hands. It tells
+ * you which account you would be sharing and opens the vetted site so you
+ * connect there, in that site's own flow, with whatever wallet you choose. No
+ * auto-injection into arbitrary sites; the embedded dApp browser is off.
+ *
+ * The restraint is deliberate rather than incidental. It used to be incidental —
+ * this panel said a web page "holds no spendable seed", which was true before
+ * the local keystore existed and is not true now. A wallet that can sign is a
+ * wallet whose Connect screen has something to lose, so the rule is stated as a
+ * rule: nothing here reaches a signing key, in either mode.
  */
 export function ConnectPanel({
-  api,
   network,
   changeAddress,
 }: {
-  api: Cip30Api;
   network: PhoenixNetwork;
   changeAddress: string;
 }) {
   const { t } = useTranslation("wallet");
 
-  // NOTE: no CIP-30 provider is constructed here. A dApp transport (CIP-45 peer /
-  // embedded frame) is wired later and MUST go through `buildDappProvider(api,
-  // guards)`, which refuses to hand a dApp a signer without Phoenix's review
-  // interposed. Building a guardless provider now would be a footgun sitting in
-  // the tree, so we don't.
+  // NOTE: no provider is constructed here, and this panel deliberately does not
+  // receive the `WalletPort` the sibling tabs use. A dApp transport (CIP-45 peer
+  // / embedded frame) is wired later and MUST go through `buildDappProvider`,
+  // which refuses to hand a dApp a signer without Phoenix's review interposed.
+  // Not taking the port is what makes that reviewable: a guardless provider
+  // cannot be added here without the diff also adding the prop that feeds it.
 
   // The account this wallet would expose to a dApp = the connected wallet's
   // change address, shown as a friendly bech32 string.

@@ -75,6 +75,22 @@ export type Account = {
   wipe(): void;
 };
 
+/**
+ * Overwrite the bytes a key object is still holding.
+ *
+ * Both `PrivateKey.toBytes()` and `Bip32PrivateKey.toBytes()` return the live
+ * internal buffer rather than a copy, so filling it with zeroes really does
+ * scrub the key — measured, not assumed. A frozen buffer is not worth failing a
+ * lock over, so a throw here is swallowed.
+ */
+function zeroLiveBytes(key: { toBytes(): Uint8Array }): void {
+  try {
+    key.toBytes().fill(0);
+  } catch {
+    /* nothing useful to do: the lock must still complete */
+  }
+}
+
 /** Root extended private key from BIP-39 entropy, per Icarus / CIP-3. */
 export async function rootKeyFromEntropy(entropy: Uint8Array): Promise<Bip32PrivateKey> {
   return Bip32PrivateKey.fromEntropy(Buffer.from(entropy));
@@ -101,7 +117,19 @@ export function buildAccount(
   root: Bip32PrivateKey,
   accountIndex: number,
   network: PhoenixNetwork,
+  /**
+   * Addresses to derive per chain. Defaults to `GAP_LIMIT`, which is right for
+   * a wallet created here and wrong for one restored from an account with a
+   * longer history — see `cardano/gapScan.ts`. Passing a scanned depth is what
+   * turns "balance smaller than the truth, silently" into a correct balance,
+   * and it must be passed at build time because an `Account` deliberately does
+   * not retain the account private key it would need to extend itself later.
+   */
+  depth: number = GAP_LIMIT,
 ): Account {
+  if (!Number.isInteger(depth) || depth < GAP_LIMIT) {
+    throw new Error(`depth must be an integer of at least GAP_LIMIT (${GAP_LIMIT})`);
+  }
   const acct = accountKey(root, accountIndex);
 
   const stakePrv = acct.derive(ROLE.stake).derive(0).toPrivateKey();
@@ -116,7 +144,7 @@ export function buildAccount(
   const chain = (role: number): DerivedAddress[] => {
     const branch = acct.derive(role);
     const out: DerivedAddress[] = [];
-    for (let i = 0; i < GAP_LIMIT; i += 1) {
+    for (let i = 0; i < depth; i += 1) {
       const prv = branch.derive(i).toPrivateKey();
       const keyHashHex = prv.toPublicKey().hash().toString("hex");
       keyByHash.set(keyHashHex, prv);
@@ -147,13 +175,15 @@ export function buildAccount(
         // JavaScript gives no guarantee the engine kept no other copy — this
         // shortens the window, it does not close it. The honest mitigation for
         // a compromised machine is a hardware wallet, and the UI says so.
-        try {
-          prv.toBytes().fill(0);
-        } catch {
-          /* a frozen buffer is not worth failing a lock over */
-        }
+        zeroLiveBytes(prv);
       }
       keyByHash.clear();
+      // The account extended key is the one that mattered most and was the one
+      // being missed: every key above is derived *from* it, so leaving it intact
+      // meant a lock that scrubbed the leaves and left the trunk. It is wiped
+      // last, after the keys derived from it, so an exception part-way through
+      // cannot leave the trunk alive while the leaves are already gone.
+      zeroLiveBytes(acct);
     },
   };
 }
@@ -163,9 +193,38 @@ export async function accountFromEntropy(
   entropy: Uint8Array,
   accountIndex: number,
   network: PhoenixNetwork,
+  depth: number = GAP_LIMIT,
 ): Promise<Account> {
   const root = await rootKeyFromEntropy(entropy);
-  return buildAccount(root, accountIndex, network);
+  // The scrub below only happens on the way out through `wipe()`, and `wipe()`
+  // only exists once this function returns. `buildAccount` throws for a bad
+  // depth (three of the existing tests take exactly that path) and for a network
+  // byte that fails address encoding — and on those paths the root, which
+  // regenerates every key of every account, is left in the heap with nothing
+  // able to reach it. The caller's `finally` scrubs the *entropy*; this is the
+  // secret derived from it, and it is worth the same.
+  let account;
+  try {
+    account = buildAccount(root, accountIndex, network, depth);
+  } catch (e) {
+    zeroLiveBytes(root);
+    throw e;
+  }
+  // The root belongs to this function, not to `buildAccount`, so this is the
+  // only place allowed to scrub it — `buildAccount` is also called with a root
+  // the caller still owns and must not destroy. The root regenerates every key
+  // for every account, so a lock that leaves it in the heap is a lock in name.
+  //
+  // `depth` changes how many keys hang off that root, and changes nothing about
+  // this: a deeper account has more leaves to scrub, all of them reachable from
+  // `keyByHash`, and the root still has to die here.
+  return {
+    ...account,
+    wipe() {
+      account.wipe();
+      zeroLiveBytes(root);
+    },
+  };
 }
 
 /** The first external address — what "your address" means in the UI. */

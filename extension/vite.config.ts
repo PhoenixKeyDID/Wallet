@@ -48,7 +48,27 @@ export default defineConfig({
     // against the source, which defeats the point of publishing the source.
     minify: false,
     rollupOptions: {
-      input: { popup: resolve(here, "popup.html") },
+      /**
+       * Five entry points, and the three new ones are separate on purpose.
+       *
+       * `content` and `inpage` run in a web page's process, not in the
+       * extension's, so anything they pull in ships to every site the user
+       * visits. Keeping them out of the popup's graph is what stops the wallet,
+       * the keystore and Argon2 from being loaded into every page — which would
+       * be both a large download on every navigation and a much wider surface
+       * than either script needs. `background` is separate because a service
+       * worker has no DOM and must not be handed code that assumes one.
+       *
+       * `approve` is the wallet window a website's request opens: it does have
+       * the keystore, and it is the only one of the three new surfaces that does.
+       */
+      input: {
+        popup: resolve(here, "popup.html"),
+        approve: resolve(here, "approve.html"),
+        content: resolve(here, "content/bridge.ts"),
+        inpage: resolve(here, "inpage/provider.ts"),
+        background: resolve(here, "background/worker.ts"),
+      },
       output: { entryFileNames: "[name].js", chunkFileNames: "[name].js", assetFileNames: "[name].[ext]" },
     },
   },

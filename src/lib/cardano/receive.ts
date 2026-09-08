@@ -89,3 +89,33 @@ export function deriveReceiveRange(args: DeriveReceiveRangeArgs): DerivedReceive
   }
   return out;
 }
+
+/**
+ * Which of these addresses the connected wallet did not say it watches.
+ *
+ * The receive screen's ownership check answers "is this **key** yours". A
+ * person reading a green tick beside an address hears "this **address** is safe
+ * to use", and those two are not the same sentence. A wallet watches a bounded
+ * set — a local account watches base addresses `0..GAP_LIMIT-1` and no others —
+ * so an enterprise address, or index 40, is genuinely derived from the user's
+ * own key and genuinely absent from the balance query and from the inputs the
+ * spend path collects. Funds sent there are stranded, not destroyed: the key
+ * still derives them. But they are stranded quietly, under a tick.
+ *
+ * Comparing against what the wallet actually listed, rather than reasoning from
+ * `kind` and `index`, is deliberate: a CIP-30 wallet's scanning rules are not
+ * this module's rules, and guessing them would produce a warning that is wrong
+ * in the other direction — telling someone their perfectly visible Eternl
+ * address is invisible.
+ *
+ * An empty `owned` means the wallet listed nothing, which is *undecidable* and
+ * not *unwatched*; it returns `[]` so the caller's "could not verify" path is
+ * the one that speaks.
+ */
+export function unwatchedAmong(
+  shown: readonly DerivedReceiveAddress[],
+  owned: ReadonlySet<string>,
+): DerivedReceiveAddress[] {
+  if (owned.size === 0) return [];
+  return shown.filter((d) => !owned.has(d.address));
+}

@@ -12,6 +12,7 @@ import {
   readBalance,
   WalletConnectError,
   isConnectRefused,
+  cip30Port,
   type Cip30Api,
   type Cip30Wallet,
 } from "@/lib/cardano";
@@ -136,6 +137,16 @@ export function Cip30Panel() {
     }
   }, [conn?.changeAddress]);
 
+  /**
+   * The connected extension, wrapped in the shape the feature tabs speak.
+   *
+   * Memoised on the api object, not on `conn`: the panels take `port` as an
+   * effect dependency, so a port rebuilt on every render would re-fetch UTxOs on
+   * every render. Reconnecting produces a genuinely different api and should
+   * re-fetch, which is exactly what this dependency says.
+   */
+  const port = useMemo(() => (conn ? cip30Port(conn.api) : null), [conn?.api]);
+
   const refresh = async () => {
     if (!conn) return;
     try {
@@ -255,11 +266,9 @@ export function Cip30Panel() {
         {t("refresh")}
       </button>
 
-      <WalletTabs
-        api={conn.api}
-        networkId={conn.networkId}
-        changeAddress={conn.changeAddress}
-      />
+      {port && (
+        <WalletTabs port={port} networkId={conn.networkId} changeAddress={conn.changeAddress} />
+      )}
     </div>
   );
 }

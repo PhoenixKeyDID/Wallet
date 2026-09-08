@@ -58,3 +58,10 @@ export {
   LocalSignError,
   type Submitter,
 } from "./signer";
+
+export {
+  localPort,
+  changeAddressFor,
+  changeAddressHexFor,
+  externalAddressesHex,
+} from "./port";
