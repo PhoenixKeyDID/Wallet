@@ -34,7 +34,7 @@
  *    script is an extension whose published source proves nothing.
  * 4. **It loads at all.** Manifest parses, every file it names exists.
  */
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -45,6 +45,41 @@ const fail = (msg) => problems.push(msg);
 
 if (!existsSync(DIST)) {
   console.error(`No dist-extension/ — run \`bun run build:extension\` first.`);
+  process.exit(1);
+}
+
+/**
+ * Refuse to grade a build older than the code it was built from.
+ *
+ * `dist-extension/` is gitignored, so what sits there is whatever the last
+ * build left — possibly from a different branch, possibly from before the very
+ * change being checked. This gate is the one that decides whether the shipped
+ * extension may talk to a host, and a gate reporting OK about a stale artifact
+ * is the worst of the three states a measurement can be in: it does not say
+ * "mismatch" and it does not say "I could not measure", it says "fine".
+ *
+ * CI builds immediately before running this, so the check is invisible there.
+ * It fires for the person running the gate by hand, which is exactly when the
+ * artifact is likely to be old.
+ */
+const newestUnder = (dir) => {
+  let newest = 0;
+  for (const entry of readdirSync(dir)) {
+    if (entry === "node_modules") continue;
+    const full = join(dir, entry);
+    const st = statSync(full);
+    newest = Math.max(newest, st.isDirectory() ? newestUnder(full) : st.mtimeMs);
+  }
+  return newest;
+};
+
+const builtAt = statSync(join(DIST, "manifest.json")).mtimeMs;
+const sourceAt = Math.max(newestUnder(join(REPO, "extension")), newestUnder(join(REPO, "src")));
+if (sourceAt > builtAt) {
+  console.error(
+    "dist-extension/ is older than the source it was built from — this check would\n" +
+      "be grading a stale artifact. Run `bun run build:extension` first.",
+  );
   process.exit(1);
 }
 
