@@ -101,6 +101,33 @@ export class WalletSession {
     return () => this.listeners.delete(fn);
   }
 
+  /**
+   * Fires when the wallet **becomes** locked — never for a lock it was already in.
+   *
+   * `subscribe` hands over the current state before it hands over any change,
+   * which is the right shape for painting a screen and the wrong one for
+   * reacting to an event. A `locked` reading arrives on every subscribe,
+   * including the first one of a session nobody has opened yet; a caller that
+   * reads it as "the wallet just locked" runs its walk-away handling against a
+   * wallet that was never open. That is not hypothetical — it is why every
+   * person creating their first wallet was told, over the words they were
+   * supposed to be writing down, that the wallet had locked while their
+   * recovery phrase was on screen.
+   *
+   * Locking an already-locked session is not an event here even though `lock()`
+   * emits for it: nothing changed hands, so a listener has nothing to undo.
+   * `lock()` still bumps the epoch in that case, and for its own reason — see
+   * there.
+   */
+  onLock(fn: () => void): () => void {
+    let wasUnlocked = this.state.status === "unlocked";
+    return this.subscribe((s) => {
+      const nowUnlocked = s.status === "unlocked";
+      if (wasUnlocked && !nowUnlocked) fn();
+      wasUnlocked = nowUnlocked;
+    });
+  }
+
   private emit(): void {
     for (const fn of this.listeners) fn(this.state);
   }

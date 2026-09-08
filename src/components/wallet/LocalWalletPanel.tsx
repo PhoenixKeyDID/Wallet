@@ -192,37 +192,44 @@ export function LocalWalletPanel() {
   // left open in a background tab never locked at all, because every switch away
   // pushed the deadline out again. Measured with fake timers: 100 minutes with
   // no user action and a tab switch every five, still unlocked.
+  //
+  // `onLock`, not `subscribe`: this block reacts to the wallet **becoming**
+  // locked, and `subscribe` also delivers the state it is already in. Every
+  // mount of a session nobody has opened yet reads `locked`, so on `subscribe`
+  // this ran on first paint — and the last line of it told a person creating
+  // their very first wallet that the wallet had locked while their recovery
+  // phrase was on screen, over the words they were supposed to be copying down.
+  // A warning that fires when nothing is wrong is how people learn to click
+  // past the one that means something.
   useEffect(() => {
-    const off = session.subscribe((s) => {
-      if (s.status === "locked") {
-        setAccount(null);
-        // A balance read started before the lock must not paint the previous
-        // wallet's money onto the screen after it.
-        balanceRun.current += 1;
-        setLovelace(BigInt("0"));
-        setAssets([]);
-        setBalanceOk(false);
-        setBalanceMayBePartial(false);
-        setRevealed(null);
-        setStep((cur) => (cur === "open" ? "list" : cur));
-        // The password is what opens the vault. Keeping it in state through a
-        // lock means "locked" and "unlocked" differ by a boolean while the
-        // secret that bridges them is still sitting there. It costs one retype.
-        setPw("");
-        // Same secret, second field. The account-switch form has its own copy
-        // of the password, so clearing only `pw` would leave a lock that locks
-        // one input and not the other.
-        setSwitchPw("");
-        setSwitchTo(null);
-        setPw2("");
-        // A recovery phrase mid-creation is a different case: destroying it
-        // would throw away a wallet the user is in the middle of writing down,
-        // and a wallet that punishes you for opening your password manager
-        // teaches you to screenshot the words instead. So hide, do not destroy
-        // — the walk-away threat is someone reading the screen, and hiding
-        // answers exactly that. What survives is stated in `session.ts`.
-        setConcealed(true);
-      }
+    const off = session.onLock(() => {
+      setAccount(null);
+      // A balance read started before the lock must not paint the previous
+      // wallet's money onto the screen after it.
+      balanceRun.current += 1;
+      setLovelace(BigInt("0"));
+      setAssets([]);
+      setBalanceOk(false);
+      setBalanceMayBePartial(false);
+      setRevealed(null);
+      setStep((cur) => (cur === "open" ? "list" : cur));
+      // The password is what opens the vault. Keeping it in state through a
+      // lock means "locked" and "unlocked" differ by a boolean while the
+      // secret that bridges them is still sitting there. It costs one retype.
+      setPw("");
+      // Same secret, second field. The account-switch form has its own copy
+      // of the password, so clearing only `pw` would leave a lock that locks
+      // one input and not the other.
+      setSwitchPw("");
+      setSwitchTo(null);
+      setPw2("");
+      // A recovery phrase mid-creation is a different case: destroying it
+      // would throw away a wallet the user is in the middle of writing down,
+      // and a wallet that punishes you for opening your password manager
+      // teaches you to screenshot the words instead. So hide, do not destroy
+      // — the walk-away threat is someone reading the screen, and hiding
+      // answers exactly that. What survives is stated in `session.ts`.
+      setConcealed(true);
     });
     const onHide = () => {
       if (document.visibilityState === "hidden") session.lock();
@@ -251,6 +258,11 @@ export function LocalWalletPanel() {
     try {
       const m = createMnemonic(24);
       setPhrase(m);
+      // A phrase that has just been generated cannot be one that was hidden by
+      // an earlier lock. Without this, a lock that happened before this click
+      // still hides the new words — and the screen explains the concealment
+      // with an event that did not happen to them.
+      setConcealed(false);
       setStep("words");
     } catch (e) {
       err(e);
