@@ -48,11 +48,15 @@ function stage(opts: {
   writeFileSync(join(dir, "popup.js"), `export const x = 1;\n${opts.js ?? ""}`);
 }
 
-function runGate() {
+function runGate(backingSources?: string[]) {
   const r = spawnSync(process.execPath, [GATE], {
     cwd: REPO,
     encoding: "utf8",
-    env: { ...process.env, PHOENIX_DIST: dir },
+    env: {
+      ...process.env,
+      PHOENIX_DIST: dir,
+      ...(backingSources ? { PHOENIX_BACKING_SOURCES: backingSources.join(",") } : {}),
+    },
   });
   return { code: r.status, out: (r.stdout ?? "") + (r.stderr ?? "") };
 }
@@ -90,17 +94,54 @@ describe("check:package > the default package passes", () => {
   });
 });
 
+/**
+ * One backing source used by both cases below, so they differ by exactly one
+ * thing: which hosts the manifest declares. The four in string literals are the
+ * ones the shipping manifest declares; the fifth is named only in prose.
+ */
+const SOURCE_WITH_A_HOST_IN_PROSE =
+  `// See also the mirror at https://evil.example/api/v0\n` +
+  `export const HOSTS = [\n` +
+  `  "https://api.koios.rest",\n` +
+  `  "https://preprod.koios.rest",\n` +
+  `  "https://preview.koios.rest",\n` +
+  `  "https://api.coingecko.com",\n` +
+  `];\n`;
+
 describe("check:package > a host must be reachable by code, not merely mentioned", () => {
-  it("refuses a host_permission whose only backing is a comment", () => {
-    // The attack that got through before: name a host in a sentence, add the
-    // matching permission, and a whole-text search blesses it.
+  /** Stages a backing source and returns its path. */
+  function backingSource(body: string): string {
+    const f = join(dir, "fake-source.ts");
+    writeFileSync(f, body);
+    return f;
+  }
+
+  const widened = (host: string) => {
     const m = BASE_MANIFEST();
-    m.host_permissions.push("https://evil.example/*");
-    m.content_security_policy.extension_pages += " https://evil.example";
-    stage({ manifest: m, receipt: [] });
-    const { code, out } = runGate();
+    m.host_permissions.push(`https://${host}/*`);
+    m.content_security_policy.extension_pages += ` https://${host}`;
+    return m;
+  };
+
+  it("refuses a host_permission whose only backing is a comment", () => {
+    // The attack, staged rather than described: the host really is present in a
+    // backing source — in prose. A whole-file search blesses it; only a search
+    // inside string literals asks the question that matters, which is whether
+    // the code can hand this host to `fetch`.
+    const src = backingSource(SOURCE_WITH_A_HOST_IN_PROSE);
+    stage({ manifest: widened("evil.example"), receipt: [] });
+    const { code, out } = runGate([src]);
     expect(code).toBe(1);
     expect(out).toMatch(/evil\.example/);
+  });
+
+  it("still accepts a host the same source reaches in a string", () => {
+    // The other direction, and the one that decides whether the rule above
+    // survives contact: a check that also rejects correct manifests is a check
+    // somebody deletes. Same file, same run, only the quoting differs.
+    const src = backingSource(SOURCE_WITH_A_HOST_IN_PROSE);
+    stage({ manifest: BASE_MANIFEST(), receipt: [] });
+    expect(runGate([src]).code).toBe(0);
   });
 });
 
@@ -133,13 +174,22 @@ describe("check:package > the manifest cannot fall behind the build", () => {
 });
 
 describe("check:package > an unmeasurable package is refused, not waved through", () => {
-  it("refuses a directory with no build receipt", () => {
+  it("refuses a directory with no build receipt, and says what to do", () => {
     // Absence is not evidence of "no extra hosts" — it means this directory was
     // not produced by the build config, so the question cannot be answered. A
     // gate that answers it anyway is guessing in the reassuring direction.
+    //
+    // Asserting the sentence, not just the exit code, because the exit code
+    // alone cannot tell the check apart from its own absence: with the existence
+    // check removed the read throws `ENOENT` and the gate is still red — at the
+    // next pin down, with the message now carrying an absolute path out of the
+    // build machine. Measured; the earlier version of this case stayed green
+    // through exactly that mutation.
     stage({ receipt: null });
     const { code, out } = runGate();
     expect(code).toBe(1);
-    expect(out).toMatch(/chain-origins/);
+    expect(out).toMatch(/cannot be determined/);
+    expect(out).toMatch(/rebuild with/);
+    expect(out).not.toMatch(/ENOENT/);
   });
 });

@@ -328,10 +328,18 @@ for (const f of PAGE_WORLD) {
 // `provider.ts` holds the default indexer, `chainEnv.ts` the endpoints a build
 // can be pointed at. Reading only the first would reject a manifest that is
 // correct, which is the failure that gets a check deleted rather than fixed.
-const BACKING_SOURCES = [
-  join(REPO, "src", "lib", "cardano", "provider.ts"),
-  join(REPO, "src", "lib", "cardano", "chainEnv.ts"),
-];
+// `PHOENIX_BACKING_SOURCES` exists so this rule can be tested at all. The files
+// below are real repo sources, so a test cannot stage a comment in one of them
+// without editing the repo — and the version of this test that did not have the
+// seam asserted something weaker than its own name: it staged a host no source
+// mentions *anywhere*, so it stayed green while the string-literal scan was
+// turned into a whole-file scan. A rule nothing can stage is a rule nothing checks.
+const BACKING_SOURCES = process.env.PHOENIX_BACKING_SOURCES
+  ? process.env.PHOENIX_BACKING_SOURCES.split(",").filter(Boolean)
+  : [
+      join(REPO, "src", "lib", "cardano", "provider.ts"),
+      join(REPO, "src", "lib", "cardano", "chainEnv.ts"),
+    ];
 /**
  * A host counts as backed when it appears inside a string literal.
  *
