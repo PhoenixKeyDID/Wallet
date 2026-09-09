@@ -434,7 +434,30 @@ describe("check:package > an unmeasurable package is refused, not waved through"
   });
 });
 
-describe("check:package > a malformed field is a finding, not a crash, at every depth", () => {
+/**
+ * A malformed manifest is reported, never a stack trace.
+ *
+ * The block was called *"…at every depth"* for one round, and that name was
+ * measurably false while it was there: `background.service_worker` is a scalar
+ * at depth one and still killed the gate. A coverage claim in a block name ages
+ * badly in the one direction that matters — it reads as a guarantee, so the next
+ * person adding a manifest field has been told they need not think about it.
+ *
+ * So the name states the property, and the coverage is stated here, where it can
+ * be kept honest. Cases exist for: a list field given a string; a list given a
+ * non-list; a string entry inside `host_permissions`; a `null` inside
+ * `content_scripts`; the scalar path fields `action.default_popup` and
+ * `background.service_worker`; and a non-path value inside `icons`.
+ *
+ * **What is not covered.** Every other scalar the gate reads — `manifest_version`,
+ * `version`, `name`, the CSP string, `content_scripts[].run_at` — is compared or
+ * pattern-matched rather than joined onto a path, so a wrong type there produces
+ * a wrong-looking finding rather than a crash. That is a claim about today's
+ * reads, not a property anything enforces: a rule added later that joins a new
+ * field onto `DIST` gets no protection from this block, and the thing to copy is
+ * `stringAt`, not the shape of the rule next to it.
+ */
+describe("check:package > a malformed manifest is reported, never a stack trace", () => {
   it("says which field is the wrong type instead of dying with a TypeError", () => {
     // `manifest.host_permissions ?? []` covers absence and nothing else, so a
     // hand-edit dropping the brackets reached `.map` and killed the gate with a
@@ -604,6 +627,55 @@ describe("check:package > a malformed field is a finding, not a crash, at every 
     expect(code).toBe(1);
     expect(out).toMatch(/icons\["16"\] is number, not a path/);
     expect(out).not.toMatch(/ERR_INVALID_ARG_TYPE/);
+  });
+
+  it("says so for a service worker that is not a path", () => {
+    // The last field in the file still going straight into `join(DIST, …)`. It
+    // survived a round of fixing the same defect elsewhere because the fix was
+    // scoped to where the crash had been *noticed*: containers, then elements,
+    // then one scalar — and this one sat 162 lines below the others.
+    const m = BASE_MANIFEST();
+    m.background = { service_worker: 5 };
+    stage({ manifest: m });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/background\.service_worker is number, not a string/);
+    expect(out).not.toMatch(/ERR_INVALID_ARG_TYPE/);
+    expect(out).not.toMatch(/check-extension-package\.mjs:\d+/);
+  });
+
+  it("still reports a widened permission when another field is unreadable", () => {
+    // Why a crash is worse than a wrong message, stated as a measurement rather
+    // than an argument. The findings are printed at the end; a crash happens
+    // before that block runs, so *nothing* is printed — and a manifest that both
+    // widens `host_permissions` and holds one bad type reported neither. The
+    // widening is the finding this gate exists for, and the type error is the
+    // cheapest thing in the world to introduce by hand next to it.
+    const m = BASE_MANIFEST();
+    m.host_permissions = [...m.host_permissions, "https://*/*"];
+    m.background = { service_worker: 5 };
+    stage({ manifest: m });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/background\.service_worker is number, not a string/);
+    // The one that matters, and the one a crash used to swallow.
+    expect(out).toMatch(/https:\/\/\*\/\*/);
+  });
+
+  it("names one bad host entry once, not once per rule that reads the list", () => {
+    // Five separate rules read `host_permissions`, each re-reading it, so one
+    // bad entry printed the same line five times. The report is what a reader
+    // scans for the *other* findings; five copies of one line is how the rest
+    // stop being read. Same failure mode as the crash above, by volume instead
+    // of by absence.
+    const m = BASE_MANIFEST();
+    m.host_permissions = [...m.host_permissions, 123];
+    stage({ manifest: m });
+    const { out } = runGate();
+    const hits = out
+      .split("\n")
+      .filter((l) => /host_permissions contains number/.test(l)).length;
+    expect(hits).toBe(1);
   });
 });
 

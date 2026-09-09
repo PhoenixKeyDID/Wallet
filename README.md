@@ -229,7 +229,7 @@ session at all — they never touch the Phoenix backend.
 
 ```bash
 bun install
-bun run test          # 592 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
+bun run test          # 595 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
 bun run typecheck
 bun run check:locales # 4 languages × 2 namespaces must stay in step
 bun run check:host-contract # what a host must wire up, checked against what the code imports

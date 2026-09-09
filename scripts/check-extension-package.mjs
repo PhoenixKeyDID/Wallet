@@ -306,8 +306,23 @@ try {
   process.exit(1);
 }
 
+/**
+ * Read once, complain once.
+ *
+ * Five separate rules below need this list, and each used to re-read it. A
+ * manifest with one bad entry therefore printed the same type finding five
+ * times — which is not merely untidy: the report is what a reader scans for the
+ * *other* findings, and five copies of one line is how the rest stop being read.
+ */
+const hostPermissions = stringsIn(manifest.host_permissions, "host_permissions");
+
 // 4 — it loads at all.
-if (manifest.manifest_version !== 3) fail(`manifest_version is ${manifest.manifest_version}, expected 3`);
+if (manifest.manifest_version !== 3) {
+  // Quoted, because the comparison is `!==` and the commonest way to fail it is
+  // the string "3". Interpolated bare, that printed `manifest_version is 3,
+  // expected 3` — a message that reads as a bug in the checker.
+  fail(`manifest_version is ${JSON.stringify(manifest.manifest_version) ?? "undefined"}, expected 3`);
+}
 const popup = stringAt(manifest.action?.default_popup ?? "", "action.default_popup");
 if (!popup) fail("manifest declares no action.default_popup");
 for (const rel of [popup, ...iconPaths(manifest.icons)].filter(Boolean)) {
@@ -343,7 +358,7 @@ if (!cspConnect) {
     cspConnect[2].trim().split(/\s+/).filter((s) => s !== "'self'"),
   );
   const permitted = new Set(
-    stringsIn(manifest.host_permissions, "host_permissions").map((p) => p.replace(/\/\*$/, "")),
+    hostPermissions.map((p) => p.replace(/\/\*$/, "")),
   );
   for (const host of declared) {
     if (!permitted.has(host)) {
@@ -468,7 +483,7 @@ for (const war of objectsIn(manifest.web_accessible_resources, "web_accessible_r
   }
 }
 
-const sw = manifest.background?.service_worker;
+const sw = stringAt(manifest.background?.service_worker ?? "", "background.service_worker");
 if (manifest.background && !sw) fail("background declares no service_worker");
 if (sw && !existsSync(join(DIST, sw))) fail(`background names "${sw}", which is not in the package`);
 
@@ -693,7 +708,7 @@ function parseHostPermission(pattern) {
   return { host: authority, authority, reason: null };
 }
 
-for (const pattern of stringsIn(manifest.host_permissions, "host_permissions")) {
+for (const pattern of hostPermissions) {
   const parsed = parseHostPermission(pattern);
   if (!parsed.host) {
     fail(`host_permissions declares "${pattern}" — ${parsed.reason}`);
@@ -732,7 +747,7 @@ for (const pattern of stringsIn(manifest.host_permissions, "host_permissions")) 
  * `bundleHosts` is gathered above, where the other direction also needs it.
  */
 const declaredHosts = new Set(
-  stringsIn(manifest.host_permissions, "host_permissions").map((p) => parseHostPermission(p).host).filter(Boolean),
+  hostPermissions.map((p) => parseHostPermission(p).host).filter(Boolean),
 );
 /**
  * Every authority the manifest mentions, valid pattern or not.
@@ -745,7 +760,7 @@ const declaredHosts = new Set(
  * wildcard.
  */
 const mentionedAuthorities = new Set(
-  stringsIn(manifest.host_permissions, "host_permissions").map((p) => parseHostPermission(p).authority).filter(Boolean),
+  hostPermissions.map((p) => parseHostPermission(p).authority).filter(Boolean),
 );
 for (const host of bundleHosts) {
   if (!declaredHosts.has(host)) {
@@ -785,7 +800,7 @@ if (problems.length) {
  *
  * So each host is asked *both* questions, and the three answers are named.
  */
-const declaredHostList = stringsIn(manifest.host_permissions, "host_permissions")
+const declaredHostList = hostPermissions
   .map((p) => parseHostPermission(p).host)
   .filter(Boolean);
 const inSource = (h) => providerHosts.has(h);
