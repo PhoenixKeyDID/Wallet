@@ -713,19 +713,135 @@ describe("check:package > a malformed manifest is reported, never a stack trace"
     expect(out).toMatch(/declares no action\.default_popup/);
   });
 
+  it("calls an empty or null path missing, rather than calling the package fine", () => {
+    // The direction a fix goes quiet in. Asking the raw value `=== undefined`
+    // reads as the tighter test and is the looser one: `?? ""` collapses `null`
+    // and `undefined` together, so `null` and `""` matched neither branch —
+    // not wrong-typed, because `""` is a string, and not absent, because the key
+    // is there. Measured, all four shapes below went from a finding to
+    // `Extension package OK`, exit 0.
+    //
+    // A gate answering "fine" for a package with no popup and no service worker
+    // is worse than one that crashes: a crash is read as broken, and this is
+    // read as passed.
+    for (const empty of [null, ""]) {
+      const mp = BASE_MANIFEST();
+      mp.action.default_popup = empty;
+      stage({ manifest: mp });
+      const p = runGate();
+      expect(p.code, `default_popup=${JSON.stringify(empty)}`).toBe(1);
+      expect(p.out, `default_popup=${JSON.stringify(empty)}`).toMatch(
+        /declares no action\.default_popup/,
+      );
+      expect(p.out, `default_popup=${JSON.stringify(empty)}`).not.toMatch(
+        /action\.default_popup is \w+.*, not a string/,
+      );
+
+      const mb = BASE_MANIFEST();
+      mb.background = { service_worker: empty };
+      stage({ manifest: mb });
+      const b = runGate();
+      expect(b.code, `service_worker=${JSON.stringify(empty)}`).toBe(1);
+      expect(b.out, `service_worker=${JSON.stringify(empty)}`).toMatch(
+        /background declares no service_worker/,
+      );
+      expect(b.out, `service_worker=${JSON.stringify(empty)}`).not.toMatch(
+        /service_worker is \w+.*, not a string/,
+      );
+    }
+  });
+
   it("names a wrong-typed container instead of blaming the field inside it", () => {
     // `"background": "background.js"` — a plausible hand-edit, and the shape
     // optional chaining hides best: `manifest.background?.service_worker` reads
     // a string exactly as quietly as it reads a missing key, so the gate
     // reported a missing field on a manifest whose problem is one level up.
-    for (const bad of [5, "background.js", [], null]) {
+    //
+    // **All three containers, not just the one that was noticed.** `objectAt`
+    // was written for `background` and wired to `background` alone, while
+    // `action` sat three lines above it and `content_security_policy` directly
+    // below — both still read with bare optional chaining. `"action":
+    // "popup.html"` gave *"declares no action.default_popup"*, and a CSP string
+    // gave two findings at once, both false: *"got: (none)"* for a policy
+    // printed in full in the manifest, and *"has no connect-src"* under it.
+    //
+    // So this case iterates the containers rather than naming one. A test that
+    // pins the instance that was noticed grows a gate no faster than the defect
+    // moves.
+    const CONTAINERS: Array<[string, RegExp]> = [
+      ["background", /declares no service_worker/],
+      ["action", /declares no action\.default_popup/],
+      ["content_security_policy", /got: \(none\)|has no `connect-src`/],
+    ];
+    for (const [field, downstream] of CONTAINERS) {
+      for (const bad of [5, "a-string.js", [], null]) {
+        const label = `${field}=${JSON.stringify(bad)}`;
+        const m = BASE_MANIFEST();
+        m[field] = bad;
+        stage({ manifest: m });
+        const { code, out } = runGate();
+        expect(code, label).toBe(1);
+        expect(out, label).toMatch(
+          new RegExp(`manifest ${field.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")} is \\w+.*, not an object`),
+        );
+        // The sentence about the field inside it must not appear: that is the
+        // whole defect, and asserting only the correct line leaves the suite
+        // green on both sides of it.
+        expect(out, label).not.toMatch(downstream);
+      }
+    }
+  });
+
+  it("does not derive findings from a list it has just called unreadable", () => {
+    // The type finding for `host_permissions` says "every rule below about
+    // host_permissions was skipped". That sentence was false: `stringsIn`
+    // returns `[]`, an empty list is a valid answer, and the cross-check against
+    // `connect-src` reasoned from it — so one cause printed five sentences, and
+    // the four loudest ones pointed away from it at hosts that were fine.
+    const m = BASE_MANIFEST();
+    m.host_permissions = 5;
+    stage({ manifest: m });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/host_permissions is number, not a list/);
+    expect(out).not.toMatch(/which is not in host_permissions/);
+  });
+
+  it("still compares against a list that is genuinely empty", () => {
+    // The direction the fix above breaks if it is written one notch too tight,
+    // and it was: a predicate reading "undefined or an array" excludes `null`,
+    // which `asArray` accepts as an empty list without complaint. The gate then
+    // had nothing to say about a manifest whose CSP reaches four hosts it holds
+    // no permission for, and exited 0.
+    //
+    // An empty `host_permissions` really does disagree with a CSP naming hosts.
+    // Suppressing a consequence is one edit away from suppressing the cause.
+    for (const empty of [null, []]) {
       const m = BASE_MANIFEST();
-      m.background = bad;
+      m.host_permissions = empty;
+      stage({ manifest: m });
+      const { code, out } = runGate();
+      expect(code, JSON.stringify(empty)).toBe(1);
+      expect(out, JSON.stringify(empty)).toMatch(/which is not in host_permissions/);
+    }
+  });
+
+  it("reports a wrong-typed CSP string once, not as two claims about its contents", () => {
+    // `"extension_pages": 5` printed `got: 5` and then `has no connect-src` — a
+    // claim about the contents of something that has no contents. `[]` was
+    // worse: `got:` followed by nothing, so the offending value appeared as
+    // empty space.
+    for (const bad of [5, [], {}, true]) {
+      const m = BASE_MANIFEST();
+      m.content_security_policy = { extension_pages: bad };
       stage({ manifest: m });
       const { code, out } = runGate();
       expect(code, JSON.stringify(bad)).toBe(1);
-      expect(out, JSON.stringify(bad)).toMatch(/manifest background is \w+.*, not an object/);
-      expect(out, JSON.stringify(bad)).not.toMatch(/declares no service_worker/);
+      expect(out, JSON.stringify(bad)).toMatch(
+        /content_security_policy\.extension_pages is \w+.*, not a string/,
+      );
+      expect(out, JSON.stringify(bad)).not.toMatch(/has no `connect-src`/);
+      expect(out, JSON.stringify(bad)).not.toMatch(/must be exactly/);
     }
   });
 

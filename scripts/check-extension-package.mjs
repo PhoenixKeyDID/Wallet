@@ -135,15 +135,26 @@ const stringsIn = (value, field) => {
 /**
  * One value that has to be an object before fields can be read off it.
  *
- * Returns `null` for both "absent" and "wrong type", so the caller must ask the
- * raw value about absence — same discipline as `stringAt`. The reason this
- * exists at all: optional chaining reads a scalar exactly as quietly as it
- * reads a missing key, so `manifest.background?.service_worker` came out
+ * The reason this exists: optional chaining reads a scalar exactly as quietly
+ * as it reads a missing key, so `manifest.background?.service_worker` came out
  * `undefined` for `"background": 5`, and the gate reported a missing field on a
  * manifest whose problem was one level up.
+ *
+ * **Three return values, because there are three states**, and collapsing two of
+ * them is what produced the last two defects in this file:
+ *
+ *   • `undefined` — absent. The caller decides whether that is allowed.
+ *   • `null`      — present and the wrong type. Already reported; the caller
+ *                   must stay silent, or the one cause gets a second sentence
+ *                   that contradicts the first.
+ *   • the object  — read on.
+ *
+ * A two-value version of this reads as simpler and is the thing that goes
+ * wrong: `!container` cannot tell "you did not write this" from "what you wrote
+ * is not an object", and those need opposite handling.
  */
 const objectAt = (value, field) => {
-  if (value === undefined) return null;
+  if (value === undefined) return undefined;
   if (value !== null && typeof value === "object" && !Array.isArray(value)) return value;
   fail(`manifest ${field} is ${typeName(value)}, not an object`);
   return null;
@@ -359,6 +370,30 @@ if (manifest === null || typeof manifest !== "object" || Array.isArray(manifest)
  * that belongs in a file arguing "measured, not feared" is the measured one.
  */
 const hostPermissions = stringsIn(manifest.host_permissions, "host_permissions");
+/**
+ * Whether that list can be compared against anything.
+ *
+ * `stringsIn` returns `[]` for a wrong-typed field, having already said so — and
+ * an empty list is a *valid* answer that other rules then reason from. The
+ * cross-check against `connect-src` did exactly that: `"host_permissions": 5`
+ * produced its own finding plus **four more** saying each CSP host "is not in
+ * host_permissions", which is true of an empty list and useless to the reader.
+ * Five sentences, one cause, and the four loudest ones point away from it.
+ *
+ * Worse, the type finding claims "every rule below about host_permissions was
+ * skipped" — and that sentence was false while those four printed underneath it.
+ *
+ * The predicate has to match `asArray`'s own notion of readable, not a tighter
+ * one. Written as "undefined or an array" it excluded `null` — which `asArray`
+ * accepts as an empty list without complaint — so `"host_permissions": null`
+ * produced no finding at all and the gate exited 0. That is the direction that
+ * goes quiet, and it was introduced by the fix for the noise directly above:
+ * suppressing a consequence is one edit away from suppressing the cause.
+ */
+const hostPermissionsReadable =
+  manifest.host_permissions === undefined ||
+  manifest.host_permissions === null ||
+  Array.isArray(manifest.host_permissions);
 
 // 4 — it loads at all.
 if (manifest.manifest_version !== 3) {
@@ -382,18 +417,60 @@ if (manifest.manifest_version !== 3) {
  * The second contradicts the first — the field *is* declared — and a reader
  * acting on it adds a key that is already there. That is the failure this file
  * names by hand further down ("One cause must produce one sentence"), so the
- * absence test asks the raw value whether the key exists, and nothing else.
+ * absence test therefore reads `stringAt`'s own answer for "nothing usable
+ * here", which is `""`, and leaves `null` — its answer for "wrong type" —
+ * to the finding it has already raised.
+ *
+ * **Not `raw === undefined`.** That was the first attempt and it was worse than
+ * the defect it replaced, because it narrowed in the direction that goes quiet:
+ * `?? ""` collapses `null` *and* `undefined`, so `"default_popup": null` and
+ * `"default_popup": ""` matched neither branch — not wrong-typed, since `""` is
+ * a string, and not absent, since the key is there. Measured, both went from a
+ * finding to `Extension package OK`, exit 0. A gate that answers "fine" for a
+ * package with no popup is the third state this file warns about elsewhere: not
+ * a mismatch, not an unmeasurable, but a "yes" said in the voice of a "yes".
  */
-const popupRaw = manifest.action?.default_popup;
-const popup = stringAt(popupRaw ?? "", "action.default_popup");
-if (popupRaw === undefined) fail("manifest declares no action.default_popup");
+const action = objectAt(manifest.action, "action");
+const popup = action === null ? null : stringAt(action?.default_popup ?? "", "action.default_popup");
+// `action === null` means it was declared as something that is not an object,
+// and that has already been reported. Saying "declares no default_popup" on top
+// of it is the second sentence that contradicts the first.
+if (popup === "") fail("manifest declares no action.default_popup");
 for (const rel of [popup, ...iconPaths(manifest.icons)].filter(Boolean)) {
   if (!existsSync(join(DIST, rel))) fail(`manifest names "${rel}", which is not in the package`);
 }
 
 // 3 — no remote code.
-const csp = manifest.content_security_policy?.extension_pages ?? "";
-if (!/(^|;)\s*script-src\s+'self'\s*(;|$)/.test(csp)) {
+// Through `objectAt` like the other two containers: read with bare optional
+// chaining, `"content_security_policy": "script-src 'self'"` produced two
+// findings, both false — `got: (none)` for a policy printed in full in the
+// manifest, and `has no connect-src` right after it. One cause, two sentences,
+// which is the defect this PR is named for.
+const cspBlock = objectAt(manifest.content_security_policy, "content_security_policy");
+/**
+ * Both CSP rules are skipped when the block itself is the wrong type — the two
+ * of them would otherwise turn one cause into three sentences, and this is the
+ * worst place in the file for that: a reader told `got: (none)` for a policy
+ * that is printed in full in their manifest has been told the checker is wrong,
+ * about the rule that keeps remote code out.
+ */
+/**
+ * Readable means: the block is an object, and `extension_pages` inside it is a
+ * string. Both CSP rules below are skipped otherwise.
+ *
+ * The inner check matters as much as the outer one. `"extension_pages": 5` used
+ * to print `got: 5` *and* `has no connect-src` — two sentences, and the second
+ * is a claim about the contents of something that has no contents. `[]` was
+ * worse: it printed `got:` with nothing after it, so the reader was shown an
+ * empty space where the offending value should be.
+ */
+const cspRaw =
+  cspBlock === null
+    ? null
+    : stringAt(cspBlock?.extension_pages ?? "", "content_security_policy.extension_pages");
+const cspReadable = cspRaw !== null;
+const csp = cspRaw ?? "";
+if (cspReadable && !/(^|;)\s*script-src\s+'self'\s*(;|$)/.test(csp)) {
   fail(`extension_pages CSP must be exactly \`script-src 'self'\`, got: ${csp || "(none)"}`);
 }
 
@@ -413,7 +490,10 @@ if (!/(^|;)\s*script-src\s+'self'\s*(;|$)/.test(csp)) {
  * stale one — the permissive failure.
  */
 const cspConnect = /(^|;)\s*connect-src\s+([^;]+)/.exec(csp);
-if (!cspConnect) {
+if (!cspReadable) {
+  // The block is not an object; `objectAt` said so once and that is the whole
+  // report for this cause.
+} else if (!cspConnect) {
   fail("extension_pages CSP has no `connect-src` — the browser would allow any host");
 } else {
   const declared = new Set(
@@ -423,7 +503,8 @@ if (!cspConnect) {
     hostPermissions.map((p) => p.replace(/\/\*$/, "")),
   );
   for (const host of declared) {
-    if (!permitted.has(host)) {
+    // Only when there is a list to compare against — see `hostPermissionsReadable`.
+    if (hostPermissionsReadable && !permitted.has(host)) {
       fail(`CSP connect-src allows ${host}, which is not in host_permissions`);
     }
   }
@@ -556,9 +637,8 @@ for (const war of objectsIn(manifest.web_accessible_resources, "web_accessible_r
  * cleanly as it reads a missing key, and that is exactly what hides the case.
  */
 const background = objectAt(manifest.background, "background");
-const swRaw = background?.service_worker;
-const sw = stringAt(swRaw ?? "", "background.service_worker");
-if (background && swRaw === undefined) fail("background declares no service_worker");
+const sw = stringAt(background?.service_worker ?? "", "background.service_worker");
+if (background && sw === "") fail("background declares no service_worker");
 if (sw && !existsSync(join(DIST, sw))) fail(`background names "${sw}", which is not in the package`);
 
 /**
