@@ -70,6 +70,18 @@ async function bf<T>(
       method: init?.method ?? "GET",
       headers,
       body: init?.body,
+      /**
+       * A redirect must fail loudly rather than be followed.
+       *
+       * `chainReadHost` names this endpoint's host on the receive screen, and
+       * the sentence around it says whoever runs that host sees the addresses
+       * being queried. `fetch` follows redirects by default, so an endpoint
+       * that answers `302` would move every query to a host the screen never
+       * names — the sentence stays specific and becomes false, which is worse
+       * than saying nothing. The extension's `connect-src` narrows this; a web
+       * page has no such floor, because the final hop decides its own CORS.
+       */
+      redirect: "error",
     });
   } catch (cause) {
     // Same reasoning as the Koios path: a `TypeError` from `fetch` says nothing
@@ -307,6 +319,10 @@ export async function bfSubmitTx(ep: BlockfrostEndpoint, signedCborHex: string):
       method: "POST",
       headers,
       body: body as unknown as BodyInit,
+      // See the read path above. A submit that silently lands on a different
+      // host than the one named on screen is the same wrong fact, carrying a
+      // signed transaction.
+      redirect: "error",
     });
   } catch (cause) {
     throw new ProviderUnreachableError("Chain endpoint /tx/submit", cause);

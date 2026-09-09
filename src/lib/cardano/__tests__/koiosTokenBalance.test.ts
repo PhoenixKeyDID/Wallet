@@ -19,6 +19,8 @@ import { resetChainSources } from "../chainSource";
 
 const ADDR = "addr_test1vre6qly5vj7hmre72smsl3q5aae3cd49rennzmfplm9jl7csuup3g";
 const TOKEN = { policy_id: "a".repeat(56), asset_name: "4142", quantity: "7" };
+/** A second, distinguishable token — so a case can tell which shape won. */
+const OTHER = { policy_id: "b".repeat(56), asset_name: "4344", quantity: "3" };
 
 function koiosReplies(row: unknown) {
   vi.stubGlobal(
@@ -51,12 +53,55 @@ describe("fetchAddressBalance > Koios moved the tokens, and the wallet follows",
     expect(bal.assets[0].quantity).toBe(BigInt("12"));
   });
 
-  it("still prefers a row-level asset_list where a deployment sends one", async () => {
-    // And does not add the two together: the same holding appears in both
-    // shapes, so summing them would double every balance.
+  it("does not add the two shapes together when both carry the same holding", async () => {
+    // The same tokens described twice, once per shape. Summing them would
+    // double every balance on a deployment that sends both.
     koiosReplies({ balance: "1000000", asset_list: [TOKEN], utxo_set: [{ asset_list: [TOKEN] }] });
     const bal = await fetchAddressBalance(0, [ADDR]);
     expect(bal.assets[0].quantity).toBe(BigInt("7"));
+  });
+
+  it("prefers a non-empty row-level asset_list over utxo_set", async () => {
+    // Deliberately a *different* token in each shape. The previous case cannot
+    // tell the two branches apart — it puts one token in both, so removing the
+    // preference entirely still produces 7. This one fails if the wrong branch
+    // wins, which is what "pinned" has to mean.
+    koiosReplies({ balance: "1000000", asset_list: [TOKEN], utxo_set: [{ asset_list: [OTHER] }] });
+    const bal = await fetchAddressBalance(0, [ADDR]);
+    expect(bal.assets).toEqual([
+      { unit: TOKEN.policy_id + "4142", policyId: TOKEN.policy_id, assetNameHex: "4142", quantity: BigInt("7") },
+    ]);
+  });
+
+  it("an EMPTY row-level asset_list must not hide tokens sitting in utxo_set", async () => {
+    // How a field is usually retired: emptied, not removed, so the response
+    // shape stays stable. `Array.isArray([])` is true, so a plain preference
+    // lets the empty array win and the wallet reports "no tokens" for an
+    // address whose own reply lists them — the original bug, restored by the
+    // fix for it.
+    koiosReplies({ balance: "1000000", asset_list: [], utxo_set: [{ asset_list: [TOKEN] }] });
+    const bal = await fetchAddressBalance(0, [ADDR]);
+    expect(bal.assets).toHaveLength(1);
+    expect(bal.assets[0].quantity).toBe(BigInt("7"));
+  });
+
+  it("refuses when utxo_set has entries but not one of them carries asset_list", async () => {
+    // The same refusal one level down. Measured on live preprod 2026-09-09,
+    // Koios v1 emits `asset_list` on every entry — `[]` for an ADA-only UTxO
+    // (`addr_test1vqutu…`) and populated when there are tokens
+    // (`addr_test1wp5eh…`). So no entry carrying the key means the shape moved,
+    // not that the address is empty, and `?? []` per entry would answer the
+    // question anyway.
+    koiosReplies({ balance: "1000000", utxo_set: [{ tx_hash: "aa" }, { tx_hash: "bb" }] });
+    await expect(fetchAddressBalance(0, [ADDR])).rejects.toThrow(/token balances unknown/);
+  });
+
+  it("an empty utxo_set is an address with nothing, not a shape change", async () => {
+    // No entries means no evidence of a moved field. Refusing here would make
+    // an ordinary empty address look like a broken indexer.
+    koiosReplies({ balance: "1000000", utxo_set: [] });
+    const bal = await fetchAddressBalance(0, [ADDR]);
+    expect(bal.assets).toEqual([]);
   });
 
   it("an address holding nothing reports nothing, and that is not an error", async () => {

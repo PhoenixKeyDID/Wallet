@@ -23,10 +23,34 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { copyFileSync, existsSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chainSourceFromEnv } from "../src/lib/cardano/chainEnv";
+import type { PhoenixNetwork } from "../src/lib/cardano/address";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, "..");
+
+/**
+ * Hosts this particular build was pointed at, beyond the ones shipped by default.
+ *
+ * Asked of `chainSourceFromEnv` rather than worked out here, so the vendor host
+ * for each network has one definition (`chainEnv.ts`) and this reads it. A copy
+ * would be a second place to update when Blockfrost changes an address, and the
+ * copy would not fail — it would grant reach to the wrong host and stay quiet.
+ */
+function extraChainOrigins(env: NodeJS.ProcessEnv): string[] {
+  const origins = new Set<string>();
+  for (const network of [0, 1, 2] as PhoenixNetwork[]) {
+    const src = chainSourceFromEnv(network, env as Record<string, string | undefined>);
+    // `.origin` rather than assembling a scheme around `.host`: `check:urls`
+    // bans a URL built by interpolation, and it is right to — a host dropped
+    // into a scheme is a host nobody reviewed. Nothing is assembled here. The
+    // whole origin is parsed out of one value that already exists, so there is
+    // no seam where a different host could be introduced.
+    if (src && src.kind === "blockfrost") origins.add(new URL(src.base).origin);
+  }
+  return [...origins];
+}
 
 export default defineConfig({
   root: here,
@@ -37,12 +61,50 @@ export default defineConfig({
     react(),
     {
       name: "phoenix-copy-static",
+      /**
+       * Copies the static files, and widens the manifest to match the build.
+       *
+       * The manifest is a static file; the chain endpoint is a build-time
+       * choice. Left alone, the two drift in both directions and each one hurts
+       * a different person:
+       *
+       * - **Manifest ahead of the build.** The published package would carry
+       *   cross-origin reach to three `blockfrost.io` hosts that the published
+       *   build never calls — with no variable set, `chainSourceFromEnv`
+       *   returns `null` and the wallet reads Koios. A permission granted by
+       *   every installer for a feature that exists only in somebody else's
+       *   private build, and the first thing a store review asks about.
+       * - **Build ahead of the manifest.** Point a build at your own node,
+       *   forget the manifest, and Chrome blocks every chain read; the wallet
+       *   then says the endpoint gave no readable reply, which sends you to
+       *   inspect a node that is answering fine.
+       *
+       * Deriving one from the other removes both directions at once, and keeps
+       * the reproducibility claim above literally true: with no variable set
+       * nothing is added, and the emitted file is the checked-in file.
+       */
       closeBundle() {
         const out = resolve(repo, "dist-extension");
-        for (const f of ["manifest.json", "icon128.png"]) {
-          const from = resolve(here, f);
-          if (existsSync(from)) copyFileSync(from, resolve(out, f));
+        if (existsSync(resolve(here, "icon128.png"))) {
+          copyFileSync(resolve(here, "icon128.png"), resolve(out, "icon128.png"));
         }
+        const raw = readFileSync(resolve(here, "manifest.json"), "utf8");
+        const extra = extraChainOrigins(process.env).filter((o) => !raw.includes(o));
+        if (extra.length === 0) {
+          copyFileSync(resolve(here, "manifest.json"), resolve(out, "manifest.json"));
+          return;
+        }
+        const m = JSON.parse(raw);
+        m.host_permissions = [...(m.host_permissions ?? []), ...extra.map((o) => o + "/*")];
+        const csp = m.content_security_policy?.extension_pages;
+        if (typeof csp === "string") {
+          m.content_security_policy.extension_pages = csp.replace(
+            /(connect-src [^;]*)/,
+            (seg: string) => seg + " " + extra.join(" "),
+          );
+        }
+        writeFileSync(resolve(out, "manifest.json"), JSON.stringify(m, null, 2) + "\n");
+        console.log("[phoenix] manifest widened for this build: " + extra.join(", "));
       },
     },
   ],

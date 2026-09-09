@@ -320,11 +320,49 @@ const BACKING_SOURCES = [
   join(REPO, "src", "lib", "cardano", "provider.ts"),
   join(REPO, "src", "lib", "cardano", "chainEnv.ts"),
 ];
+/**
+ * Comments are stripped before a host counts as backed.
+ *
+ * The match runs over the file's whole text, so without this a host is blessed
+ * by anyone who writes its name in a sentence. Demonstrated: one line reading
+ * `// See also the mirror at https://evil.example/api/v0` plus
+ * `https://evil.example/*` in the manifest, and this check printed OK for
+ * eight hosts. The gate is supposed to answer "does the code reach this host",
+ * and prose is not code. `chainEnv.ts` has the highest comment-to-code ratio in
+ * its directory, which is exactly where a text search is least safe.
+ *
+ * Measured on the real `provider.ts` and `chainEnv.ts`: the host set is
+ * unchanged by this, so it tightens without breaking a legitimate case.
+ */
+const stripComments = (t) =>
+  t.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
 const providerHosts = new Set(
   BACKING_SOURCES.flatMap((f) =>
-    [...readFileSync(f, "utf8").matchAll(/https:\/\/([a-z0-9.-]+)/gi)].map(([, host]) => host.toLowerCase()),
+    [...stripComments(readFileSync(f, "utf8")).matchAll(/https:\/\/([a-z0-9.-]+)/gi)].map(([, host]) =>
+      host.toLowerCase(),
+    ),
   ),
 );
+/**
+ * Hosts this build was actually compiled to read the chain from.
+ *
+ * Read back out of the built bundle rather than out of the environment: the
+ * environment at check time is not necessarily the environment at build time,
+ * and what shipped is the only thing worth asking about. The pattern matches
+ * the inlined form of a `VITE_CHAIN_BASE_*` / `VITE_BLOCKFROST_PROJECT_ID_*`
+ * read, so a host gets in here only by somebody setting that variable at build
+ * time — never by appearing in prose, which is the hole `stripComments` closes
+ * on the other side.
+ */
+const bundleHosts = new Set();
+for (const f of readdirSync(DIST).filter((n) => n.endsWith(".js"))) {
+  for (const [, host] of readFileSync(join(DIST, f), "utf8").matchAll(
+    /"VITE_(?:CHAIN_BASE|BLOCKFROST_PROJECT_ID)_[A-Z]+",\s*"https:\/\/([a-z0-9.-]+)/gi,
+  )) {
+    bundleHosts.add(host.toLowerCase());
+  }
+}
+
 for (const pattern of manifest.host_permissions ?? []) {
   const m = /^https:\/\/([a-z0-9.-]+)\/\*$/i.exec(pattern);
   if (!m) {
@@ -335,11 +373,47 @@ for (const pattern of manifest.host_permissions ?? []) {
     continue;
   }
   const host = m[1].toLowerCase();
-  if (!providerHosts.has(host)) {
+  // Two ways a host earns its entry, and a private build needs the second:
+  // named in the reviewed source, or compiled into this bundle by a build-time
+  // endpoint variable. The second is not a loophole — that string is in the
+  // package a reviewer reads, and it got there because whoever ran the build
+  // set the variable on purpose.
+  if (!providerHosts.has(host) && !bundleHosts.has(host)) {
     fail(
       `host_permissions declares "${pattern}", but no URL for host ${host} appears in ` +
-        `src/lib/cardano/provider.ts or src/lib/cardano/chainEnv.ts — the manifest is ` +
-        `claiming reach the code does not use`,
+        `src/lib/cardano/provider.ts or src/lib/cardano/chainEnv.ts, and this build was ` +
+        `not compiled to read the chain from it — the manifest is claiming reach the ` +
+        `code does not use`,
+    );
+  }
+}
+
+/**
+ * 2b — and the manifest cannot fall behind the bundle either.
+ *
+ * The loop above asks one direction: does the manifest claim reach the code
+ * does not use. That is the direction that matters to a store reviewer, and it
+ * is not the direction that breaks a user. The endpoint is now a build-time
+ * choice while the manifest is a static file, so the pair can drift the other
+ * way: build with `VITE_CHAIN_BASE_PREPROD=https://my-node.example/api/v0`,
+ * forget the manifest, and Chrome blocks every chain read. What the wallet then
+ * reports is `ProviderUnreachableError` — "the request did not arrive, or a
+ * reply did and the browser discarded it" — which sends the operator to inspect
+ * a node that is answering perfectly.
+ *
+ * `bundleHosts` is gathered above, where the other direction also needs it.
+ */
+const declaredHosts = new Set(
+  (manifest.host_permissions ?? [])
+    .map((p) => /^https:\/\/([a-z0-9.-]+)\/\*$/i.exec(p)?.[1]?.toLowerCase())
+    .filter(Boolean),
+);
+for (const host of bundleHosts) {
+  if (!declaredHosts.has(host)) {
+    fail(
+      `this build reads the chain from ${host}, which host_permissions does not declare — ` +
+        `Chrome blocks every chain read and the wallet reports "no readable reply", which ` +
+        `reads as the endpoint being down`,
     );
   }
 }

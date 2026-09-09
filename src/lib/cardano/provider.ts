@@ -372,17 +372,50 @@ export async function fetchAddressBalance(
      * and the identical lovelace.
      *
      * `utxo_set` is in the same response, so this costs no extra request.
-     * The row-level field is still preferred when a deployment does send it.
+     * The row-level field is still preferred when a deployment does send it —
+     * but only when it actually carries something. A deployment that retires
+     * the field by emptying it rather than removing it (the more common way to
+     * drop a field, since it keeps the response's shape stable) would otherwise
+     * walk straight back into the bug above: `Array.isArray([])` is true, the
+     * empty array wins the preference, and the wallet reports "no tokens" for
+     * an address whose `utxo_set` — in the same response — lists them.
      */
-    const rowLevel = Array.isArray(r.asset_list) ? r.asset_list : null;
-    const perUtxo = Array.isArray(r.utxo_set) ? r.utxo_set.flatMap((u) => u.asset_list ?? []) : null;
-    if (!rowLevel && !perUtxo) {
+    const hasRowShape = Array.isArray(r.asset_list);
+    const hasUtxoShape = Array.isArray(r.utxo_set);
+    const rowLevel: KoiosAsset[] = hasRowShape ? (r.asset_list as KoiosAsset[]) : [];
+    const perUtxo: KoiosAsset[] = hasUtxoShape
+      ? (r.utxo_set as Array<{ asset_list?: KoiosAsset[] | null }>).flatMap((u) => u.asset_list ?? [])
+      : [];
+    if (!hasRowShape && !hasUtxoShape) {
       // Neither shape present. Reporting "no tokens" here would be inventing an
       // answer to a question this response did not address — the failure this
       // whole comment is about.
       throw new Error("Koios /address_info carried neither asset_list nor utxo_set — token balances unknown");
     }
-    for (const a of rowLevel ?? perUtxo ?? []) {
+    /**
+     * The same refusal one level down, where the field that can disappear is
+     * the leaf rather than the container.
+     *
+     * `u.asset_list ?? []` per entry is fine when the key is missing because
+     * the UTxO holds no tokens, and is the original bug when the key is missing
+     * because the shape moved. Nothing in a per-entry `??` can tell those apart,
+     * so the question is asked of the whole set: measured on live preprod
+     * 2026-09-09, Koios v1 emits `asset_list` on **every** entry — `[]` for an
+     * ADA-only UTxO (address `addr_test1vqutu…`, 1 UTxO, key present and empty)
+     * and populated when there are tokens (`addr_test1wp5eh…`, 1 UTxO, 2 assets).
+     * So a non-empty `utxo_set` where no entry carries the key at all is a
+     * shape change, not an address without tokens, and saying "no tokens" there
+     * would be the same confident wrong answer in a smaller place.
+     */
+    if (hasUtxoShape && !hasRowShape) {
+      const set = r.utxo_set as Array<Record<string, unknown>>;
+      if (set.length > 0 && !set.some((u) => "asset_list" in u)) {
+        throw new Error(
+          "Koios /address_info utxo_set carried no asset_list on any entry — token balances unknown",
+        );
+      }
+    }
+    for (const a of rowLevel.length > 0 ? rowLevel : perUtxo) {
       const assetNameHex = a.asset_name ?? "";
       const unit = a.policy_id + assetNameHex;
       const prev = byUnit.get(unit);

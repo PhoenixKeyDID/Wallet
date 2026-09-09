@@ -182,10 +182,23 @@ field, and for the same address identical lovelace, the same three tokens and
 the same five UTxOs. That comparison is also what found a defect in the *default*
 path — see `src/lib/cardano/__tests__/koiosTokenBalance.test.ts`.
 
-For the extension, an endpoint also has to be in `manifest.json`
-(`host_permissions` and the CSP `connect-src`); a build variable alone will not
-reach a host Chrome has not been told about. `check:package` refuses any host
-there that no source file names.
+**What it redirects, and what it does not.** The variable moves everything that
+goes through `src/lib/cardano/provider.ts`: protocol parameters, chain tip,
+balances, UTxOs, and transaction submit. It does **not** move pool search, the
+DRep list, governance proposals, or transaction history — those call Koios
+directly (`staking.ts`, `governance.ts`, `history.ts`, ten call sites), and a
+web page cannot call Koios at all, because Koios omits the CORS header on the
+response that carries the data. So on the web those tabs stay broken after
+setting this, until they go through `getChainSource` too. In the extension they
+work either way, since `host_permissions` puts it outside the same-origin rule.
+
+For the extension, the build widens `manifest.json` itself — `host_permissions`
+and the CSP `connect-src` gain the origin the build was pointed at, and the
+published manifest carries only the hosts the published build actually calls.
+`check:package` checks both directions: no host declared that no source names or
+this build reads, and no host this build reads that the manifest omits. The
+second is the one that bites, because Chrome blocks those reads and the wallet
+reports no readable reply — which reads as the endpoint being down.
 
 **Pass the signed-in DID.** `GET /wallet/{did}/all` requires a Bearer session and
 the backend enforces `caller_did == path_did`, so the Phoenix custody view only
@@ -203,7 +216,7 @@ session at all — they never touch the Phoenix backend.
 
 ```bash
 bun install
-bun run test          # 498 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
+bun run test          # 508 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
 bun run typecheck
 bun run check:locales # 4 languages × 2 namespaces must stay in step
 bun run check:host-contract # what a host must wire up, checked against what the code imports

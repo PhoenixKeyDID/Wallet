@@ -87,6 +87,20 @@ export function validateChainSource(src: ChainSource): void {
   if (u.protocol !== "https:" && !(u.protocol === "http:" && loopback)) {
     throw new Error(`chain source: ${u.protocol}//${u.host} — only https, or http on loopback`);
   }
+  /**
+   * `fetch` refuses a URL carrying credentials outright — and refuses it with
+   * the same `TypeError` it uses for "the server never answered". That is
+   * precisely the confusion this function exists to prevent: a pure
+   * configuration mistake would be wrapped as `ProviderUnreachableError` and
+   * send the operator to inspect a machine that is working fine.
+   *
+   * Realistic, not theoretical: pasting the URL of a reverse proxy that carries
+   * basic auth is the ordinary way this arrives. A key for an endpoint belongs
+   * in a header, which is where this module already puts it.
+   */
+  if (u.username || u.password) {
+    throw new Error(`chain source: "${src.base}" must carry no username or password`);
+  }
   if (u.search || u.hash) throw new Error(`chain source: "${src.base}" must carry no query or fragment`);
   if (src.base.endsWith("/")) throw new Error(`chain source: "${src.base}" must not end with "/"`);
 }

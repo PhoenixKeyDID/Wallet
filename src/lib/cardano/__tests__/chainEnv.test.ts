@@ -8,7 +8,8 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { chainSourceFromEnv, readBuildEnv } from "../chainEnv";
-import { getChainSource, setChainSource, resetChainSources } from "../chainSource";
+import { getChainSource, setChainSource, resetChainSources, validateChainSource } from "../chainSource";
+import { chainReadHost } from "../provider";
 
 describe("chainSourceFromEnv > nothing set is a normal build, not a failure", () => {
   it("returns null on an empty environment", () => {
@@ -113,5 +114,64 @@ describe("getChainSource > the build environment is a fallback, never an overrid
     // operator configured is the same failure as reading the wrong one.
     expect(spy).toHaveBeenCalledOnce();
     spy.mockRestore();
+  });
+});
+
+/**
+ * `chainReadHost` is a claim about who sees the user's addresses.
+ *
+ * It is rendered on the receive screen under a sentence saying whoever runs
+ * that host can see the addresses being queried, so somebody reads it and
+ * decides whether to paste an address there. A claim like that is worth nothing
+ * if it can drift from the endpoint actually in use — and it could: forcing the
+ * function to return a constant left all 498 cases green.
+ */
+describe("chainReadHost > the screen names the host that really receives the query", () => {
+  beforeEach(() => resetChainSources());
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    resetChainSources();
+  });
+
+  it("names the Koios host for the network on a default build", () => {
+    expect(chainReadHost(0)).toBe("preprod.koios.rest");
+    expect(chainReadHost(1)).toBe("api.koios.rest");
+    expect(chainReadHost(2)).toBe("preview.koios.rest");
+  });
+
+  it("names the host a host app configured, not the default", () => {
+    setChainSource(0, { kind: "blockfrost", base: "https://chain.example/api/v0" });
+    expect(chainReadHost(0)).toBe("chain.example");
+  });
+
+  it("names the host compiled in at build time", () => {
+    vi.stubEnv("VITE_CHAIN_BASE_PREPROD", "https://my-node.example/api/v0");
+    expect(chainReadHost(0)).toBe("my-node.example");
+  });
+
+  it("does not let one network's endpoint rename another network's host", () => {
+    setChainSource(0, { kind: "blockfrost", base: "https://chain.example/api/v0" });
+    expect(chainReadHost(1)).toBe("api.koios.rest");
+  });
+});
+
+describe("validateChainSource > refuses what fetch would refuse, but legibly", () => {
+  it("rejects a base URL carrying credentials", () => {
+    // `fetch` throws a TypeError for these, and throws the same TypeError when
+    // a server never answers. Letting one through turns a config mistake into
+    // "the endpoint is unreachable", which sends the operator to inspect a
+    // machine that is answering fine. A key for an endpoint goes in a header.
+    expect(() =>
+      validateChainSource({ kind: "blockfrost", base: "https://u:p@chain.example/api/v0" }),
+    ).toThrow(/username or password/);
+    expect(() =>
+      validateChainSource({ kind: "blockfrost", base: "https://u@chain.example/api/v0" }),
+    ).toThrow(/username or password/);
+  });
+
+  it("still accepts the ordinary form", () => {
+    expect(() =>
+      validateChainSource({ kind: "blockfrost", base: "https://chain.example/api/v0" }),
+    ).not.toThrow();
   });
 });
