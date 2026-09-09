@@ -10,8 +10,9 @@
  * did not name — and it does so silently, because a followed redirect answers
  * with ordinary-looking data. That is why this is refused rather than logged.
  */
-import { describe, it, expect } from "vitest";
-import { assertNoRedirect } from "../blockfrost";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { assertNoRedirect, bfTipSlot, bfSubmitTx } from "../blockfrost";
+import { koios, submitTx } from "../provider";
 
 /** The shape Node returns under `redirect: "manual"`: the real 3xx. */
 const nodeRedirect = (status: number) =>
@@ -69,4 +70,73 @@ describe("assertNoRedirect > refuses a redirect on both runtimes", () => {
       assertNoRedirect({ type: "default", status: 404 } as unknown as Response, "/address_info", BASE),
     ).not.toThrow();
   });
+});
+
+/**
+ * The wiring, which is a separate question from the rule.
+ *
+ * The cases above prove `assertNoRedirect` refuses a redirect. They prove
+ * nothing about whether anything calls it, or whether the `fetch` beneath it
+ * was told not to follow the redirect in the first place. Measured: deleting
+ * `redirect: "manual"` from all four call sites left the suite at 521 green,
+ * and so did deleting all four `assertNoRedirect(…)` lines. Two one-line
+ * deletions, either of which silently retires the guarantee.
+ *
+ * The failure is silent by construction, which is why it needs a test rather
+ * than a reviewer: a followed redirect answers `200` with ordinary-looking
+ * JSON, from a host the receive screen never named.
+ */
+const SIGNED_TX = "84a300818258" + "00".repeat(40);
+
+/** Every runtime path that reaches the chain, so a new one cannot be forgotten. */
+const CHAIN_CALLS: Array<{ name: string; run: () => Promise<unknown> }> = [
+  { name: "koios read", run: () => koios(0, "/tip") },
+  { name: "koios submit", run: () => submitTx(0, SIGNED_TX) },
+  { name: "blockfrost read", run: () => bfTipSlot({ base: "https://example.invalid/api/v0" }) },
+  {
+    name: "blockfrost submit",
+    run: () => bfSubmitTx({ base: "https://example.invalid/api/v0" }, SIGNED_TX),
+  },
+];
+
+afterEach(() => vi.unstubAllGlobals());
+
+describe("chain reads > every call site tells fetch not to follow a redirect", () => {
+  for (const { name, run } of CHAIN_CALLS) {
+    it(`${name} passes redirect: "manual"`, async () => {
+      // Asserted at the call, not at the response. A caller that omits this
+      // never sees a 3xx at all — `fetch` follows it and hands back the final
+      // reply — so `assertNoRedirect` downstream is looking at the wrong host's
+      // answer and finds nothing wrong with it.
+      const seen: RequestInit[] = [];
+      vi.stubGlobal("fetch", (_url: string, init: RequestInit) => {
+        seen.push(init);
+        return Promise.resolve(
+          new Response("[]", { status: 200, headers: { "content-type": "application/json" } }),
+        );
+      });
+      await run().catch(() => {
+        // Shape errors past the fetch are none of this case's business; the
+        // question is only what was handed to `fetch`.
+      });
+      expect(seen.length).toBeGreaterThan(0);
+      for (const init of seen) expect(init.redirect).toBe("manual");
+    });
+  }
+});
+
+describe("chain reads > every call site refuses the redirect it gets", () => {
+  for (const { name, run } of CHAIN_CALLS) {
+    it(`${name} rejects, naming the host`, async () => {
+      // The other half: the `fetch` is configured correctly and a 302 comes
+      // back. Something has to look at it. Deleting the `assertNoRedirect` line
+      // from a call site is the mutation this case exists to kill.
+      vi.stubGlobal("fetch", () =>
+        Promise.resolve(
+          new Response(null, { status: 302, headers: { location: "https://elsewhere.invalid/" } }),
+        ),
+      );
+      await expect(run()).rejects.toThrow(/redirect/i);
+    });
+  }
 });
