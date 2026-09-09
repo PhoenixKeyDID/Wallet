@@ -83,6 +83,11 @@ const fail = (msg) => problems.push(msg);
  * manifest names files called `c`, `o`, `n` — a page of confident nonsense, with
  * every real rule about `js` silently skipped. A fix scoped to where the symptom
  * was first noticed is a fix that leaves the cause in place.
+ *
+ * That sentence then had to be applied to itself. Guarding the containers still
+ * left six manifests killing this gate one level down, on the *elements* — so
+ * nothing calls `asArray` directly any more. It is the shared first step of
+ * `stringsIn` and `objectsIn` below, and those are what the rules use.
  */
 const asArray = (value, field) => {
   if (value === undefined || value === null) return [];
@@ -94,6 +99,69 @@ const asArray = (value, field) => {
   return [];
 };
 
+/** How a value should be named in a message about its type. */
+const typeName = (v) => (v === null ? "null" : Array.isArray(v) ? "a list" : typeof v);
+
+/**
+ * A list whose entries must each be a string, read as one.
+ *
+ * `asArray` gates the **container**; this gates what is inside it, and the
+ * distinction is not academic. These lists feed either a set comparison or
+ * `join(DIST, …)`, and `join` throws on a non-string with `ERR_INVALID_ARG_TYPE`
+ * — the same crash as the container case, one level down, still naming a line of
+ * this file's own source. Measured after the containers were guarded:
+ * `"host_permissions": [123]` and `"js": [7]` both still killed the gate.
+ *
+ * The stricter reader was already in this file — the `.chain-origins.json` check
+ * gates the array *and* every element in it — so this is the gate matching a
+ * standard it had already set for itself, in a reader that carries less weight
+ * than this one.
+ */
+const stringsIn = (value, field) => {
+  const out = [];
+  for (const entry of asArray(value, field)) {
+    if (typeof entry === "string") {
+      out.push(entry);
+      continue;
+    }
+    fail(
+      `manifest ${field} contains ${typeName(entry)}, not a string — Chrome refuses ` +
+        `to load a manifest shaped this way, and that entry was not checked.`,
+    );
+  }
+  return out;
+};
+
+/** One value that has to be a string before it can be joined onto a path. */
+const stringAt = (value, field) => {
+  if (typeof value === "string") return value;
+  fail(`manifest ${field} is ${typeName(value)}, not a string`);
+  return null;
+};
+
+/**
+ * Entries of a list that must each be an object, read as such.
+ *
+ * `"content_scripts": [null]` passes every check about the list — it is a list —
+ * and then the rules read `.matches` off it and the gate dies. Null rather than
+ * some exotic value because it is the shape a hand-edit leaves behind: an entry
+ * deleted, the comma still in place.
+ */
+const objectsIn = (value, field) => {
+  const out = [];
+  for (const entry of asArray(value, field)) {
+    if (entry !== null && typeof entry === "object" && !Array.isArray(entry)) {
+      out.push(entry);
+      continue;
+    }
+    fail(
+      `manifest ${field} contains ${typeName(entry)}, not an object — Chrome refuses ` +
+        `to load a manifest shaped this way, and every rule about that entry was skipped.`,
+    );
+  }
+  return out;
+};
+
 /**
  * `manifest.icons` read as the name→path map it is.
  *
@@ -101,14 +169,24 @@ const asArray = (value, field) => {
  * iterable, so `Object.values` on a string hands back single characters and the
  * gate goes looking for files named `i`, `c`, `o`. Not a list — a map — so it
  * gets its own door rather than being bent through `asArray`.
+ *
+ * The values are checked as well, for the reason `stringsIn` exists: `{"16": 16}`
+ * reached `join(DIST, 16)` and crashed. Reported by icon name, so the reader is
+ * told which icon rather than which line of this gate.
  */
 const iconPaths = (value) => {
   if (value === undefined || value === null) return [];
-  if (typeof value === "object" && !Array.isArray(value)) return Object.values(value);
+  if (typeof value === "object" && !Array.isArray(value)) {
+    const out = [];
+    for (const [name, path] of Object.entries(value)) {
+      if (typeof path === "string") out.push(path);
+      else fail(`manifest icons["${name}"] is ${typeName(path)}, not a path`);
+    }
+    return out;
+  }
   fail(
-    `manifest icons is ${Array.isArray(value) ? "a list" : typeof value}, not a ` +
-      `name-to-path map — Chrome refuses to load a manifest shaped this way, and ` +
-      `no icon was checked against the package.`,
+    `manifest icons is ${typeName(value)}, not a name-to-path map — Chrome refuses ` +
+      `to load a manifest shaped this way, and no icon was checked against the package.`,
   );
   return [];
 };
@@ -230,7 +308,7 @@ try {
 
 // 4 — it loads at all.
 if (manifest.manifest_version !== 3) fail(`manifest_version is ${manifest.manifest_version}, expected 3`);
-const popup = manifest.action?.default_popup;
+const popup = stringAt(manifest.action?.default_popup ?? "", "action.default_popup");
 if (!popup) fail("manifest declares no action.default_popup");
 for (const rel of [popup, ...iconPaths(manifest.icons)].filter(Boolean)) {
   if (!existsSync(join(DIST, rel))) fail(`manifest names "${rel}", which is not in the package`);
@@ -265,7 +343,7 @@ if (!cspConnect) {
     cspConnect[2].trim().split(/\s+/).filter((s) => s !== "'self'"),
   );
   const permitted = new Set(
-    asArray(manifest.host_permissions, "host_permissions").map((p) => p.replace(/\/\*$/, "")),
+    stringsIn(manifest.host_permissions, "host_permissions").map((p) => p.replace(/\/\*$/, "")),
   );
   for (const host of declared) {
     if (!permitted.has(host)) {
@@ -326,7 +404,7 @@ for (const key of Object.keys(manifest)) {
 }
 
 const ALLOWED_PERMISSIONS = new Set(["storage"]);
-for (const perm of asArray(manifest.permissions, "permissions")) {
+for (const perm of stringsIn(manifest.permissions, "permissions")) {
   if (!ALLOWED_PERMISSIONS.has(perm)) {
     fail(`permissions declares "${perm}", which is not in the reviewed set (${[...ALLOWED_PERMISSIONS].join(", ")})`);
   }
@@ -348,9 +426,9 @@ for (const perm of asArray(manifest.permissions, "permissions")) {
  */
 const ALLOWED_MATCHES = new Set(["https://*/*", "http://localhost/*", "http://127.0.0.1/*"]);
 
-const contentScripts = asArray(manifest.content_scripts, "content_scripts");
+const contentScripts = objectsIn(manifest.content_scripts, "content_scripts");
 for (const cs of contentScripts) {
-  for (const m of asArray(cs.matches, "content_scripts[].matches")) {
+  for (const m of stringsIn(cs.matches, "content_scripts[].matches")) {
     if (!ALLOWED_MATCHES.has(m)) {
       fail(
         `content_scripts injects into "${m}", which is not in the reviewed set ` +
@@ -369,18 +447,18 @@ for (const cs of contentScripts) {
   if (cs.run_at !== "document_start") {
     fail(`content_scripts must run at document_start so the provider exists before page scripts look for it`);
   }
-  for (const f of asArray(cs.js, "content_scripts[].js")) {
+  for (const f of stringsIn(cs.js, "content_scripts[].js")) {
     if (!existsSync(join(DIST, f))) fail(`content_scripts names "${f}", which is not in the package`);
   }
 }
 
-for (const war of asArray(manifest.web_accessible_resources, "web_accessible_resources")) {
-  for (const m of asArray(war.matches, "web_accessible_resources[].matches")) {
+for (const war of objectsIn(manifest.web_accessible_resources, "web_accessible_resources")) {
+  for (const m of stringsIn(war.matches, "web_accessible_resources[].matches")) {
     if (!ALLOWED_MATCHES.has(m)) {
       fail(`web_accessible_resources is exposed to "${m}", which is not in the reviewed set`);
     }
   }
-  for (const r of asArray(war.resources, "web_accessible_resources[].resources")) {
+  for (const r of stringsIn(war.resources, "web_accessible_resources[].resources")) {
     if (!existsSync(join(DIST, r))) fail(`web_accessible_resources names "${r}", which is not in the package`);
     // Anything reachable from a page is reachable by every page. Exposing a
     // wallet page here would put the unlock screen inside a site's frame.
@@ -615,7 +693,7 @@ function parseHostPermission(pattern) {
   return { host: authority, authority, reason: null };
 }
 
-for (const pattern of asArray(manifest.host_permissions, "host_permissions")) {
+for (const pattern of stringsIn(manifest.host_permissions, "host_permissions")) {
   const parsed = parseHostPermission(pattern);
   if (!parsed.host) {
     fail(`host_permissions declares "${pattern}" — ${parsed.reason}`);
@@ -654,7 +732,7 @@ for (const pattern of asArray(manifest.host_permissions, "host_permissions")) {
  * `bundleHosts` is gathered above, where the other direction also needs it.
  */
 const declaredHosts = new Set(
-  asArray(manifest.host_permissions, "host_permissions").map((p) => parseHostPermission(p).host).filter(Boolean),
+  stringsIn(manifest.host_permissions, "host_permissions").map((p) => parseHostPermission(p).host).filter(Boolean),
 );
 /**
  * Every authority the manifest mentions, valid pattern or not.
@@ -667,7 +745,7 @@ const declaredHosts = new Set(
  * wildcard.
  */
 const mentionedAuthorities = new Set(
-  asArray(manifest.host_permissions, "host_permissions").map((p) => parseHostPermission(p).authority).filter(Boolean),
+  stringsIn(manifest.host_permissions, "host_permissions").map((p) => parseHostPermission(p).authority).filter(Boolean),
 );
 for (const host of bundleHosts) {
   if (!declaredHosts.has(host)) {
@@ -707,7 +785,7 @@ if (problems.length) {
  *
  * So each host is asked *both* questions, and the three answers are named.
  */
-const declaredHostList = asArray(manifest.host_permissions, "host_permissions")
+const declaredHostList = stringsIn(manifest.host_permissions, "host_permissions")
   .map((p) => parseHostPermission(p).host)
   .filter(Boolean);
 const inSource = (h) => providerHosts.has(h);

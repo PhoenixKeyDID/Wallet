@@ -434,7 +434,7 @@ describe("check:package > an unmeasurable package is refused, not waved through"
   });
 });
 
-describe("check:package > a malformed field is a finding, not a crash", () => {
+describe("check:package > a malformed field is a finding, not a crash, at every depth", () => {
   it("says which field is the wrong type instead of dying with a TypeError", () => {
     // `manifest.host_permissions ?? []` covers absence and nothing else, so a
     // hand-edit dropping the brackets reached `.map` and killed the gate with a
@@ -548,6 +548,62 @@ describe("check:package > a malformed field is a finding, not a crash", () => {
     // Character-by-character again: without the guard the gate complains that
     // the resources are exposed to "h", then "t", then "t".
     expect(out).not.toMatch(/exposed to "h"/);
+  });
+
+  it("says so for an entry inside a well-formed list, not only for the list", () => {
+    // Guarding the containers was still a fix scoped to where the symptom was
+    // noticed. `["https://…", 123]` is a list, so it walks straight through the
+    // container check and dies one level down on `p.replace` — same crash, same
+    // line-of-our-own-source, one nesting level deeper. The container was never
+    // the whole question.
+    const m = BASE_MANIFEST();
+    m.host_permissions = [...m.host_permissions, 123];
+    stage({ manifest: m });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/host_permissions contains number, not a string/);
+    expect(out).not.toMatch(/TypeError/);
+    expect(out).not.toMatch(/check-extension-package\.mjs:\d+/);
+  });
+
+  it("says so for a null sitting in a list of objects", () => {
+    // `[null]` passes every check about the list. The rules then read `.matches`
+    // off it and the gate dies. Null rather than a number because it is the
+    // shape a hand-edit leaves behind — a deleted entry, comma still in place.
+    const m = BASE_MANIFEST();
+    m.content_scripts = [null];
+    stage({ manifest: m });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/content_scripts contains null, not an object/);
+    expect(out).not.toMatch(/TypeError/);
+  });
+
+  it("says so for a path field that is not a path", () => {
+    // `join(DIST, 5)` throws `ERR_INVALID_ARG_TYPE`, which is the same failure
+    // wearing a different error name — and `default_popup` is the single field
+    // that decides whether the extension opens at all, so this is the manifest
+    // edit most worth reporting clearly.
+    const m = BASE_MANIFEST();
+    m.action.default_popup = 5;
+    stage({ manifest: m });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/action\.default_popup is number, not a string/);
+    expect(out).not.toMatch(/ERR_INVALID_ARG_TYPE/);
+    expect(out).not.toMatch(/check-extension-package\.mjs:\d+/);
+  });
+
+  it("says so for an icon whose path is not a path", () => {
+    // The map is the right shape and one value in it is not. Reported by name,
+    // so the reader is told which icon rather than which line of this gate.
+    const m = BASE_MANIFEST();
+    m.icons = { ...(m.icons ?? {}), "16": 16 };
+    stage({ manifest: m });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/icons\["16"\] is number, not a path/);
+    expect(out).not.toMatch(/ERR_INVALID_ARG_TYPE/);
   });
 });
 
