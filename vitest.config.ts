@@ -30,6 +30,12 @@ export default defineConfig({
     // nothing, which is worse than a missing test because the repo counts it as
     // coverage. Both halves of this line were arrived at separately and both
     // are kept — the directory and the extension.
-    include: ["src/**/*.test.ts?(x)", "extension/**/*.test.ts?(x)"],
+    //
+    // `scripts/` for the same reason one level further out: the checks in there
+    // decide what may ship, and until now nothing decided whether *they* work.
+    // Two mutations that switched off real rules in `check-extension-package.mjs`
+    // — the host scan and the direction comparing the build against the manifest
+    // — both left this suite fully green.
+    include: ["src/**/*.test.ts?(x)", "extension/**/*.test.ts?(x)", "scripts/**/*.test.ts?(x)"],
   },
 });

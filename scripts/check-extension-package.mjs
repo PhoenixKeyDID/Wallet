@@ -40,7 +40,19 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..");
-const DIST = join(REPO, "dist-extension");
+/**
+ * The package directory to grade.
+ *
+ * Overridable only so this gate can be graded itself. Nothing checked the gate
+ * before, and two mutations that switched off real rules in it left the whole
+ * suite green — a file deciding which hosts a wallet may talk to was the only
+ * thing checking itself. `scripts/__tests__/checkExtensionPackage.test.ts`
+ * stages each attack in a temp directory and points this at it.
+ *
+ * Not a way around the gate: CI invokes it with no environment, and anyone who
+ * could set this variable in CI could edit this file instead.
+ */
+const DIST = process.env.PHOENIX_DIST || join(REPO, "dist-extension");
 const problems = [];
 const fail = (msg) => problems.push(msg);
 
@@ -321,45 +333,72 @@ const BACKING_SOURCES = [
   join(REPO, "src", "lib", "cardano", "chainEnv.ts"),
 ];
 /**
- * Comments are stripped before a host counts as backed.
+ * A host counts as backed when it appears inside a string literal.
  *
- * The match runs over the file's whole text, so without this a host is blessed
- * by anyone who writes its name in a sentence. Demonstrated: one line reading
- * `// See also the mirror at https://evil.example/api/v0` plus
- * `https://evil.example/*` in the manifest, and this check printed OK for
- * eight hosts. The gate is supposed to answer "does the code reach this host",
- * and prose is not code. `chainEnv.ts` has the highest comment-to-code ratio in
- * its directory, which is exactly where a text search is least safe.
+ * The question this answers is "can the code hand this host to `fetch`", and
+ * only a string can be. Matching the file's whole text answers a different
+ * question — it blesses any host somebody names in a sentence. Demonstrated:
+ * one line reading `// See also the mirror at https://evil.example/api/v0`
+ * plus `https://evil.example/*` in the manifest, and this check printed OK for
+ * eight hosts. `chainEnv.ts` has the highest comment-to-code ratio in its
+ * directory, so that is exactly where a whole-text search is least safe.
  *
- * Measured on the real `provider.ts` and `chainEnv.ts`: the host set is
- * unchanged by this, so it tightens without breaking a legitimate case.
+ * Matching inside quotes rather than stripping comments first, because
+ * stripping answers by elimination and gets it wrong on code that compiles:
+ * a `"…/*"` inside a string opens a phantom comment block that runs to the
+ * next `*` + `/` and swallows the constants below it. Measured on a fixture,
+ * three real hosts became one — a false accusation, which is the failure mode
+ * that gets a check deleted rather than fixed.
  */
-const stripComments = (t) =>
-  t.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+const hostsInStringLiterals = (text) =>
+  [...text.matchAll(/(["'`])https:\/\/([a-z0-9.-]+)[^"'`]*\1/gi)].map(([, , host]) => host.toLowerCase());
 const providerHosts = new Set(
-  BACKING_SOURCES.flatMap((f) =>
-    [...stripComments(readFileSync(f, "utf8")).matchAll(/https:\/\/([a-z0-9.-]+)/gi)].map(([, host]) =>
-      host.toLowerCase(),
-    ),
-  ),
+  BACKING_SOURCES.flatMap((f) => hostsInStringLiterals(readFileSync(f, "utf8"))),
 );
 /**
- * Hosts this build was actually compiled to read the chain from.
+ * Hosts this build was compiled to read the chain from — from the build itself.
  *
- * Read back out of the built bundle rather than out of the environment: the
- * environment at check time is not necessarily the environment at build time,
- * and what shipped is the only thing worth asking about. The pattern matches
- * the inlined form of a `VITE_CHAIN_BASE_*` / `VITE_BLOCKFROST_PROJECT_ID_*`
- * read, so a host gets in here only by somebody setting that variable at build
- * time — never by appearing in prose, which is the hole `stripComments` closes
- * on the other side.
+ * The build writes down what it decided (`extension/vite.config.ts`, the
+ * `.chain-origins.json` receipt) and this reads the statement. Searching the
+ * bundle's text for a URL was the obvious alternative and it answers a
+ * different question: any string of the right shape counts, wherever it came
+ * from. Measured — a key added to `locales/en/wallet.json` is bundled verbatim
+ * by `extension/src/i18n.ts`, reaches the output, and blessed a host that no
+ * code calls, with `check:urls` silent because `locales/` is not scanned for
+ * URLs. It also missed the case that matters most: a build given only
+ * `VITE_BLOCKFROST_PROJECT_ID_*` reads the vendor host out of `chainEnv.ts`,
+ * so no URL is inlined at all and there is nothing for a text search to find,
+ * while the package really does call that host.
+ *
+ * A missing receipt is refused rather than read as "no extra hosts". It means
+ * this directory was not produced by the build config, and a gate that cannot
+ * measure has to say so instead of returning the reassuring answer.
  */
+const RECEIPT = ".chain-origins.json";
 const bundleHosts = new Set();
-for (const f of readdirSync(DIST).filter((n) => n.endsWith(".js"))) {
-  for (const [, host] of readFileSync(join(DIST, f), "utf8").matchAll(
-    /"VITE_(?:CHAIN_BASE|BLOCKFROST_PROJECT_ID)_[A-Z]+",\s*"https:\/\/([a-z0-9.-]+)/gi,
-  )) {
-    bundleHosts.add(host.toLowerCase());
+if (!existsSync(join(DIST, RECEIPT))) {
+  fail(
+    `dist-extension/${RECEIPT} is missing, so which chain hosts this package calls cannot be ` +
+      `determined — rebuild with \`bun run build:extension\` rather than packing the directory by hand`,
+  );
+} else {
+  let origins;
+  try {
+    origins = JSON.parse(readFileSync(join(DIST, RECEIPT), "utf8"));
+  } catch (err) {
+    fail(`dist-extension/${RECEIPT} does not parse: ${err.message}`);
+    origins = [];
+  }
+  if (!Array.isArray(origins)) {
+    fail(`dist-extension/${RECEIPT} must hold an array of origins`);
+    origins = [];
+  }
+  for (const origin of origins) {
+    try {
+      bundleHosts.add(new URL(origin).host.toLowerCase());
+    } catch {
+      fail(`dist-extension/${RECEIPT} lists "${origin}", which is not a URL`);
+    }
   }
 }
 

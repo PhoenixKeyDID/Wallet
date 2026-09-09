@@ -186,7 +186,8 @@ path — see `src/lib/cardano/__tests__/koiosTokenBalance.test.ts`.
 goes through `src/lib/cardano/provider.ts`: protocol parameters, chain tip,
 balances, UTxOs, and transaction submit. It does **not** move pool search, the
 DRep list, governance proposals, or transaction history — those call Koios
-directly (`staking.ts`, `governance.ts`, `history.ts`, ten call sites), and a
+directly — every `koios()` call in `staking.ts`, `governance.ts` and
+`history.ts` — and a
 web page cannot call Koios at all, because Koios omits the CORS header on the
 response that carries the data. So on the web those tabs stay broken after
 setting this, until they go through `getChainSource` too. In the extension they
@@ -216,7 +217,7 @@ session at all — they never touch the Phoenix backend.
 
 ```bash
 bun install
-bun run test          # 508 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
+bun run test          # 515 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
 bun run typecheck
 bun run check:locales # 4 languages × 2 namespaces must stay in step
 bun run check:host-contract # what a host must wire up, checked against what the code imports

@@ -32,6 +32,7 @@ import {
   bfAddressBalance,
   bfUtxos,
   bfSubmitTx,
+  assertNoRedirect,
 } from "./blockfrost";
 
 const KOIOS_BASE: Record<"mainnet" | "preprod" | "preview", string> = {
@@ -200,10 +201,18 @@ export async function koios<T>(
         prefer: "count=exact",
       },
       body: body ? JSON.stringify(body) : undefined,
+      // The same refusal the configurable endpoint gets, on the path the
+      // default build actually takes. The argument for it — the receive screen
+      // names a host and a followed redirect makes that sentence false — does
+      // not become weaker because this host happens to be the built-in one, and
+      // protecting only the path somebody had to opt into would leave the
+      // common case uncovered.
+      redirect: "manual",
     });
   } catch (cause) {
     throw new ProviderUnreachableError(`Koios ${path}`, cause);
   }
+  assertNoRedirect(res, `Koios ${path}`, koiosBase(network));
   // `res.ok` covers 200–299, so it is true for the 206 that says "partial".
   // Checking the range rather than the status is what closes that.
   if (!res.ok) throw new Error(`Koios ${path} → HTTP ${res.status}`);
@@ -406,8 +415,16 @@ export async function fetchAddressBalance(
      * So a non-empty `utxo_set` where no entry carries the key at all is a
      * shape change, not an address without tokens, and saying "no tokens" there
      * would be the same confident wrong answer in a smaller place.
+     *
+     * Gated on `rowLevel` being **empty**, not on the row field being absent.
+     * The selection below falls through to `perUtxo` whenever `rowLevel` has
+     * nothing in it, and that includes the present-but-empty case this file
+     * exists for. Guarding only the absent case left the two apart by exactly
+     * one key: `{utxo_set:[{tx_hash}]}` threw, and `{asset_list:[], utxo_set:
+     * [{tx_hash}]}` returned "no tokens" without a word — a deployment that
+     * retires the field at both levels at once gets the confident wrong answer.
      */
-    if (hasUtxoShape && !hasRowShape) {
+    if (hasUtxoShape && rowLevel.length === 0) {
       const set = r.utxo_set as Array<Record<string, unknown>>;
       if (set.length > 0 && !set.some((u) => "asset_list" in u)) {
         throw new Error(
@@ -511,7 +528,10 @@ export async function submitTx(network: PhoenixNetwork, signedCborHex: string): 
     method: "POST",
     headers: { "content-type": "application/cbor" },
     body: body as unknown as BodyInit,
+    // A signed transaction must not be handed to a host nobody named.
+    redirect: "manual",
   });
+  assertNoRedirect(res, "Koios /submittx", koiosBase(network));
   const text = (await res.text()).trim();
   if (!res.ok) throw new Error(`Koios /submittx → HTTP ${res.status}: ${text.slice(0, 300)}`);
   const hash = text.replace(/^"|"$/g, "");

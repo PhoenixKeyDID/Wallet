@@ -96,6 +96,16 @@ describe("fetchAddressBalance > Koios moved the tokens, and the wallet follows",
     await expect(fetchAddressBalance(0, [ADDR])).rejects.toThrow(/token balances unknown/);
   });
 
+  it("refuses the same way when an EMPTY row-level field sits above the moved leaf", async () => {
+    // The previous case and this one differ by exactly one key. Guarding only
+    // "the row field is absent" let this one through silently, because the
+    // branch that reads `perUtxo` is taken whenever the row list is *empty* —
+    // absent or not. A deployment retiring the field at both levels at once is
+    // the realistic way to arrive here.
+    koiosReplies({ balance: "1000000", asset_list: [], utxo_set: [{ tx_hash: "aa" }] });
+    await expect(fetchAddressBalance(0, [ADDR])).rejects.toThrow(/token balances unknown/);
+  });
+
   it("an empty utxo_set is an address with nothing, not a shape change", async () => {
     // No entries means no evidence of a moved field. Refusing here would make
     // an ordinary empty address look like a broken indexer.
