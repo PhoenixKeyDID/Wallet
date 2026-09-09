@@ -26,10 +26,13 @@
  * **What this file deliberately does not do:** it does not pick an endpoint, and
  * it ships no address for one. A URL literal here would be a claim about
  * infrastructure this repo does not run and cannot check — and `check:urls`
- * would rightly stop it. The address arrives at run time, from the host app or
- * from the person using the wallet; see `README.md` § Host contract.
+ * would rightly stop it. The address arrives from outside: a host calling
+ * `setChainSource`, or a build-time variable read by `chainEnv.ts` — which is
+ * the only file here that names an endpoint, and is CODEOWNERS-gated for it.
+ * See `README.md` § Host contract.
  */
 import type { PhoenixNetwork } from "./address";
+import { chainSourceFromEnv, readBuildEnv } from "./chainEnv";
 
 /**
  * A place to read the chain from.
@@ -104,11 +107,40 @@ export function setChainSource(network: PhoenixNetwork, src: ChainSource): void 
   configured.set(network, src);
 }
 
+/**
+ * Read once, not per request.
+ *
+ * The build-time environment cannot change while the page is open, so re-deriving
+ * it on every chain read would be work with a guaranteed identical answer. Cached
+ * per network rather than globally because the answer differs per network, and
+ * `null` — "this build was given nothing" — is itself a cached answer.
+ */
+const fromEnv = new Map<PhoenixNetwork, ChainSource | null>();
+
 export function getChainSource(network: PhoenixNetwork): ChainSource {
-  return configured.get(network) ?? DEFAULT_CHAIN_SOURCE;
+  const explicit = configured.get(network);
+  if (explicit) return explicit;
+
+  if (!fromEnv.has(network)) {
+    let derived: ChainSource | null = null;
+    try {
+      derived = chainSourceFromEnv(network, readBuildEnv());
+      if (derived) validateChainSource(derived);
+    } catch (err) {
+      // A malformed value in the build environment is a mistake in the build,
+      // not a reason to read the chain from somewhere the operator did not
+      // choose — but it must not take the wallet down either. Say it once,
+      // loudly enough to find, and fall back to the default.
+      console.error(`[wallet] chain endpoint from build environment ignored: ${(err as Error).message}`);
+      derived = null;
+    }
+    fromEnv.set(network, derived);
+  }
+  return fromEnv.get(network) ?? DEFAULT_CHAIN_SOURCE;
 }
 
 /** Drop every configured source. Exported for tests and for a host tearing down. */
 export function resetChainSources(): void {
   configured.clear();
+  fromEnv.clear();
 }

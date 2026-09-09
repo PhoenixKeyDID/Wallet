@@ -152,12 +152,40 @@ A host serving this on the web therefore has to point it somewhere else:
 setChainSource(network, { kind: "blockfrost", base: "https://<your endpoint>/api/v0" });
 ```
 
+…or set it at build time and write no host code at all. Either prefix works —
+each bundler only exposes its own, and the name says out loud that the value
+reaches the browser:
+
+```bash
+NEXT_PUBLIC_CHAIN_BASE_PREPROD=https://<your endpoint>/api/v0   # Next
+VITE_CHAIN_BASE_PREPROD=https://<your endpoint>/api/v0          # Vite, incl. the extension
+VITE_BLOCKFROST_PROJECT_ID_PREPROD=<key>   # only if the endpoint is Blockfrost's own service
+```
+
+Per network, deliberately: `…_MAINNET`, `…_PREPROD`, `…_PREVIEW`. Pointing a
+mainnet read at a preprod node returns a confident zero rather than an error.
+`setChainSource` still wins over the build; setting neither keeps today's
+behaviour. A `project_id` compiled into a browser bundle is **public** — anyone
+who opens the page or unpacks the extension can read it. That is not a storage
+mistake, it is what using a keyed third-party indexer from a browser costs.
+
 The dialect is Blockfrost's REST API, which is what this platform's own chain
 access already speaks — Cnode runs Dolos, and Dolos serves a Blockfrost-compatible
 face from nodes the platform operates. That is the intended endpoint: no third
 party, no API key. Byte-level parity between a given Dolos build and Blockfrost's
 documented shapes is **not verified here** and must not be assumed — see
 `src/lib/cardano/blockfrost.ts`.
+
+Against Blockfrost itself the two sources have been compared directly, on
+preprod, 2026-09-09: identical tip slot, protocol parameters equal field by
+field, and for the same address identical lovelace, the same three tokens and
+the same five UTxOs. That comparison is also what found a defect in the *default*
+path — see `src/lib/cardano/__tests__/koiosTokenBalance.test.ts`.
+
+For the extension, an endpoint also has to be in `manifest.json`
+(`host_permissions` and the CSP `connect-src`); a build variable alone will not
+reach a host Chrome has not been told about. `check:package` refuses any host
+there that no source file names.
 
 **Pass the signed-in DID.** `GET /wallet/{did}/all` requires a Bearer session and
 the backend enforces `caller_did == path_did`, so the Phoenix custody view only
@@ -175,7 +203,7 @@ session at all — they never touch the Phoenix backend.
 
 ```bash
 bun install
-bun run test          # 477 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
+bun run test          # 498 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
 bun run typecheck
 bun run check:locales # 4 languages × 2 namespaces must stay in step
 bun run check:host-contract # what a host must wire up, checked against what the code imports
@@ -207,6 +235,13 @@ bun run build:extension     # → dist-extension/
 
 Then in Chrome: **chrome://extensions** → Developer mode → **Load unpacked** →
 pick `dist-extension/`.
+
+That build reads the chain the default way. To build one that reads it through
+your own endpoint, set the variables from § Host contract in the environment of
+that same command — nothing is read from a file, so the value stays in the one
+process and lands only in `dist-extension/`, which is git-ignored. A build with
+no variables set is the reproducible one: anyone can rebuild it from the tag and
+diff it against what they were given.
 
 The popup mounts the same `LocalWalletPanel` the web page uses, so there is one
 implementation of key handling rather than two that can drift apart. What the

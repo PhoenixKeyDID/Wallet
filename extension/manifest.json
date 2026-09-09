@@ -30,10 +30,13 @@
     "https://api.koios.rest/*",
     "https://preprod.koios.rest/*",
     "https://preview.koios.rest/*",
+    "https://cardano-mainnet.blockfrost.io/*",
+    "https://cardano-preprod.blockfrost.io/*",
+    "https://cardano-preview.blockfrost.io/*",
     "https://api.coingecko.com/*"
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' https://api.koios.rest https://preprod.koios.rest https://preview.koios.rest https://api.coingecko.com"
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' https://api.koios.rest https://preprod.koios.rest https://preview.koios.rest https://cardano-mainnet.blockfrost.io https://cardano-preprod.blockfrost.io https://cardano-preview.blockfrost.io https://api.coingecko.com"
   },
   "icons": { "128": "icon128.png" }
 }

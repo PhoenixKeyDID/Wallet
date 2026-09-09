@@ -59,7 +59,7 @@
   "acct_xvk_help": "この鍵はどこで取得できますか？",
   "acct_xvk_help_body": "Lace / Eternl で: 設定 → 鍵のセクション（または Advanced）→「account public key」（acct_xvk または xpub で始まる）をコピー。これは公開鍵であり、復元フレーズではありません。",
   "watch_paste_own_only": "必ずご自身のアカウント鍵のみを貼り付けてください。他人の鍵から導出されたアドレスは、その人のウォレットに入金されます。あなたのものにはなりません。",
-  "koios_privacy_note": "残高は公開サービス (Koios) を通じて照会されます。そのサービスは照会したアドレスと IP アドレスを見ることができます。",
+  "indexer_privacy_note": "残高は {{host}} を通じて照会されます。その運営者は、照会したアドレスと IP アドレスを見ることができます。",
   "loading": "読み込み中…",
   "view_balance": "残高を表示",
   "derived_addresses": "導出アドレス",
