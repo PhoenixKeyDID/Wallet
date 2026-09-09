@@ -336,6 +336,21 @@ describe("check:package > the manifest cannot fall behind the build", () => {
 });
 
 describe("check:package > an unmeasurable package is refused, not waved through", () => {
+  it("refuses a directory a failed build left behind, and says so", () => {
+    // Reached on an ordinary path, not a strange one: the build throws after
+    // Vite has emptied the output and written the bundle — a chain endpoint
+    // carrying a port or a plain-HTTP scheme does exactly that — so the
+    // directory holds fresh code and no manifest. Without this, `statSync` on a
+    // file that is not there answered with `ENOENT` and an absolute path out of
+    // the build machine, about a situation this gate already has words for.
+    stage({ receipt: [] });
+    rmSync(join(dir, "manifest.json"));
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/not produced by a completed build/);
+    expect(out).not.toMatch(/ENOENT/);
+  });
+
   it("refuses a directory with no build receipt, and says what to do", () => {
     // Absence is not evidence of "no extra hosts" — it means this directory was
     // not produced by the build config, so the question cannot be answered. A
