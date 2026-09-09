@@ -449,13 +449,24 @@ describe("check:package > an unmeasurable package is refused, not waved through"
  * `content_scripts`; the scalar path fields `action.default_popup` and
  * `background.service_worker`; and a non-path value inside `icons`.
  *
- * **What is not covered.** Every other scalar the gate reads — `manifest_version`,
- * `version`, `name`, the CSP string, `content_scripts[].run_at` — is compared or
- * pattern-matched rather than joined onto a path, so a wrong type there produces
- * a wrong-looking finding rather than a crash. That is a claim about today's
- * reads, not a property anything enforces: a rule added later that joins a new
- * field onto `DIST` gets no protection from this block, and the thing to copy is
- * `stringAt`, not the shape of the rule next to it.
+ * The root object is checked too, and by an exit rather than a finding: a
+ * manifest that parses to `null` leaves nothing to report on.
+ *
+ * **What is not covered.** The other scalars the gate reads — `manifest_version`,
+ * the CSP string, `content_scripts[].run_at`, `content_scripts[].all_frames` —
+ * are compared or pattern-matched rather than joined onto a path, so a wrong
+ * type there produces a wrong-looking finding rather than a crash.
+ *
+ * That list was itself wrong in both directions for one round, which is worth
+ * leaving on the record: it named `version` and `name`, which this gate does not
+ * read anywhere (they appear only in `ALLOWED_KEYS`), and it omitted
+ * `all_frames`, which it does. A hand-written coverage note is a copy of
+ * something the code knows, and it drifts the way copies drift — so treat it as
+ * a reading aid, and the claim anything actually enforces is the block name.
+ *
+ * A rule added later that joins a new field onto `DIST` gets no protection from
+ * any of this; the thing to copy is `stringAt`, not the shape of the rule next
+ * to it.
  */
 describe("check:package > a malformed manifest is reported, never a stack trace", () => {
   it("says which field is the wrong type instead of dying with a TypeError", () => {
@@ -658,8 +669,81 @@ describe("check:package > a malformed manifest is reported, never a stack trace"
     const { code, out } = runGate();
     expect(code).toBe(1);
     expect(out).toMatch(/background\.service_worker is number, not a string/);
-    // The one that matters, and the one a crash used to swallow.
-    expect(out).toMatch(/https:\/\/\*\/\*/);
+    // The one that matters, and the one a crash used to swallow. Anchored on the
+    // whole sentence, not the pattern: `https://*/*` is also the first entry of
+    // `ALLOWED_MATCHES`, which the `content_scripts` finding interpolates in
+    // full — so a bare match on the pattern goes green for a package that never
+    // widened anything.
+    expect(out).toMatch(/host_permissions declares "https:\/\/\*\/\*"/);
+  });
+
+  it("says a field is the wrong type without also saying it is missing", () => {
+    // One cause, one sentence. Reading the field through `stringAt` and then
+    // testing the result for falsiness merged two questions, because a wrong
+    // type comes back `null` and an absent field comes back `""`. The report
+    // then held both lines, and the second contradicts the first — the field IS
+    // declared — so a reader acting on it adds a key that is already there.
+    //
+    // The `not` assertions are the whole point of the case: the suite was green
+    // on both sides of this defect, because every case asserted that the right
+    // sentence was present and none asserted the wrong one was absent.
+    const m = BASE_MANIFEST();
+    m.background = { service_worker: 5 };
+    m.action.default_popup = 5;
+    stage({ manifest: m });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/background\.service_worker is number, not a string/);
+    expect(out).toMatch(/action\.default_popup is number, not a string/);
+    expect(out).not.toMatch(/declares no service_worker/);
+    expect(out).not.toMatch(/declares no action\.default_popup/);
+  });
+
+  it("still says a field is missing when it is actually missing", () => {
+    // The other direction, and the one that decides whether the fix is a fix
+    // rather than a deletion: an empty `background` block really does declare no
+    // service worker, and that sentence has to survive.
+    const m = BASE_MANIFEST();
+    m.background = {};
+    delete m.action.default_popup;
+    stage({ manifest: m });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/background declares no service_worker/);
+    expect(out).toMatch(/declares no action\.default_popup/);
+  });
+
+  it("names a wrong-typed container instead of blaming the field inside it", () => {
+    // `"background": "background.js"` — a plausible hand-edit, and the shape
+    // optional chaining hides best: `manifest.background?.service_worker` reads
+    // a string exactly as quietly as it reads a missing key, so the gate
+    // reported a missing field on a manifest whose problem is one level up.
+    for (const bad of [5, "background.js", [], null]) {
+      const m = BASE_MANIFEST();
+      m.background = bad;
+      stage({ manifest: m });
+      const { code, out } = runGate();
+      expect(code, JSON.stringify(bad)).toBe(1);
+      expect(out, JSON.stringify(bad)).toMatch(/manifest background is \w+.*, not an object/);
+      expect(out, JSON.stringify(bad)).not.toMatch(/declares no service_worker/);
+    }
+  });
+
+  it("refuses a manifest whose root is not an object, without a stack trace", () => {
+    // `JSON.parse` succeeds on `null`, on `[]`, on `5`. None is a manifest, and
+    // the first field read off one died naming a line of the gate's own source
+    // — the exact shape this block is named after, sitting above every case in
+    // it. `null` because that is what a build step writes from a variable
+    // nothing assigned.
+    for (const root of ["null", "[]", "5", '"manifest"']) {
+      stage({});
+      writeFileSync(join(dir, "manifest.json"), root);
+      const { code, out } = runGate();
+      expect(code, root).toBe(1);
+      expect(out, root).toMatch(/root is (null|a list|number|string) rather than an object/);
+      expect(out, root).not.toMatch(/Cannot read properties/);
+      expect(out, root).not.toMatch(/check-extension-package\.mjs:\d+/);
+    }
   });
 
   it("does not print a finding that reads as its own bug", () => {

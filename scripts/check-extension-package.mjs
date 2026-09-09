@@ -132,6 +132,23 @@ const stringsIn = (value, field) => {
   return out;
 };
 
+/**
+ * One value that has to be an object before fields can be read off it.
+ *
+ * Returns `null` for both "absent" and "wrong type", so the caller must ask the
+ * raw value about absence — same discipline as `stringAt`. The reason this
+ * exists at all: optional chaining reads a scalar exactly as quietly as it
+ * reads a missing key, so `manifest.background?.service_worker` came out
+ * `undefined` for `"background": 5`, and the gate reported a missing field on a
+ * manifest whose problem was one level up.
+ */
+const objectAt = (value, field) => {
+  if (value === undefined) return null;
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) return value;
+  fail(`manifest ${field} is ${typeName(value)}, not an object`);
+  return null;
+};
+
 /** One value that has to be a string before it can be joined onto a path. */
 const stringAt = (value, field) => {
   if (typeof value === "string") return value;
@@ -307,12 +324,39 @@ try {
 }
 
 /**
+ * The root has to be an object before any field can be read off it.
+ *
+ * `JSON.parse` succeeds on `null`, on `[]`, on `5` — all valid JSON, none of
+ * them a manifest — and the first field read then dies with `Cannot read
+ * properties of null`, naming a line of this file. `null` in particular is what
+ * a build step leaves behind when it writes a manifest from a variable nothing
+ * assigned, which is the case worth surviving.
+ *
+ * An exit rather than a finding, unlike every other type check here: there is
+ * no package left to report anything else about, so continuing would print a
+ * list of complaints that are all the same complaint.
+ */
+if (manifest === null || typeof manifest !== "object" || Array.isArray(manifest)) {
+  console.error(
+    `dist-extension/manifest.json parses, but its root is ${typeName(manifest)} rather than an object — ` +
+      "Chrome refuses to load it, and no rule below has anything to read.",
+  );
+  process.exit(1);
+}
+
+/**
  * Read once, complain once.
  *
- * Five separate rules below need this list, and each used to re-read it. A
- * manifest with one bad entry therefore printed the same type finding five
- * times — which is not merely untidy: the report is what a reader scans for the
- * *other* findings, and five copies of one line is how the rest stop being read.
+ * Five rules below need this list and each used to re-read it, so a manifest
+ * with one bad entry printed the same type finding repeatedly — which is not
+ * merely untidy: the report is what a reader scans for the *other* findings,
+ * and a screen of one repeated line is how the rest stop being read.
+ *
+ * Measured before the fix, the report held **four** copies, not five. The fifth
+ * read (`declaredHostList`, further down) sits after an `if (problems.length)
+ * … process.exit(1)`, so in the one situation this paragraph describes it never
+ * runs. Counting call sites instead of running the case gives five; the number
+ * that belongs in a file arguing "measured, not feared" is the measured one.
  */
 const hostPermissions = stringsIn(manifest.host_permissions, "host_permissions");
 
@@ -323,8 +367,26 @@ if (manifest.manifest_version !== 3) {
   // expected 3` — a message that reads as a bug in the checker.
   fail(`manifest_version is ${JSON.stringify(manifest.manifest_version) ?? "undefined"}, expected 3`);
 }
-const popup = stringAt(manifest.action?.default_popup ?? "", "action.default_popup");
-if (!popup) fail("manifest declares no action.default_popup");
+/**
+ * "Declared" and "declared as the right type" are two questions, and one
+ * sentence each.
+ *
+ * Reading the field through `stringAt` and then testing the result for
+ * falsiness merges them, because `stringAt` returns `null` for a wrong type and
+ * this reads `""` for an absent one — both falsy. A manifest holding
+ * `"default_popup": 5` then produced two findings for one cause:
+ *
+ *     • manifest action.default_popup is number, not a string
+ *     • manifest declares no action.default_popup
+ *
+ * The second contradicts the first — the field *is* declared — and a reader
+ * acting on it adds a key that is already there. That is the failure this file
+ * names by hand further down ("One cause must produce one sentence"), so the
+ * absence test asks the raw value whether the key exists, and nothing else.
+ */
+const popupRaw = manifest.action?.default_popup;
+const popup = stringAt(popupRaw ?? "", "action.default_popup");
+if (popupRaw === undefined) fail("manifest declares no action.default_popup");
 for (const rel of [popup, ...iconPaths(manifest.icons)].filter(Boolean)) {
   if (!existsSync(join(DIST, rel))) fail(`manifest names "${rel}", which is not in the package`);
 }
@@ -483,8 +545,20 @@ for (const war of objectsIn(manifest.web_accessible_resources, "web_accessible_r
   }
 }
 
-const sw = stringAt(manifest.background?.service_worker ?? "", "background.service_worker");
-if (manifest.background && !sw) fail("background declares no service_worker");
+/**
+ * Same two questions as `default_popup` above, plus one this gate never asked:
+ * whether `background` is an object at all.
+ *
+ * `"background": 5` and `"background": "background.js"` both make
+ * `manifest.background?.service_worker` come out `undefined`, so the gate said
+ * *"background declares no service_worker"* — a sentence about a field, for a
+ * manifest whose problem is one level up. Optional chaining reads a scalar as
+ * cleanly as it reads a missing key, and that is exactly what hides the case.
+ */
+const background = objectAt(manifest.background, "background");
+const swRaw = background?.service_worker;
+const sw = stringAt(swRaw ?? "", "background.service_worker");
+if (background && swRaw === undefined) fail("background declares no service_worker");
 if (sw && !existsSync(join(DIST, sw))) fail(`background names "${sw}", which is not in the package`);
 
 /**
