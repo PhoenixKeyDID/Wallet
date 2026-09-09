@@ -433,3 +433,78 @@ describe("check:package > an unmeasurable package is refused, not waved through"
     expect(out).not.toMatch(/ENOENT/);
   });
 });
+
+describe("check:package > a malformed field is a finding, not a crash", () => {
+  it("says which field is the wrong type instead of dying with a TypeError", () => {
+    // `manifest.host_permissions ?? []` covers absence and nothing else, so a
+    // hand-edit dropping the brackets reached `.map` and killed the gate with a
+    // stack trace naming a line of the gate's own source. Same exit code as a
+    // real finding, opposite meaning: the reader has been told the checker is
+    // broken when what is broken is the package.
+    const m = BASE_MANIFEST();
+    m.host_permissions = "https://api.koios.rest/*";
+    stage({ manifest: m });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/host_permissions is string, not a list/);
+    expect(out).not.toMatch(/TypeError/);
+    expect(out).not.toMatch(/check-extension-package\.mjs:\d+/);
+  });
+
+  it("keeps reporting the rest of the package after one field is unreadable", () => {
+    // The reason it is a finding rather than an exit: a run that stops at the
+    // first malformed field hands back one problem at a time, and the person
+    // fixing them learns the shape of the package one round trip per defect.
+    const m = BASE_MANIFEST();
+    m.permissions = "storage";
+    // A second, entirely separate defect: a top-level key the allow-list has
+    // never been taught about.
+    m.devtools_page = "devtools.html";
+    stage({ manifest: m });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/permissions is string, not a list/);
+    // A second, unrelated complaint in the same run.
+    expect(out.split("\n").filter((l) => l.trim().startsWith("•")).length).toBeGreaterThan(1);
+  });
+});
+
+describe("check:package > the freshness check reads source, not build output", () => {
+  it("does not call a package stale because the smoke test just ran", () => {
+    // `extension/smoke/out` is written by `extension/smoke/run.mjs`. It sits
+    // under `extension/`, so counting it made every check after a smoke run
+    // refuse a package that was not stale — a red gate with no defect behind
+    // it, on the ordinary path of running the checks in order. That is the
+    // failure mode that teaches people to re-run a gate until it passes.
+    const out = join(REPO, "extension", "smoke", "out");
+    const marker = join(out, "freshness-probe.js");
+    mkdirSync(out, { recursive: true });
+    try {
+      writeFileSync(marker, "// staged by a test\n");
+      const soon = new Date(Date.now() + 60_000);
+      utimesSync(marker, soon, soon);
+      stage({});
+      const { out: text } = runGate();
+      expect(text).not.toMatch(/older than the source/);
+    } finally {
+      rmSync(marker, { force: true });
+    }
+  });
+
+  it("still calls a package stale when real source is newer", () => {
+    // The other pole. Without it the case above passes just as well against a
+    // freshness check that was deleted outright.
+    const probe = join(REPO, "extension", "manifest.json");
+    const before = statSync(probe);
+    try {
+      const soon = new Date(Date.now() + 60_000);
+      utimesSync(probe, soon, soon);
+      stage({});
+      const { code, out: text } = runGate();
+      expect(code).toBe(1);
+      expect(text).toMatch(/older than the source/);
+    } finally {
+      utimesSync(probe, before.atime, before.mtime);
+    }
+  });
+});

@@ -61,6 +61,29 @@ const DIST = process.env.PHOENIX_DIST || join(REPO, "dist-extension");
 const problems = [];
 const fail = (msg) => problems.push(msg);
 
+/**
+ * A manifest field that must be a list, read as one.
+ *
+ * `manifest.host_permissions ?? []` covers the field being absent and nothing
+ * else. A manifest holding `"host_permissions": "https://x.example/*"` — a
+ * plausible hand-edit, and one Chrome itself rejects — reaches `.map` and this
+ * gate dies with a `TypeError` naming a line of its own source. The person
+ * reading that has been told the checker is broken, when what is broken is the
+ * file being checked, and the exit code is the same either way.
+ *
+ * So a wrong type is a finding like any other, in the same voice as the rest,
+ * and the run continues to report whatever else is wrong with the package.
+ */
+const asArray = (value, field) => {
+  if (value === undefined || value === null) return [];
+  if (Array.isArray(value)) return value;
+  fail(
+    `manifest ${field} is ${typeof value}, not a list — Chrome refuses to load a ` +
+      `manifest shaped this way, and every rule below about ${field} was skipped.`,
+  );
+  return [];
+};
+
 // A seam that is on says so, before any verdict.
 //
 // The risk here is not somebody reaching for the variable on purpose — that
@@ -98,12 +121,24 @@ if (!existsSync(DIST)) {
  * CI builds immediately before running this, so the check is invisible there.
  * It fires for the person running the gate by hand, which is exactly when the
  * artifact is likely to be old.
+ *
+ * `NOT_SOURCE` is what it must not count. `extension/smoke/out` is written by
+ * `extension/smoke/run.mjs`, so running the smoke test makes `extension/` newer
+ * than any package built before it, and this check then refuses a build that is
+ * not stale. That refusal is worse than useless: a red gate with no defect
+ * behind it, on the ordinary path of running the checks in order, and a gate
+ * that cries wolf is a gate people learn to re-run until it passes. Matched by
+ * path rather than by the name `out`, so a source directory that happens to be
+ * called that is still read.
  */
+const NOT_SOURCE = new Set([join(REPO, "extension", "smoke", "out")]);
+
 const newestUnder = (dir) => {
   let newest = 0;
   for (const entry of readdirSync(dir)) {
     if (entry === "node_modules") continue;
     const full = join(dir, entry);
+    if (NOT_SOURCE.has(full)) continue;
     const st = statSync(full);
     newest = Math.max(newest, st.isDirectory() ? newestUnder(full) : st.mtimeMs);
   }
@@ -191,7 +226,7 @@ if (!cspConnect) {
     cspConnect[2].trim().split(/\s+/).filter((s) => s !== "'self'"),
   );
   const permitted = new Set(
-    (manifest.host_permissions ?? []).map((p) => p.replace(/\/\*$/, "")),
+    asArray(manifest.host_permissions, "host_permissions").map((p) => p.replace(/\/\*$/, "")),
   );
   for (const host of declared) {
     if (!permitted.has(host)) {
@@ -252,7 +287,7 @@ for (const key of Object.keys(manifest)) {
 }
 
 const ALLOWED_PERMISSIONS = new Set(["storage"]);
-for (const perm of manifest.permissions ?? []) {
+for (const perm of asArray(manifest.permissions, "permissions")) {
   if (!ALLOWED_PERMISSIONS.has(perm)) {
     fail(`permissions declares "${perm}", which is not in the reviewed set (${[...ALLOWED_PERMISSIONS].join(", ")})`);
   }
@@ -274,7 +309,7 @@ for (const perm of manifest.permissions ?? []) {
  */
 const ALLOWED_MATCHES = new Set(["https://*/*", "http://localhost/*", "http://127.0.0.1/*"]);
 
-const contentScripts = manifest.content_scripts ?? [];
+const contentScripts = asArray(manifest.content_scripts, "content_scripts");
 for (const cs of contentScripts) {
   for (const m of cs.matches ?? []) {
     if (!ALLOWED_MATCHES.has(m)) {
@@ -300,7 +335,7 @@ for (const cs of contentScripts) {
   }
 }
 
-for (const war of manifest.web_accessible_resources ?? []) {
+for (const war of asArray(manifest.web_accessible_resources, "web_accessible_resources")) {
   for (const m of war.matches ?? []) {
     if (!ALLOWED_MATCHES.has(m)) {
       fail(`web_accessible_resources is exposed to "${m}", which is not in the reviewed set`);
@@ -541,7 +576,7 @@ function parseHostPermission(pattern) {
   return { host: authority, authority, reason: null };
 }
 
-for (const pattern of manifest.host_permissions ?? []) {
+for (const pattern of asArray(manifest.host_permissions, "host_permissions")) {
   const parsed = parseHostPermission(pattern);
   if (!parsed.host) {
     fail(`host_permissions declares "${pattern}" — ${parsed.reason}`);
@@ -580,7 +615,7 @@ for (const pattern of manifest.host_permissions ?? []) {
  * `bundleHosts` is gathered above, where the other direction also needs it.
  */
 const declaredHosts = new Set(
-  (manifest.host_permissions ?? []).map((p) => parseHostPermission(p).host).filter(Boolean),
+  asArray(manifest.host_permissions, "host_permissions").map((p) => parseHostPermission(p).host).filter(Boolean),
 );
 /**
  * Every authority the manifest mentions, valid pattern or not.
@@ -593,7 +628,7 @@ const declaredHosts = new Set(
  * wildcard.
  */
 const mentionedAuthorities = new Set(
-  (manifest.host_permissions ?? []).map((p) => parseHostPermission(p).authority).filter(Boolean),
+  asArray(manifest.host_permissions, "host_permissions").map((p) => parseHostPermission(p).authority).filter(Boolean),
 );
 for (const host of bundleHosts) {
   if (!declaredHosts.has(host)) {
@@ -633,7 +668,7 @@ if (problems.length) {
  *
  * So each host is asked *both* questions, and the three answers are named.
  */
-const declaredHostList = (manifest.host_permissions ?? [])
+const declaredHostList = asArray(manifest.host_permissions, "host_permissions")
   .map((p) => parseHostPermission(p).host)
   .filter(Boolean);
 const inSource = (h) => providerHosts.has(h);

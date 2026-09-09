@@ -73,8 +73,11 @@ export class NotOnChainError extends Error {
  * which says the request did not arrive about a server that answered. It is not
  * a regression — `redirect: "follow"` wants the same header on the 3xx, so the
  * old behaviour was identical — and it is not something this function can fix
- * from inside. [CHƯA KIỂM trong trình duyệt thật: đọc từ đặc tả Fetch, các ca ở
- * `__tests__/noRedirect.test.ts` dựng `Response` giả dưới Node.]
+ * from inside. **Not measured in a real browser**: that paragraph is read off
+ * the Fetch standard, and the cases in `__tests__/noRedirect.test.ts` build
+ * `Response` objects by hand under Node. What is measured is the shape handling
+ * — both shapes reach the throw. What is not is which of the two a browser
+ * actually produces for a cross-origin 3xx.
  *
  * Kept out of the `catch` deliberately. Wrapping it as `ProviderUnreachableError`
  * would say the request never arrived, about a server that answered — the same
