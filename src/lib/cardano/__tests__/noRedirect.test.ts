@@ -206,8 +206,35 @@ function sourceFilesUnderSrc(dir: string, out: string[] = []): string[] {
  * `globalThis["fetch"]` is the one call spelled with a string, and it is matched
  * as the callee of a call rather than by looking at string contents — a sentence
  * that merely contains the word stays invisible.
+ *
+ * ## What it still does not see, written down so nobody reads more into it
+ *
+ * This matches on the **name at the call site**, not on what the name is bound
+ * to. Everything that renames the function first walks past, and measured, these
+ * all count zero:
+ *
+ *     const f = fetch; await f(url);
+ *     const { fetch: g } = globalThis; await g(url);
+ *     await (0, fetch)(url);
+ *     await fetch.bind(globalThis)(url);
+ *     await fetch.call(globalThis, url);
+ *     await globalThis["fet" + "ch"](url);
+ *     const K = "fetch"; await globalThis[K](url);
+ *
+ * None of these is a regression — the regex it replaced missed the same seven,
+ * and this version additionally catches `fetch?.(url)`. But the paragraphs above
+ * say the two old mistakes are "not expressible", and that sentence is about
+ * those two directions only: a comment or string being counted, and a member
+ * spelling being missed. It is not a claim that the inventory below cannot be
+ * evaded on purpose. Closing the list above needs a `ts.Program` and a type
+ * checker, which is a different tool from the one this file reaches for, and the
+ * threat it answers is a different one: the table exists to catch a call added
+ * without thought, not a call hidden with intent.
+ *
+ * The name is a required argument, not a defaulted one, and that is load-bearing
+ * — see the `.tsx` case below.
  */
-function fetchCallCount(text: string, fileName = "inline.ts"): number {
+function fetchCallCount(text: string, fileName: string): number {
   const source = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true);
 
   /** `fetch`, `x.fetch`, `x["fetch"]` — every way of naming the one function. */
@@ -260,10 +287,15 @@ describe("chain reads > the list above is every outbound call there is", () => {
     expect(CHAIN_CALLS).toHaveLength(5);
   });
 
-  it("counts every spelling of a call, including the ones written to hide", () => {
+  it("counts a call however the function is named at the call site", () => {
     // The predicate decides whether the table above can be trusted, so it gets
     // cases of its own. The first version was blind to every member spelling —
     // which is the spelling somebody reaching past this rule would reach for.
+    //
+    // "however it is named at the call site" is the whole claim, deliberately.
+    // Bind the function to another name first and this walks past it; the
+    // docstring lists the seven shapes that do, so the title of this case is not
+    // read as a promise it does not keep.
     for (const s of [
       `const r = await fetch(url);`,
       `const r = await globalThis.fetch(url);`,
@@ -271,7 +303,7 @@ describe("chain reads > the list above is every outbound call there is", () => {
       `const r = await globalThis["fetch"](url);`,
       `const r = await self['fetch'] (url);`,
     ]) {
-      expect(fetchCallCount(s)).toBe(1);
+      expect(fetchCallCount(s, "spelling.ts")).toBe(1);
     }
   });
 
@@ -286,7 +318,7 @@ describe("chain reads > the list above is every outbound call there is", () => {
       `const a = 1;\n` +
       `await fetch("https://telemetry.invalid/ping");\n` +
       `const b = 2; /* an ordinary block */\n`;
-    expect(fetchCallCount(src)).toBe(1);
+    expect(fetchCallCount(src, "phantom.ts")).toBe(1);
   });
 
   it("does not count the word where it is only being talked about", () => {
@@ -298,15 +330,21 @@ describe("chain reads > the list above is every outbound call there is", () => {
       `/* or fetch(x) in a block */\n` +
       `const msg = "the browser refused the fetch(url) this wallet made";\n` +
       `const tpl = \`a fetch(y) inside a template\`;\n`;
-    expect(fetchCallCount(prose)).toBe(0);
+    expect(fetchCallCount(prose, "prose.ts")).toBe(0);
   });
 
   it("reads a .tsx file as TSX, so markup does not swallow the call inside it", () => {
     // The file name is passed through to the parser, and nothing measured that:
     // no `.tsx` file under `src/` makes an outbound call today, so dropping the
-    // argument changed no count and the whole suite stayed green. Pinned here
-    // rather than left to the day somebody adds a `fetch` to a component — which
-    // is precisely the day this table needs to be right.
+    // argument changed no count and the whole suite stayed green.
+    //
+    // This case alone did not fix that, and saying it did would be the mistake
+    // it is here to prevent. Measured: with the argument still defaulted,
+    // deleting `file` from the call inside the inventory loop left all 47 cases
+    // in this file green — every `.tsx` read as `.ts`, and this case none the
+    // wiser, because it passes its own name. So the pin is in the signature:
+    // `fileName` has no default, and the compiler refuses the call that drops
+    // it. A test cannot see an argument that was never passed to it.
     //
     // The body is chosen to tell the two parses apart, which most JSX does not:
     // TypeScript's recovery is good enough that ordinary markup read as
@@ -322,8 +360,8 @@ describe("chain reads > the list above is every outbound call there is", () => {
   it("counts a call whose argument is a URL, which a comment stripper can eat", () => {
     // `//` inside a string is not a comment. A stripper working on raw text has
     // to be told that; a scanner cannot get it wrong.
-    expect(fetchCallCount(`fetch("https://x.example/a");`)).toBe(1);
-    expect(fetchCallCount(`const re = /\\/\\//; fetch(u);`)).toBe(1);
+    expect(fetchCallCount(`fetch("https://x.example/a");`, "url.ts")).toBe(1);
+    expect(fetchCallCount(`const re = /\\/\\//; fetch(u);`, "regex.ts")).toBe(1);
   });
 });
 

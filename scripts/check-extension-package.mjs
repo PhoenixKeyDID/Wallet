@@ -73,6 +73,16 @@ const fail = (msg) => problems.push(msg);
  *
  * So a wrong type is a finding like any other, in the same voice as the rest,
  * and the run continues to report whatever else is wrong with the package.
+ *
+ * **Every list read goes through here, nested ones included.** The first version
+ * wrapped only the top-level fields, which left the same crash live four lines
+ * further down — `content_scripts[].matches`, `[].js`, and both lists inside
+ * `web_accessible_resources`. Two of those took the whole gate out with a
+ * `TypeError`; the other two were worse, because a string is iterable: `"js":
+ * "content.js"` walked it a character at a time and the gate reported that the
+ * manifest names files called `c`, `o`, `n` — a page of confident nonsense, with
+ * every real rule about `js` silently skipped. A fix scoped to where the symptom
+ * was first noticed is a fix that leaves the cause in place.
  */
 const asArray = (value, field) => {
   if (value === undefined || value === null) return [];
@@ -80,6 +90,25 @@ const asArray = (value, field) => {
   fail(
     `manifest ${field} is ${typeof value}, not a list — Chrome refuses to load a ` +
       `manifest shaped this way, and every rule below about ${field} was skipped.`,
+  );
+  return [];
+};
+
+/**
+ * `manifest.icons` read as the name→path map it is.
+ *
+ * Same failure, one type over: `"icons": "icon.png"` is not a list but it *is*
+ * iterable, so `Object.values` on a string hands back single characters and the
+ * gate goes looking for files named `i`, `c`, `o`. Not a list — a map — so it
+ * gets its own door rather than being bent through `asArray`.
+ */
+const iconPaths = (value) => {
+  if (value === undefined || value === null) return [];
+  if (typeof value === "object" && !Array.isArray(value)) return Object.values(value);
+  fail(
+    `manifest icons is ${Array.isArray(value) ? "a list" : typeof value}, not a ` +
+      `name-to-path map — Chrome refuses to load a manifest shaped this way, and ` +
+      `no icon was checked against the package.`,
   );
   return [];
 };
@@ -130,6 +159,16 @@ if (!existsSync(DIST)) {
  * that cries wolf is a gate people learn to re-run until it passes. Matched by
  * path rather than by the name `out`, so a source directory that happens to be
  * called that is still read.
+ *
+ * It is a hand-kept list of one, and the fact it needs keeping is the point of
+ * this paragraph. The same directory is already named in `.gitignore`, and the
+ * two are not wired together — a second build output added under `extension/`,
+ * `src/` or `locales/` gets gitignored by whoever adds it and nothing brings
+ * them back here, so the false alarm returns and nobody is told why. Reading
+ * `.gitignore` directly would join them, and is not done because that file
+ * carries patterns rather than paths, and a wrong reading of it would make this
+ * check skip a real source tree — failing quiet where it currently fails loud.
+ * So: a list, with the coupling written down instead of hidden.
  */
 const NOT_SOURCE = new Set([join(REPO, "extension", "smoke", "out")]);
 
@@ -193,7 +232,7 @@ try {
 if (manifest.manifest_version !== 3) fail(`manifest_version is ${manifest.manifest_version}, expected 3`);
 const popup = manifest.action?.default_popup;
 if (!popup) fail("manifest declares no action.default_popup");
-for (const rel of [popup, ...Object.values(manifest.icons ?? {})].filter(Boolean)) {
+for (const rel of [popup, ...iconPaths(manifest.icons)].filter(Boolean)) {
   if (!existsSync(join(DIST, rel))) fail(`manifest names "${rel}", which is not in the package`);
 }
 
@@ -311,7 +350,7 @@ const ALLOWED_MATCHES = new Set(["https://*/*", "http://localhost/*", "http://12
 
 const contentScripts = asArray(manifest.content_scripts, "content_scripts");
 for (const cs of contentScripts) {
-  for (const m of cs.matches ?? []) {
+  for (const m of asArray(cs.matches, "content_scripts[].matches")) {
     if (!ALLOWED_MATCHES.has(m)) {
       fail(
         `content_scripts injects into "${m}", which is not in the reviewed set ` +
@@ -330,18 +369,18 @@ for (const cs of contentScripts) {
   if (cs.run_at !== "document_start") {
     fail(`content_scripts must run at document_start so the provider exists before page scripts look for it`);
   }
-  for (const f of cs.js ?? []) {
+  for (const f of asArray(cs.js, "content_scripts[].js")) {
     if (!existsSync(join(DIST, f))) fail(`content_scripts names "${f}", which is not in the package`);
   }
 }
 
 for (const war of asArray(manifest.web_accessible_resources, "web_accessible_resources")) {
-  for (const m of war.matches ?? []) {
+  for (const m of asArray(war.matches, "web_accessible_resources[].matches")) {
     if (!ALLOWED_MATCHES.has(m)) {
       fail(`web_accessible_resources is exposed to "${m}", which is not in the reviewed set`);
     }
   }
-  for (const r of war.resources ?? []) {
+  for (const r of asArray(war.resources, "web_accessible_resources[].resources")) {
     if (!existsSync(join(DIST, r))) fail(`web_accessible_resources names "${r}", which is not in the package`);
     // Anything reachable from a page is reachable by every page. Exposing a
     // wallet page here would put the unlock screen inside a site's frame.

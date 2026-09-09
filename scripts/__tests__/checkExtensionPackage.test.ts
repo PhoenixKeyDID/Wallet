@@ -467,6 +467,88 @@ describe("check:package > a malformed field is a finding, not a crash", () => {
     // A second, unrelated complaint in the same run.
     expect(out.split("\n").filter((l) => l.trim().startsWith("•")).length).toBeGreaterThan(1);
   });
+
+  it("says so for a list nested inside content_scripts, not only a top-level one", () => {
+    // The first version of this rule wrapped the top-level fields and stopped
+    // there, which left the identical crash live a few lines further down. Both
+    // cases above pass with the nested reads unguarded, so neither of them is
+    // watching this: the two live at different depths in the same file, and a
+    // fix scoped to where a defect was first noticed is a fix that leaves the
+    // cause in place.
+    const m = BASE_MANIFEST();
+    m.content_scripts[0].matches = 5;
+    stage({ manifest: m });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/content_scripts\[\]\.matches is number, not a list/);
+    expect(out).not.toMatch(/TypeError/);
+    expect(out).not.toMatch(/check-extension-package\.mjs:\d+/);
+  });
+
+  it("refuses a string where a list of files belongs, instead of reading it letter by letter", () => {
+    // The quiet half of the same defect, and the worse half. A string is
+    // iterable, so `for (const f of cs.js)` walked `"content.js"` one character
+    // at a time and the gate reported, with a straight face, that the manifest
+    // names files called `c`, `o`, `n`. Every real rule about `js` was skipped
+    // in the same breath, and the exit code was 1 either way — so the run looked
+    // like a gate doing its job while it was grading nothing.
+    const m = BASE_MANIFEST();
+    m.content_scripts[0].js = "content.js";
+    stage({ manifest: m });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/content_scripts\[\]\.js is string, not a list/);
+    // The letter-by-letter reading, named so the case fails if it comes back.
+    expect(out).not.toMatch(/names "c"/);
+    expect(out).not.toMatch(/names "o"/);
+  });
+
+  it("refuses an icons field that is not a name-to-path map", () => {
+    // `Object.values` on a string is the same trap one type over: it hands back
+    // characters, and the gate goes looking for files named `i`, `c`, `o`.
+    // `icons` is a map rather than a list, so it needs its own door — bending it
+    // through the list reader would accept `["icon.png"]`, which Chrome does not.
+    const m = BASE_MANIFEST();
+    m.icons = "icon.png";
+    stage({ manifest: m });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/icons is string, not a name-to-path map/);
+    expect(out).not.toMatch(/names "i"/);
+  });
+
+  it("says so for the resource list nested inside web_accessible_resources", () => {
+    // Named separately rather than folded into the content_scripts case because
+    // they are two different call sites, and a case that covers one while
+    // claiming both is how the other gets missed.
+    const m = BASE_MANIFEST();
+    m.web_accessible_resources[0].resources = "inpage.js";
+    stage({ manifest: m });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/web_accessible_resources\[\]\.resources is string, not a list/);
+    expect(out).not.toMatch(/TypeError/);
+  });
+
+  it("says so for the match list nested inside web_accessible_resources", () => {
+    // The fifth nested read, and the one the first four cases did not watch:
+    // with the four above written and passing, putting this read back to
+    // `?? []` left all thirty of them green. Measured, and it is the reason this
+    // case exists — a sweep that stops at the defects somebody happened to name
+    // leaves the last one behind, looking exactly like the ones that were fixed.
+    //
+    // This field decides which pages may reach the provider script, so the read
+    // that goes unguarded here is the read that governs reach.
+    const m = BASE_MANIFEST();
+    m.web_accessible_resources[0].matches = "https://*/*";
+    stage({ manifest: m });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/web_accessible_resources\[\]\.matches is string, not a list/);
+    // Character-by-character again: without the guard the gate complains that
+    // the resources are exposed to "h", then "t", then "t".
+    expect(out).not.toMatch(/exposed to "h"/);
+  });
 });
 
 describe("check:package > the freshness check reads source, not build output", () => {
