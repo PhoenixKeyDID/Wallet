@@ -154,6 +154,40 @@ describe("extraChainOrigins > a port cannot be expressed in a match pattern", ()
   });
 });
 
+describe("extraChainOrigins > a standing grant cannot be plain HTTP", () => {
+  it("refuses a loopback endpoint over HTTP, which is otherwise a supported source", () => {
+    // `chainSource.ts` allows plain HTTP on loopback deliberately, so this
+    // arrives from a documented setup rather than a mistake — and the port
+    // guard beside it let it through, writing `http://localhost` into both
+    // `host_permissions` and the CSP. Unlike a port, that manifest loads and
+    // works: the grant is real, and it survives whatever the chain source is
+    // set to afterwards.
+    expect(() =>
+      extraChainOrigins({ VITE_CHAIN_BASE_MAINNET: "http://localhost/api/v0" }),
+    ).toThrow(/not https/);
+  });
+
+  it("refuses a scheme that is not a web scheme at all", () => {
+    // `new URL("foo://bar/x").origin` is the string "null", so without this the
+    // manifest would have been handed the pattern `null/*`.
+    expect(() => extraChainOrigins({ VITE_CHAIN_BASE_MAINNET: "foo://bar/api/v0" })).toThrow(
+      /not https/,
+    );
+  });
+
+  it("points at the web build, where loopback HTTP is allowed", () => {
+    // The refusal has to say where the supported configuration went, or it
+    // reads as the feature being withdrawn.
+    let message = "";
+    try {
+      extraChainOrigins({ VITE_CHAIN_BASE_MAINNET: "http://localhost/api/v0" });
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).toMatch(/web app/);
+  });
+});
+
 describe("extraChainOrigins > a project id alone still names a host", () => {
   it("resolves the vendor origin with no URL in the variable", () => {
     // The case a text search of the bundle cannot see, and the reason the gate

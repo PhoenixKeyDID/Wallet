@@ -204,6 +204,56 @@ describe("check:package > one reading of a host pattern, not three", () => {
     expect(code).toBe(1);
     expect(out).toMatch(/wildcard scheme or host/);
   });
+
+  it("refuses a host that is not literal, which the outer shape lets through", () => {
+    // This check had no case of its own. The wildcard case above carries its
+    // name but dies one pin earlier — `[^/*]+` already excludes `*` — so
+    // deleting the literal-host rule left the whole suite green while the gate
+    // accepted `a_b.example` and announced it as an ordinary host.
+    const m = BASE_MANIFEST();
+    m.host_permissions.push("https://a_b.example/*");
+    m.content_security_policy.extension_pages += " https://a_b.example";
+    stage({ manifest: m, receipt: ["https://a_b.example"] });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/is not a literal host/);
+    expect(out).not.toMatch(/does not declare/);
+  });
+
+  it("refuses a host carrying a character that folds into ASCII", () => {
+    // `U+212A KELVIN SIGN` lowercases to `k` — the only codepoint above 127
+    // that does, measured across the whole Unicode range. Testing the folded
+    // string accepts `api.<U+212A>oios.rest` and reports it as `api.koios.rest`;
+    // the strict regex it replaced refused it, because a regex `i` flag does not
+    // fold non-ASCII into an ASCII range. Losing that is a look-alike host
+    // passing the one file whose stated job is catching look-alike hosts.
+    const kelvin = "https://api.Koios.rest/*";
+    const m = BASE_MANIFEST();
+    m.host_permissions.push(kelvin);
+    m.content_security_policy.extension_pages += " https://api.Koios.rest";
+    stage({ manifest: m, receipt: [] });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/is not a literal host/);
+  });
+
+  it("names the scheme as the reason, and only once", () => {
+    // A self-hosted node on loopback over plain HTTP is a configuration
+    // `chainSource.ts` allows on purpose, so this arrives from a supported
+    // setup rather than a mistake. Before the shared reading, it produced the
+    // same pair of contradicting sentences the port case did — the "already
+    // reported" set was rebuilt from a second regex that covered the port axis
+    // and not the scheme axis.
+    const m = BASE_MANIFEST();
+    m.host_permissions.push("http://localhost/*");
+    m.content_security_policy.extension_pages += " http://localhost";
+    stage({ manifest: m, receipt: ["http://localhost"] });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/only https is allowed/);
+    expect(out).not.toMatch(/does not declare/);
+    expect(out).not.toMatch(/wildcard scheme or host/);
+  });
 });
 
 /**

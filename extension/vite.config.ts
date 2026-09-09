@@ -78,6 +78,27 @@ export function extraChainOrigins(env: Record<string, string | undefined>): stri
             `endpoint at 443, or build the web app, where ports are ordinary.`,
         );
       }
+      // The same refusal, one axis over, and written next to it because the
+      // first version of this guard covered only the port. A port is a harmless
+      // pattern that matches nothing; a plain-HTTP grant is the opposite — it
+      // loads, it works, and any network between the browser and that host can
+      // read every address the wallet looks up and rewrite every answer,
+      // including the balance somebody is about to act on. `foo://` lands here
+      // too, where `.origin` is the string "null" and the manifest would have
+      // been given the pattern `null/*`.
+      //
+      // `chainSource.ts` allows plain HTTP on loopback on purpose, and that
+      // stays true for the web app. What cannot follow it here is the standing
+      // grant: a `host_permissions` entry outlives whatever the chain source is
+      // later set to.
+      if (u.protocol !== "https:") {
+        throw new Error(
+          `Chain endpoint "${src.base}" is not https, and an extension cannot be granted ` +
+            `reach over a plain-HTTP host — the grant would stay in the manifest whatever ` +
+            `the chain source is later set to. Serve the endpoint over https, or build the ` +
+            `web app, where a loopback endpoint over HTTP is allowed.`,
+        );
+      }
       origins.add(u.origin);
     }
   }

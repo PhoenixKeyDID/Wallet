@@ -110,8 +110,34 @@ const newestUnder = (dir) => {
   return newest;
 };
 
+// A directory that was not produced by a build is refused with a sentence
+// rather than a stack trace. It happens on an ordinary path: the build throws
+// after Vite has already emptied the output and written the bundle — a chain
+// endpoint carrying a port or a plain-HTTP scheme does exactly that — leaving a
+// directory with code in it and no manifest. Reading `mtimeMs` off a file that
+// is not there answers with `ENOENT` and an absolute path out of the build
+// machine, about a situation the receipt check below already has words for.
+if (!existsSync(join(DIST, "manifest.json"))) {
+  console.error(
+    `dist-extension/ has no manifest.json, so it was not produced by a completed build —\n` +
+      "a build that failed part-way leaves the bundle behind without one. Run\n" +
+      "`bun run build:extension` and fix whatever it reports.",
+  );
+  process.exit(1);
+}
+
 const builtAt = statSync(join(DIST, "manifest.json")).mtimeMs;
-const sourceAt = Math.max(newestUnder(join(REPO, "extension")), newestUnder(join(REPO, "src")));
+// `locales/` is here because it is compiled in — `extension/src/i18n.ts` imports
+// the JSON, so a locale edit changes the bundle exactly as a source edit does.
+// Leaving it out meant a package built before a translation change was graded as
+// current. No rule in this gate reads a locale today, so nothing was measured
+// wrong; the directory is listed because the reason to list it is "it reaches
+// the bundle", and that is already true.
+const sourceAt = Math.max(
+  newestUnder(join(REPO, "extension")),
+  newestUnder(join(REPO, "src")),
+  newestUnder(join(REPO, "locales")),
+);
 if (sourceAt > builtAt) {
   console.error(
     "dist-extension/ is older than the source it was built from — this check would\n" +
@@ -446,36 +472,66 @@ if (!existsSync(join(DIST, RECEIPT))) {
  * verbatim. A reader following those two sentences adds a wildcard.
  *
  * `reason` is what the pattern is wrong about, so the message can name the
- * actual cause instead of the nearest rule.
+ * actual cause instead of the nearest rule. `authority` is returned **even when
+ * the pattern is refused**, because the "already reported" set below has to be
+ * built from this function rather than from a second expression: a set built
+ * from a narrower regex covers some refusal reasons and not others, and the
+ * ones it misses get a contradicting second sentence. That is how the port case
+ * reached review, and rebuilding the mistake one axis over is what this
+ * signature exists to prevent.
  */
 function parseHostPermission(pattern) {
-  const m = /^https:\/\/([^/*]+)\/\*$/i.exec(pattern);
+  const m = /^([a-z][a-z0-9+.-]*):\/\/([^/*]*)\/\*$/i.exec(pattern);
   if (!m) {
     return {
       host: null,
+      authority: null,
       reason:
         `only \`https://<host>/*\` with a literal host is allowed; a wildcard scheme or ` +
         `host grants reach over sites nobody reviewed`,
     };
   }
-  const authority = m[1].toLowerCase();
+  const scheme = m[1].toLowerCase();
+  const authority = m[2].toLowerCase();
+  const refuse = (reason) => ({ host: null, authority, reason });
+
+  // Refused for the same reason the wallet refuses a plain-HTTP chain source:
+  // a network between the browser and the endpoint can read every address
+  // looked up and replace every answer, including the balance a person is about
+  // to act on. In `host_permissions` it is worse than a bad source, because it
+  // is a standing grant that survives whatever the source is later set to.
+  if (scheme !== "https") {
+    return refuse(
+      `the scheme is "${scheme}:", and only https is allowed here — a plain-HTTP grant lets ` +
+        `any network between the browser and that host read every address this wallet looks ` +
+        `up and rewrite every answer`,
+    );
+  }
   // Chrome's match patterns have no place for a port — the host part is matched
   // whole, and a pattern carrying `:8443` matches nothing, so the extension
   // simply cannot reach that endpoint. Caught here rather than left to Chrome,
   // which reports it as a chain read that returned nothing.
   if (authority.includes(":")) {
-    return {
-      host: null,
-      reason:
-        `a Chrome match pattern has no place for a port, so this one matches nothing and ` +
+    return refuse(
+      `a Chrome match pattern has no place for a port, so this one matches nothing and ` +
         `the extension cannot reach that endpoint at all — point the endpoint at ` +
         `443, or run the wallet as a web page, where ports are ordinary`,
-    };
+    );
   }
-  if (!/^[a-z0-9.-]+$/.test(authority)) {
-    return { host: null, reason: `"${authority}" is not a literal host` };
+  // ASCII checked on the ORIGINAL, before lowercasing.
+  //
+  // `.toLowerCase()` is not an ASCII operation. Exactly one codepoint above 127
+  // folds into this character class — `U+212A KELVIN SIGN` maps to `k` — so
+  // lowercasing first and testing after accepts `api.<U+212A>oios.rest` and
+  // reports it as `api.koios.rest`. The old strict regex refused it, because a
+  // regex `i` flag does not fold non-ASCII into an ASCII range. Losing that was
+  // a quiet loosening in the one file whose stated job (`.github/CODEOWNERS`)
+  // is catching look-alike hosts, so the order is written down rather than left
+  // to whoever edits these two lines next.
+  if (!/^[\x20-\x7e]+$/.test(m[2]) || !/^[a-z0-9.-]+$/.test(authority)) {
+    return refuse(`"${m[2]}" is not a literal host`);
   }
-  return { host: authority, reason: null };
+  return { host: authority, authority, reason: null };
 }
 
 for (const pattern of manifest.host_permissions ?? []) {
@@ -530,9 +586,7 @@ const declaredHosts = new Set(
  * wildcard.
  */
 const mentionedAuthorities = new Set(
-  (manifest.host_permissions ?? [])
-    .map((p) => /^https:\/\/([^/*]+)\/\*$/i.exec(p)?.[1]?.toLowerCase())
-    .filter(Boolean),
+  (manifest.host_permissions ?? []).map((p) => parseHostPermission(p).authority).filter(Boolean),
 );
 for (const host of bundleHosts) {
   if (!declaredHosts.has(host)) {

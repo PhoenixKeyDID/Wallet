@@ -11,6 +11,7 @@
  * with ordinary-looking data. That is why this is refused rather than logged.
  */
 import { describe, it, expect, vi, afterEach } from "vitest";
+import { readFileSync } from "node:fs";
 import { assertNoRedirect, bfTipSlot, bfSubmitTx } from "../blockfrost";
 import { koios, submitTx } from "../provider";
 import { fetchAdaPrice, forgetPrice } from "../price";
@@ -143,6 +144,31 @@ describe("chain reads > every call site tells fetch not to follow a redirect", (
       for (const init of seen) expect(init.redirect).toBe("manual");
     });
   }
+});
+
+describe("chain reads > the list above is every outbound call there is", () => {
+  it("finds no fetch in src/ that this file has not accounted for", () => {
+    // `CHAIN_CALLS` is written by hand, so it can only pin the paths somebody
+    // remembered to add. This case is what makes a seventh call site a red line
+    // instead of a silent gap: it reads the source rather than a list, and a new
+    // `fetch` anywhere under `src/` fails here until it is either added above or
+    // named as a deliberate exception.
+    //
+    // Counted rather than parsed, and that is the honest limit: this cannot tell
+    // which function a call belongs to, so it says "something changed, decide".
+    // The alternative — a rule that guesses which path a new call is on — would
+    // be a check that answers a question it cannot see.
+    const files = ["api.ts", "cardano/price.ts", "cardano/blockfrost.ts", "cardano/provider.ts"];
+    const found = files.flatMap((f) => {
+      const text = readFileSync(new URL(`../../${f}`, import.meta.url), "utf8");
+      return [...text.matchAll(/(?<![.\w])fetch\(/g)].map(() => f);
+    });
+    // 1 in api.ts (the documented exception) + 1 price + 2 blockfrost + 2 provider.
+    expect(found).toHaveLength(6);
+    expect(found.filter((f) => f === "api.ts")).toHaveLength(1);
+    // Every one of the other five is exercised by both describes below.
+    expect(CHAIN_CALLS).toHaveLength(5);
+  });
 });
 
 describe("chain reads > every call site refuses the redirect it gets", () => {
