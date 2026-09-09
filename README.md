@@ -229,10 +229,12 @@ session at all — they never touch the Phoenix backend.
 
 ```bash
 bun install
-bun run test          # 583 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
+bun run test          # 592 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
 bun run typecheck
 bun run check:locales # 4 languages × 2 namespaces must stay in step
+bun run check:i18n-keys # every key the code asks for has a string — locale parity cannot see a key missing from all four
 bun run check:host-contract # what a host must wire up, checked against what the code imports
+bun run check:extension-host # the extension supplies what a host owes, measured in the built bundle
 bun run check:urls    # no ungated outbound URL at the repo root or under src/, extension/, scripts/, docs/
 bun run check:node-globals # the Node-globals shim is imported before @stricahq
 bun run check:keystore-boundary # only the key-holding screens and the bundle smoke check may import the keystore

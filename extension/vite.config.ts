@@ -230,7 +230,29 @@ export default defineConfig(({ mode }) => ({
     },
   ],
   resolve: {
-    alias: { "@": resolve(repo, "src") },
+    /**
+     * The extension is a **host** of this module, and until now it was one that
+     * supplied nothing.
+     *
+     * `docs/host-contract.json` names five aliases a host is expected to point at
+     * its own implementations. The web app points all five at real ones. This
+     * config declared a single catch-all, so all five resolved back into the
+     * module's own stand-ins — and nothing failed, because they resolved
+     * *successfully*. A stand-in that logs to the console is a working import.
+     *
+     * What that cost: panels call toast with a bare i18n key, the stand-in prints
+     * the key, and somebody who had just delegated their stake read the literal
+     * word `delegate_submitted` — a message indistinguishable from a crash, right
+     * after an action that moves money.
+     *
+     * Order matters and is the whole mechanism: Vite tries these in sequence, so
+     * every specific entry must precede the catch-all. Putting `"@"` first would
+     * swallow all of them and restore the bug in a way no test would notice.
+     */
+    alias: [
+      { find: "@/lib/toast", replacement: resolve(here, "src/toast.ts") },
+      { find: "@", replacement: resolve(repo, "src") },
+    ],
   },
   build: {
     outDir: resolve(repo, "dist-extension"),

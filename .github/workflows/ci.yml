@@ -30,6 +30,15 @@ jobs:
       - name: Locale parity
         run: bun run check:locales
 
+      # Locale parity compares the languages against each other, so a key
+      # missing from all four is a key it grades as fine. Three such keys sat on
+      # the success path of money actions — stake delegation, reward withdrawal,
+      # a governance submission — and both hosts resolve an unknown key to the
+      # key itself, so somebody who had just delegated their stake read the word
+      # `delegate_submitted`. This gate compares the code against the strings.
+      - name: Every i18n key the code asks for exists
+        run: bun run check:i18n-keys
+
       # This module is consumed as source by host apps, so what a host has to
       # wire up is part of the interface — and it broke without a single red
       # line here: a new `@/lib/keystore` directory and a new dependency landed,
@@ -84,6 +93,16 @@ jobs:
       # remote code, and popup.html must reference nothing outside the package.
       - name: Extension package is loadable and claims no reach it does not use
         run: bun run check:package
+
+      # The extension is a host of this module and was supplying none of the
+      # implementations a host owes it, so every one resolved back into the
+      # stand-in shipped for standalone type-checking. An import that lands on a
+      # stand-in succeeds — nothing anywhere went red — and the packaged wallet
+      # printed raw i18n keys at people after they moved money. This reads the
+      # built bundle rather than the config, because a declared alias and the
+      # module the code reached come apart on ordering alone.
+      - name: The extension supplies what a host owes this module
+        run: bun run check:extension-host
 
       # The README's test count has been wrong five times, each time by simply
       # being left behind. A figure a reader catches as stale costs more than a
