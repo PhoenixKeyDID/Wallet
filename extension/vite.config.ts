@@ -10,6 +10,14 @@
  *   with no credentials and no environment variables. Anyone can rebuild this
  *   from the tag and diff it against what the store serves, which is the only
  *   version of "open source" that means anything for a wallet.
+ *
+ *   `VITE_CHAIN_BASE_*` / `VITE_BLOCKFROST_PROJECT_ID_*` (see
+ *   `src/lib/cardano/chainEnv.ts`) are the one exception, and they do not weaken
+ *   that property — with none set the build is byte-identical to the one above.
+ *   Setting one compiles an endpoint, and possibly a key, into the package: a
+ *   build that is no longer the published one, and whose key is readable by
+ *   anyone who unpacks it. That is a deliberate local build, not something to
+ *   hand to anybody.
  */
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";

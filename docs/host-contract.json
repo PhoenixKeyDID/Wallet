@@ -46,6 +46,6 @@
     "designTokens": "Tailwind tokens the components use: bg-bg1, bg-bg2, text-text, text-text-dim, text-text-hint, border-border-soft, rounded-brand, teal-brand, amber-brand",
     "locales": "copy locales/<lang>/wallet.json and night.json into the host's i18n namespaces; the host's build should sync them rather than fork them",
     "did": "pass the signed-in DID to <WalletHub did={...} /> if the Phoenix custody view is wanted; omit it and that one mode says 'sign in first'",
-    "chainSource": "optional. Default reads the chain from Koios. A browser cannot use Koios directly (see src/lib/cardano/chainSource.ts), so a host serving this on the web should call setChainSource(network, { kind: 'blockfrost', base }) with its own Blockfrost-compatible endpoint — the platform's Dolos MiniBF speaks that dialect."
+    "chainSource": "optional, but the web is unusable without it. Default reads the chain from Koios, which a browser cannot reach (see src/lib/cardano/chainSource.ts). Either call setChainSource(network, { kind: 'blockfrost', base }) with your own Blockfrost-compatible endpoint — the platform's Dolos MiniBF speaks that dialect — or set NEXT_PUBLIC_CHAIN_BASE_<MAINNET|PREPROD|PREVIEW> at build time and write no code at all. NEXT_PUBLIC_BLOCKFROST_PROJECT_ID_<NETWORK> adds a key, and a key in a browser bundle is public."
   }
 }

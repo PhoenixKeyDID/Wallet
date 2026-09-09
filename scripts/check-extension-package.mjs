@@ -24,7 +24,8 @@
  *    `https://<literal host>` followed by a path wildcard — no wildcard scheme,
  *    no `<all_urls>`, no wildcard
  *    inside the host — and the host must appear as a URL literal in
- *    `src/lib/cardano/provider.ts`, which CODEOWNERS gates. An earlier version
+ *    `src/lib/cardano/provider.ts` or `src/lib/cardano/chainEnv.ts`, both of
+ *    which CODEOWNERS gates. An earlier version
  *    compared the pattern after stripping it down to bare text, so a pattern
  *    meaning "every https host" reduced to a single star, and `provider.ts`
  *    contains a star on every comment line: the gate printed OK for an
@@ -311,9 +312,18 @@ for (const f of PAGE_WORLD) {
 // Only `https://<literal host>/*`. A wildcard anywhere in the scheme or the host
 // is rejected before it is compared with anything: `https://*/*` is reach over
 // the whole web, and no substring test against source can be allowed to bless it.
-const provider = readFileSync(join(REPO, "src", "lib", "cardano", "provider.ts"), "utf8");
+// Two files may name a host the wallet reaches, and both are CODEOWNERS-gated:
+// `provider.ts` holds the default indexer, `chainEnv.ts` the endpoints a build
+// can be pointed at. Reading only the first would reject a manifest that is
+// correct, which is the failure that gets a check deleted rather than fixed.
+const BACKING_SOURCES = [
+  join(REPO, "src", "lib", "cardano", "provider.ts"),
+  join(REPO, "src", "lib", "cardano", "chainEnv.ts"),
+];
 const providerHosts = new Set(
-  [...provider.matchAll(/https:\/\/([a-z0-9.-]+)/gi)].map(([, host]) => host.toLowerCase()),
+  BACKING_SOURCES.flatMap((f) =>
+    [...readFileSync(f, "utf8").matchAll(/https:\/\/([a-z0-9.-]+)/gi)].map(([, host]) => host.toLowerCase()),
+  ),
 );
 for (const pattern of manifest.host_permissions ?? []) {
   const m = /^https:\/\/([a-z0-9.-]+)\/\*$/i.exec(pattern);
@@ -328,7 +338,8 @@ for (const pattern of manifest.host_permissions ?? []) {
   if (!providerHosts.has(host)) {
     fail(
       `host_permissions declares "${pattern}", but no URL for host ${host} appears in ` +
-        `src/lib/cardano/provider.ts — the manifest is claiming reach the code does not use`,
+        `src/lib/cardano/provider.ts or src/lib/cardano/chainEnv.ts — the manifest is ` +
+        `claiming reach the code does not use`,
     );
   }
 }
@@ -343,5 +354,6 @@ console.log(
   `Extension package OK — manifest v3 loads, no manifest key or permission outside ` +
     `the reviewed set, CSP allows no remote code, page-world code imports nothing but ` +
     `the rules, and all ` +
-    `${(manifest.host_permissions ?? []).length} host permissions are literal hosts backed by provider.ts`,
+    `${(manifest.host_permissions ?? []).length} host permissions are literal hosts backed by ` +
+    `provider.ts or chainEnv.ts`,
 );

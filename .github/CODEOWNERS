@@ -36,6 +36,12 @@
 /src/components/night/NightRedeem.tsx    @AladinContract
 /src/lib/cardano/connect.test.ts         @AladinContract
 /src/components/wallet/Cip30Panel.tsx    @AladinContract
+# The only file that names a chain endpoint. Three published vendor hosts, each
+# one a place this wallet will send every address it derives and every signed
+# transaction it submits. Swapping one for a look-alike would not change a
+# single line of logic and would redirect all of that.
+/src/lib/cardano/chainEnv.ts                   @AladinContract
+/src/lib/cardano/__tests__/chainEnv.test.ts    @AladinContract
 # Carries example URLs, including one asserted to be REFUSED. The addresses are
 # reserved-for-documentation names that resolve nowhere, so they add nobody to
 # the list of hosts this wallet can reach — but a URL in a test is still a URL
