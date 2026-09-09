@@ -19,7 +19,9 @@
     "build:extension": "vite build --config extension/vite.config.ts",
     "check:bundle": "node extension/smoke/run.mjs",
     "check:package": "node scripts/check-extension-package.mjs",
-    "check:readme": "node scripts/check-readme-claims.mjs"
+    "check:readme": "node scripts/check-readme-claims.mjs",
+    "check:i18n-keys": "node scripts/check-i18n-keys.mjs",
+    "check:extension-host": "node scripts/check-extension-host.mjs"
   },
   "dependencies": {
     "@noble/hashes": "1.5.0",
@@ -31,7 +33,7 @@
     "bignumber.js": "^9.1.2",
     "buffer": "^6.0.3",
     "qrcode.react": "^4.2.0",
-    "react": "^19.0.0",
+    "react": ">=18",
     "react-i18next": "^15.0.2"
   },
   "devDependencies": {

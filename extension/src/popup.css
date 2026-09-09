@@ -233,3 +233,44 @@ body.approve-page {
   color: var(--bg0);
   font-weight: 600;
 }
+
+/*
+ * Toast banner.
+ *
+ * Drawn by `src/toast.ts` rather than by a library: a 400px popup has no room
+ * for one, and the approval window is smaller still. Fixed to the bottom so it
+ * never covers the amount or the address — the two things a person is reading
+ * when a toast arrives.
+ *
+ * `--success` and `--teal` are absent from the token block above, so the
+ * success colour is stated here rather than referenced. That is a symptom of
+ * this file being a hand-typed second copy of the host's token table; the fix is
+ * to stop hand-typing it, which is a separate change.
+ */
+.phoenix-toast {
+  position: fixed;
+  z-index: 2147483647;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg2);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.45;
+  /* Long sentences are the point — an error that has to be read must wrap, not
+     be cut off at one line. */
+  white-space: normal;
+  overflow-wrap: anywhere;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+}
+.phoenix-toast-error {
+  border-color: var(--danger);
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+.phoenix-toast-success {
+  border-color: var(--border-amber);
+}

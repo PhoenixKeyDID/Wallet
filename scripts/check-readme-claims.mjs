@@ -76,7 +76,12 @@ for (const name of Object.keys(pkg.scripts ?? {})) {
   }
 }
 
-for (const [, name] of readme.matchAll(/bun run ([a-z][a-z:-]*)/g)) {
+// Digits belong in a script name — `check:i18n-keys` is one. Without them the
+// pattern stops at the `i`, and the gate reports that README names a script
+// `check:i` which package.json does not define: a red line about a defect that
+// is not there, pointing at a name nobody wrote. A gate that invents a finding
+// is worse than one that misses it, because the person reading goes looking.
+for (const [, name] of readme.matchAll(/bun run ([a-z][a-z0-9:-]*)/g)) {
   if (!(name in (pkg.scripts ?? {}))) {
     problems.push(`README tells the reader to run \`bun run ${name}\`, which package.json does not define`);
   }

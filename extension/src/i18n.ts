@@ -15,6 +15,11 @@ import en from "../../locales/en/wallet.json";
 import vi from "../../locales/vi/wallet.json";
 import ja from "../../locales/ja/wallet.json";
 import zh from "../../locales/zh/wallet.json";
+import enNight from "../../locales/en/night.json";
+import viNight from "../../locales/vi/night.json";
+import jaNight from "../../locales/ja/night.json";
+import zhNight from "../../locales/zh/night.json";
+import { COMMON } from "./hostStrings";
 
 const SUPPORTED = ["en", "vi", "ja", "zh"] as const;
 
@@ -27,12 +32,16 @@ void i18next.use(initReactI18next).init({
   lng: pickLanguage(),
   fallbackLng: "en",
   defaultNS: "wallet",
-  ns: ["wallet"],
+  // Two namespaces the module owns, one this host supplies. `night` was missing,
+  // so every string on the NIGHT screens resolved to its own key; `common` was
+  // missing, so every unrecognised failure printed `errors.generic` at the user.
+  // The extension is the one host with nothing to fall back to.
+  ns: ["wallet", "night", "common"],
   resources: {
-    en: { wallet: en },
-    vi: { wallet: vi },
-    ja: { wallet: ja },
-    zh: { wallet: zh },
+    en: { wallet: en, night: enNight, common: COMMON.en },
+    vi: { wallet: vi, night: viNight, common: COMMON.vi },
+    ja: { wallet: ja, night: jaNight, common: COMMON.ja },
+    zh: { wallet: zh, night: zhNight, common: COMMON.zh },
   },
   interpolation: { escapeValue: false },
 });
