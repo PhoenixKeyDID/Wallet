@@ -1,7 +1,7 @@
 /**
  * Transaction building for the browser wallet — pure JS via @stricahq/typhonjs.
  *
- * ⚠️ EXPERIMENTAL / UNAUDITED. This module moves funds. It has unit tests for
+ * EXPERIMENTAL / UNAUDITED. This module moves funds. It has unit tests for
  * the UTxO decoder but has NOT been verified end-to-end on-chain in this
  * environment. Keep it behind the dev-warning banner and test on preprod with
  * throwaway funds before trusting it. Never spend value you cannot lose.

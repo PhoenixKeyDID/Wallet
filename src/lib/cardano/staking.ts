@@ -9,7 +9,7 @@
  * delegation (multiple stake keys, one per pool) is out of scope for a single
  * connected CIP-30 account.
  *
- * ⚠️ EXPERIMENTAL / UNAUDITED, same caveat as `tx.ts`.
+ * EXPERIMENTAL / UNAUDITED, same caveat as `tx.ts`.
  */
 import "../node-globals";
 import { Buffer } from "buffer";

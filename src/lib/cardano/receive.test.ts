@@ -81,7 +81,7 @@ describe("deriveReceiveRange", () => {
 /**
  * The green tick and the address it sits beside answer different questions.
  *
- * These tests exist because the screen showed ✓ — correctly, the key *was* the
+ * These tests exist because the screen showed a match — correctly, the key *was* the
  * user's — above an address the connected wallet does not watch. The first two
  * establish that the gap is real rather than theoretical, using the wallet's
  * own derivation; the rest pin the behaviour of the warning.

@@ -43,11 +43,11 @@ says so everywhere it can.
 
 | Mode | View | Sign / spend | Key held in the page? |
 |---|---|---|---|
-| **Connect (CIP-30)** — Lace / Eternl | ✅ from the extension | ✅ the extension signs | ❌ never |
-| **Watch-only (`acct_xvk`)** | ✅ derived client-side from the account public key | ❌ view only | ❌ never |
-| **Phoenix custody (your own DID)** | ✅ reads the script address + balances, signed in | ❌ view only (v1) | ❌ never |
-| **Air-gap QR co-sign** | ✅ | 🟡 scaffolded; enabled when the offline signer ships | ❌ never |
-| **Local self-custody** 🔑 | ✅ | ✅ this page signs | ⚠️ **yes, while unlocked** |
+| **Connect (CIP-30)** — Lace / Eternl | yes, from the extension | yes, the extension signs | no, never |
+| **Watch-only (`acct_xvk`)** | yes, derived client-side from the account public key | no, view only | no, never |
+| **Phoenix custody (your own DID)** | yes, reads the script address + balances, signed in | no, view only (v1) | no, never |
+| **Air-gap QR co-sign** | yes | not yet — scaffolded; enabled when the offline signer ships | no, never |
+| **Local self-custody** | yes | yes, this page signs | **YES, while unlocked** |
 
 In the first four, a page here will never ask for your recovery phrase — anyone
 who does is trying to scam you. **Local self-custody is the one exception**, and
@@ -329,16 +329,16 @@ salt and ciphertext.
 
 ## Status & roadmap
 
-- ✅ Watch-only, CIP-30 connect, Phoenix custody view, `/night` handoff.
-- 🟡 Send flow — works against CIP-30 but is unaudited; needs a preprod on-chain
+- **Shipped** — Watch-only, CIP-30 connect, Phoenix custody view, `/night` handoff.
+- **In progress** — Send flow — works against CIP-30 but is unaudited; needs a preprod on-chain
   pass with disposable funds before it is enabled for mainnet sends. (Send +
   delegation verified on preprod; see the security notes.) Confirming a send or
   delegation requires retyping the destination's last 4 characters, not just a
   checkbox — an anti-poisoning gate (`ConfirmGate`).
-- 🟡 Staking & governance signing — built and signable over CIP-30, same
+- **In progress** — Staking & governance signing — built and signable over CIP-30, same
   unaudited, preprod-first caveat as Send. dRep registration/voting additionally
   needs its fee re-confirmed on preprod before mainnet use.
-- ✅ Transaction history — every transaction that touched the wallet, with the
+- **Shipped** — Transaction history — every transaction that touched the wallet, with the
   amount told from **your** side rather than the chain's. Change coming back to
   you is not counted as money paid out, a staking withdrawal is counted as the
   income it is (it never appears as an input), and the fee is counted once
@@ -349,21 +349,21 @@ salt and ciphertext.
   chooses to, which would make its own change look like a payment — so amounts
   are withheld with a reason on screen rather than shown wrong. Details:
   spec §5.9.
-- ✅ Multiple accounts from one recovery phrase (`m/1852'/1815'/n'`) — separate
+- **Shipped** — Multiple accounts from one recovery phrase (`m/1852'/1815'/n'`) — separate
   addresses, balance and staking per account, and the open wallet says which one
   it is on next to the address. Switching asks for your password because the
   seed is erased as soon as an account is opened; there is nothing left in
   memory to derive the next one from. Details: spec §5.10.
-- ✅ Balance in ordinary money (USD / VND / EUR / JPY) — and a switch to turn it
+- **Shipped** — Balance in ordinary money (USD / VND / EUR / JPY) — and a switch to turn it
   off. This is the wallet's **second outbound host** and the first that is not a
   chain indexer, so it is worth being precise: the request carries the word
   `cardano` and a currency code, nothing about your wallet, so what the other
   end learns is your IP and that somebody asked. `Off` stops the request, not
   just the display. A rate that cannot be read shows nothing rather than a stale
   number or `0.00`, and every figure says when it was read. Details: spec §5.11.
-- 🟡 Air-gap QR co-sign — the web side is scaffolded; it turns on when the
+- **In progress** — Air-gap QR co-sign — the web side is scaffolded; it turns on when the
   offline mobile signer is available.
-- 🟡 Local self-custody wallet (no DID required) — create, restore, unlock and
+- **In progress** — Local self-custody wallet (no DID required) — create, restore, unlock and
   auto-lock are implemented and covered by golden vectors against
   `cardano-serialization-lib`, so a phrase made here restores in Lace, Yoroi or
   Eternl. The popup was exercised in a real browser on 2026-08-29 (see the
@@ -375,7 +375,7 @@ salt and ciphertext.
   document the way an extension has one, so anything with script access to this
   origin can mis-draw what you are approving. Amounts worth attacking belong in
   hardware or an extension.
-- 🟡 CIP-30 injection — the extension injects `window.cardano.phoenix` into
+- **In progress** — CIP-30 injection — the extension injects `window.cardano.phoenix` into
   every top-level `https` page (and loopback) through a content script, so a
   dApp can connect to it. Reads sit behind a per-origin grant; `signTx` asks
   every time, in a separate `chrome-extension://` window a page cannot draw

@@ -105,7 +105,7 @@ export function ReceivePanel({
   /**
    * The addresses the connected wallet said it watches.
    *
-   * Kept, not just reduced to a verdict, because the ✓ answers a narrower
+   * Kept, not just reduced to a verdict, because the match mark answers a narrower
    * question than the one a person reading this screen is actually asking. It
    * says *this key is yours*; they read *this address is safe to use*. Those
    * come apart: the advanced panel derives any kind at any index, while a local
