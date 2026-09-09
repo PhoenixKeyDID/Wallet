@@ -4,60 +4,82 @@
 # surface: a look-alike / homoglyph URL merged via a drive-by PR would be
 # "blessed" by the wallet's own brand. The Cardano tx / address / key-derivation
 # library moves real funds. Any change here must be consciously re-approved.
+#
+# Two owners, and the second one is not a spare key. `main` requires one
+# approving review from a code owner, and GitHub does not let anyone approve
+# their own pull request — so with a single owner the rule was unsatisfiable for
+# every PR that owner opened, and every merge went through with admin override.
+# A rule that is bypassed every time stops being read, which is worse than not
+# having it.
+#
+# What is enforced, and what is only a convention — the two are separate, and
+# writing them as one sentence would be this file claiming a property nothing
+# measures. **Enforced by GitHub:** an approving review from an account other
+# than the one that opened the PR. **Convention:** the second account is used
+# for the review role rather than for authoring, and a review round is expected
+# to be able to refuse — a round that never says no is a rubber stamp, and a
+# rubber stamp detects nothing. Nothing in this file prevents that account from
+# opening a PR; if that matters enough to enforce, it belongs in branch
+# protection, not in a comment.
 
-/src/lib/cardano/connect.ts     @AladinContract
-/src/lib/cardano/send.ts        @AladinContract
-/src/lib/cardano/tx.ts          @AladinContract
-/src/lib/cardano/governance.ts  @AladinContract
-/src/lib/cardano/staking.ts     @AladinContract
-/src/lib/cardano/address.ts     @AladinContract
-/src/lib/cardano/xpub.ts        @AladinContract
-/src/lib/cardano/receive.ts     @AladinContract
-/src/lib/cardano/qr.ts          @AladinContract
-/locales/                       @AladinContract
+/src/lib/cardano/connect.ts     @AladinContract @GreenSun-Tech
+/src/lib/cardano/send.ts        @AladinContract @GreenSun-Tech
+/src/lib/cardano/tx.ts          @AladinContract @GreenSun-Tech
+/src/lib/cardano/governance.ts  @AladinContract @GreenSun-Tech
+/src/lib/cardano/staking.ts     @AladinContract @GreenSun-Tech
+/src/lib/cardano/address.ts     @AladinContract @GreenSun-Tech
+/src/lib/cardano/xpub.ts        @AladinContract @GreenSun-Tech
+/src/lib/cardano/receive.ts     @AladinContract @GreenSun-Tech
+/src/lib/cardano/qr.ts          @AladinContract @GreenSun-Tech
+/locales/                       @AladinContract @GreenSun-Tech
 
 # The self-custody keystore. These files hold the recovery phrase, the vault
 # that encrypts it, and the signing keys derived from it — the only code in the
 # repo where a bug loses funds that nobody else is holding for the user.
-/src/lib/keystore/                                @AladinContract
-/src/components/wallet/LocalWalletPanel.tsx       @AladinContract
+/src/lib/keystore/                                @AladinContract @GreenSun-Tech
+/src/components/wallet/LocalWalletPanel.tsx       @AladinContract @GreenSun-Tech
 
 # The extension package. `manifest.json` decides which hosts the wallet may
 # reach and what may execute inside it; loosening either is a one-line diff.
-/extension/                                       @AladinContract
+/extension/                                       @AladinContract @GreenSun-Tech
 
 # Files that carry an outbound URL. `scripts/check-urls.mjs` fails CI when an
 # absolute URL appears in src/ outside this list, so the two cannot drift: to
 # add a URL anywhere else you must add the file here, which pulls in a
 # code-owner review. A homoglyph swap (redeem.midnlght.gd) is a one-character
 # diff that no reviewer catches by accident.
-/src/lib/night.ts                        @AladinContract
-/src/lib/cardano/provider.ts             @AladinContract
-/src/components/night/NightRedeem.tsx    @AladinContract
-/src/lib/cardano/connect.test.ts         @AladinContract
-/src/components/wallet/Cip30Panel.tsx    @AladinContract
+/src/lib/night.ts                        @AladinContract @GreenSun-Tech
+/src/lib/cardano/provider.ts             @AladinContract @GreenSun-Tech
+/src/components/night/NightRedeem.tsx    @AladinContract @GreenSun-Tech
+/src/lib/cardano/connect.test.ts         @AladinContract @GreenSun-Tech
+/src/components/wallet/Cip30Panel.tsx    @AladinContract @GreenSun-Tech
 # The only file that names a chain endpoint. Three published vendor hosts, each
 # one a place this wallet will send every address it derives and every signed
 # transaction it submits. Swapping one for a look-alike would not change a
 # single line of logic and would redirect all of that.
-/src/lib/cardano/chainEnv.ts                   @AladinContract
-/src/lib/cardano/__tests__/chainEnv.test.ts    @AladinContract
+/src/lib/cardano/chainEnv.ts                   @AladinContract @GreenSun-Tech
+/src/lib/cardano/__tests__/chainEnv.test.ts    @AladinContract @GreenSun-Tech
 # Carries example URLs, including one asserted to be REFUSED. The addresses are
 # reserved-for-documentation names that resolve nowhere, so they add nobody to
 # the list of hosts this wallet can reach — but a URL in a test is still a URL
 # somebody could quietly turn into a real one, and the fixture that proves plain
 # HTTP is rejected is exactly the line worth noticing if it changes.
-/src/lib/cardano/__tests__/blockfrost.test.ts  @AladinContract
+/src/lib/cardano/__tests__/blockfrost.test.ts  @AladinContract @GreenSun-Tech
+# Names the default indexer, because the assertion is about the sentence the
+# receive screen shows: a redirect refusal has to name the host the user was
+# told about, and a test that only checked "it threw" would stay green through
+# a message that named the wrong one — which is the whole defect.
+/src/lib/cardano/__tests__/noRedirect.test.ts  @AladinContract @GreenSun-Tech
 
 # The two files a stranger reads first, and the ones a search engine indexes.
 # `docs/Phoenix Wallet-Feat.md` names the Midnight redemption portal and two
 # dApp hosts; README carries the install instructions. A homoglyph swap here
 # reaches more people than one in any source file, and for a long time neither
 # was scanned at all.
-/README.md                               @AladinContract
-/docs/                                   @AladinContract
+/README.md                               @AladinContract @GreenSun-Tech
+/docs/                                   @AladinContract @GreenSun-Tech
 
 # The gate itself, and the rules that decide what is gated.
-/src/components/wallet/ConfirmGate.tsx   @AladinContract
-/.github/                                @AladinContract
-/scripts/                                @AladinContract
+/src/components/wallet/ConfirmGate.tsx   @AladinContract @GreenSun-Tech
+/.github/                                @AladinContract @GreenSun-Tech
+/scripts/                                @AladinContract @GreenSun-Tech

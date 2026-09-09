@@ -19,13 +19,18 @@
  *    a gate listing what is *forbidden* is out of date the day the platform
  *    ships a new key. Adding CIP-30 injection means editing this list on
  *    purpose, in a diff a reviewer sees.
- * 2. **`host_permissions` cannot outgrow the source.** That list is the whole
- *    answer to "who can this wallet talk to". Each pattern must be
- *    `https://<literal host>` followed by a path wildcard — no wildcard scheme,
- *    no `<all_urls>`, no wildcard
- *    inside the host — and the host must appear as a URL literal in
- *    `src/lib/cardano/provider.ts` or `src/lib/cardano/chainEnv.ts`, both of
- *    which CODEOWNERS gates. An earlier version
+ * 2. **`host_permissions` and the build must say the same thing, both ways.**
+ *    That list is the whole answer to "who can this wallet talk to". Each
+ *    pattern must be `https://<literal host>` followed by a path wildcard — no
+ *    wildcard scheme, no `<all_urls>`, no wildcard inside the host — and the
+ *    host must hold one of exactly two blessings: it appears as a URL literal
+ *    in `src/lib/cardano/provider.ts` or `src/lib/cardano/chainEnv.ts`, both of
+ *    which CODEOWNERS gates, **or** this build declared it in
+ *    `.chain-origins.json`. The second blessing is weaker on purpose and the
+ *    closing line says so by name: nobody reviewed it, the build variable
+ *    decided it. The reverse direction is checked too — a host the build reads
+ *    and the manifest omits is refused, because Chrome silently blocks it and
+ *    the wallet then reports the endpoint as unreachable. An earlier version
  *    compared the pattern after stripping it down to bare text, so a pattern
  *    meaning "every https host" reduced to a single star, and `provider.ts`
  *    contains a star on every comment line: the gate printed OK for an
@@ -40,9 +45,40 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..");
-const DIST = join(REPO, "dist-extension");
+/**
+ * The package directory to grade.
+ *
+ * Overridable only so this gate can be graded itself. Nothing checked the gate
+ * before, and two mutations that switched off real rules in it left the whole
+ * suite green — a file deciding which hosts a wallet may talk to was the only
+ * thing checking itself. `scripts/__tests__/checkExtensionPackage.test.ts`
+ * stages each attack in a temp directory and points this at it.
+ *
+ * Not a way around the gate: CI invokes it with no environment, and anyone who
+ * could set this variable in CI could edit this file instead.
+ */
+const DIST = process.env.PHOENIX_DIST || join(REPO, "dist-extension");
 const problems = [];
 const fail = (msg) => problems.push(msg);
+
+// A seam that is on says so, before any verdict.
+//
+// The risk here is not somebody reaching for the variable on purpose — that
+// person could edit this file. It is a variable left over in a shell, after
+// which this prints a confident OK about a different directory, or about source
+// files that are not the ones CODEOWNERS gates. That is the third state: not
+// "matches", not "differs", but "measured something else" — and it has to be
+// louder than a mismatch, because a mismatch at least says something is wrong.
+for (const [name, value, normally] of [
+  ["PHOENIX_DIST", process.env.PHOENIX_DIST, "dist-extension/"],
+  ["PHOENIX_BACKING_SOURCES", process.env.PHOENIX_BACKING_SOURCES, "provider.ts + chainEnv.ts"],
+]) {
+  if (!value) continue;
+  console.error(
+    `⚠ ${name} is set: grading "${value}" instead of ${normally}. ` +
+      `Every line below is about that, not about what a release would ship.`,
+  );
+}
 
 if (!existsSync(DIST)) {
   console.error(`No dist-extension/ — run \`bun run build:extension\` first.`);
@@ -74,8 +110,34 @@ const newestUnder = (dir) => {
   return newest;
 };
 
+// A directory that was not produced by a build is refused with a sentence
+// rather than a stack trace. It happens on an ordinary path: the build throws
+// after Vite has already emptied the output and written the bundle — a chain
+// endpoint carrying a port or a plain-HTTP scheme does exactly that — leaving a
+// directory with code in it and no manifest. Reading `mtimeMs` off a file that
+// is not there answers with `ENOENT` and an absolute path out of the build
+// machine, about a situation the receipt check below already has words for.
+if (!existsSync(join(DIST, "manifest.json"))) {
+  console.error(
+    `dist-extension/ has no manifest.json, so it was not produced by a completed build —\n` +
+      "a build that failed part-way leaves the bundle behind without one. Run\n" +
+      "`bun run build:extension` and fix whatever it reports.",
+  );
+  process.exit(1);
+}
+
 const builtAt = statSync(join(DIST, "manifest.json")).mtimeMs;
-const sourceAt = Math.max(newestUnder(join(REPO, "extension")), newestUnder(join(REPO, "src")));
+// `locales/` is here because it is compiled in — `extension/src/i18n.ts` imports
+// the JSON, so a locale edit changes the bundle exactly as a source edit does.
+// Leaving it out meant a package built before a translation change was graded as
+// current. No rule in this gate reads a locale today, so nothing was measured
+// wrong; the directory is listed because the reason to list it is "it reaches
+// the bundle", and that is already true.
+const sourceAt = Math.max(
+  newestUnder(join(REPO, "extension")),
+  newestUnder(join(REPO, "src")),
+  newestUnder(join(REPO, "locales")),
+);
 if (sourceAt > builtAt) {
   console.error(
     "dist-extension/ is older than the source it was built from — this check would\n" +
@@ -316,30 +378,230 @@ for (const f of PAGE_WORLD) {
 // `provider.ts` holds the default indexer, `chainEnv.ts` the endpoints a build
 // can be pointed at. Reading only the first would reject a manifest that is
 // correct, which is the failure that gets a check deleted rather than fixed.
-const BACKING_SOURCES = [
-  join(REPO, "src", "lib", "cardano", "provider.ts"),
-  join(REPO, "src", "lib", "cardano", "chainEnv.ts"),
-];
+// `PHOENIX_BACKING_SOURCES` exists so this rule can be tested at all. The files
+// below are real repo sources, so a test cannot stage a comment in one of them
+// without editing the repo — and the version of this test that did not have the
+// seam asserted something weaker than its own name: it staged a host no source
+// mentions *anywhere*, so it stayed green while the string-literal scan was
+// turned into a whole-file scan. A rule nothing can stage is a rule nothing checks.
+const BACKING_SOURCES = process.env.PHOENIX_BACKING_SOURCES
+  ? process.env.PHOENIX_BACKING_SOURCES.split(",").filter(Boolean)
+  : [
+      join(REPO, "src", "lib", "cardano", "provider.ts"),
+      join(REPO, "src", "lib", "cardano", "chainEnv.ts"),
+    ];
+/**
+ * A host counts as backed when it appears inside a string literal.
+ *
+ * The question this answers is "can the code hand this host to `fetch`", and
+ * only a string can be. Matching the file's whole text answers a different
+ * question — it blesses any host somebody names in a sentence. Demonstrated:
+ * one line reading `// See also the mirror at https://evil.example/api/v0`
+ * plus `https://evil.example/*` in the manifest, and this check printed OK for
+ * eight hosts. `chainEnv.ts` has the highest comment-to-code ratio in its
+ * directory, so that is exactly where a whole-text search is least safe.
+ *
+ * Matching inside quotes rather than stripping comments first, because
+ * stripping answers by elimination and gets it wrong on code that compiles:
+ * a `"…/*"` inside a string opens a phantom comment block that runs to the
+ * next `*` + `/` and swallows the constants below it. Measured on a fixture,
+ * three real hosts became one — a false accusation, which is the failure mode
+ * that gets a check deleted rather than fixed.
+ */
+const hostsInStringLiterals = (text) =>
+  [...text.matchAll(/(["'`])https:\/\/([a-z0-9.-]+)[^"'`]*\1/gi)].map(([, , host]) => host.toLowerCase());
 const providerHosts = new Set(
-  BACKING_SOURCES.flatMap((f) =>
-    [...readFileSync(f, "utf8").matchAll(/https:\/\/([a-z0-9.-]+)/gi)].map(([, host]) => host.toLowerCase()),
-  ),
+  BACKING_SOURCES.flatMap((f) => hostsInStringLiterals(readFileSync(f, "utf8"))),
 );
-for (const pattern of manifest.host_permissions ?? []) {
-  const m = /^https:\/\/([a-z0-9.-]+)\/\*$/i.exec(pattern);
+/**
+ * Hosts this build was compiled to read the chain from — from the build itself.
+ *
+ * The build writes down what it decided (`extension/vite.config.ts`, the
+ * `.chain-origins.json` receipt) and this reads the statement. Searching the
+ * bundle's text for a URL was the obvious alternative and it answers a
+ * different question: any string of the right shape counts, wherever it came
+ * from. Measured — a key added to `locales/en/wallet.json` is bundled verbatim
+ * by `extension/src/i18n.ts`, reaches the output, and blessed a host that no
+ * code calls, with `check:urls` silent because `locales/` is not scanned for
+ * URLs. It also missed the case that matters most: a build given only
+ * `VITE_BLOCKFROST_PROJECT_ID_*` reads the vendor host out of `chainEnv.ts`,
+ * so no URL is inlined at all and there is nothing for a text search to find,
+ * while the package really does call that host.
+ *
+ * A missing receipt is refused rather than read as "no extra hosts". It means
+ * this directory was not produced by the build config, and a gate that cannot
+ * measure has to say so instead of returning the reassuring answer.
+ */
+const RECEIPT = ".chain-origins.json";
+const bundleHosts = new Set();
+if (!existsSync(join(DIST, RECEIPT))) {
+  fail(
+    `dist-extension/${RECEIPT} is missing, so which chain hosts this package calls cannot be ` +
+      `determined — rebuild with \`bun run build:extension\` rather than packing the directory by hand`,
+  );
+} else {
+  let origins;
+  try {
+    origins = JSON.parse(readFileSync(join(DIST, RECEIPT), "utf8"));
+  } catch (err) {
+    fail(`dist-extension/${RECEIPT} does not parse: ${err.message}`);
+    origins = [];
+  }
+  if (!Array.isArray(origins)) {
+    fail(`dist-extension/${RECEIPT} must hold an array of origins`);
+    origins = [];
+  }
+  for (const origin of origins) {
+    try {
+      bundleHosts.add(new URL(origin).host.toLowerCase());
+    } catch {
+      fail(`dist-extension/${RECEIPT} lists "${origin}", which is not a URL`);
+    }
+  }
+}
+
+/**
+ * One reading of a `host_permissions` pattern, used everywhere it is read.
+ *
+ * There were three, and they disagreed. The strict regex here dropped a
+ * pattern carrying a port; `bundleHosts` above parses with `new URL`, which
+ * keeps the port. So a build pointed at `https://my-node.example:8443` produced
+ * a manifest declaring that host, and the gate then printed, two lines apart,
+ * that the pattern was rejected for "a wildcard scheme or host" — there was no
+ * wildcard — and that `host_permissions` did not declare a host it declares
+ * verbatim. A reader following those two sentences adds a wildcard.
+ *
+ * `reason` is what the pattern is wrong about, so the message can name the
+ * actual cause instead of the nearest rule. `authority` is returned **even when
+ * the pattern is refused**, because the "already reported" set below has to be
+ * built from this function rather than from a second expression: a set built
+ * from a narrower regex covers some refusal reasons and not others, and the
+ * ones it misses get a contradicting second sentence. That is how the port case
+ * reached review, and rebuilding the mistake one axis over is what this
+ * signature exists to prevent.
+ */
+function parseHostPermission(pattern) {
+  const m = /^([a-z][a-z0-9+.-]*):\/\/([^/*]*)\/\*$/i.exec(pattern);
   if (!m) {
-    fail(
-      `host_permissions declares "${pattern}" — only \`https://<host>/*\` with a literal ` +
-        `host is allowed; a wildcard scheme or host grants reach over sites nobody reviewed`,
+    return {
+      host: null,
+      authority: null,
+      reason:
+        `only \`https://<host>/*\` with a literal host is allowed; a wildcard scheme or ` +
+        `host grants reach over sites nobody reviewed`,
+    };
+  }
+  const scheme = m[1].toLowerCase();
+  const authority = m[2].toLowerCase();
+  const refuse = (reason) => ({ host: null, authority, reason });
+
+  // Refused for the same reason the wallet refuses a plain-HTTP chain source:
+  // a network between the browser and the endpoint can read every address
+  // looked up and replace every answer, including the balance a person is about
+  // to act on. In `host_permissions` it is worse than a bad source, because it
+  // is a standing grant that survives whatever the source is later set to.
+  if (scheme !== "https") {
+    return refuse(
+      `the scheme is "${scheme}:", and only https is allowed here — a plain-HTTP grant lets ` +
+        `any network between the browser and that host read every address this wallet looks ` +
+        `up and rewrite every answer`,
     );
+  }
+  // Chrome's match patterns have no place for a port — the host part is matched
+  // whole, and a pattern carrying `:8443` matches nothing, so the extension
+  // simply cannot reach that endpoint. Caught here rather than left to Chrome,
+  // which reports it as a chain read that returned nothing.
+  //
+  // `/:\d*$/`, not `includes(":")`. A colon appears in three different mistakes
+  // and only one of them is a port: `https://[::1]/*` and
+  // `https://user:pass@host/*` were both told to "point the endpoint at 443",
+  // which names a cause neither one has. Same error the rest of this function
+  // exists to stop, one level down — a rule reporting the nearest reason rather
+  // than the real one.
+  if (/:\d*$/.test(authority)) {
+    return refuse(
+      `a Chrome match pattern has no place for a port, so this one matches nothing and ` +
+        `the extension cannot reach that endpoint at all — point the endpoint at ` +
+        `443, or run the wallet as a web page, where ports are ordinary`,
+    );
+  }
+  // ASCII checked on the ORIGINAL, before lowercasing.
+  //
+  // `.toLowerCase()` is not an ASCII operation. Exactly one codepoint above 127
+  // folds into this character class — `U+212A KELVIN SIGN` maps to `k` — so
+  // lowercasing first and testing after accepts `api.<U+212A>oios.rest` and
+  // reports it as `api.koios.rest`. The old strict regex refused it, because a
+  // regex `i` flag does not fold non-ASCII into an ASCII range. Losing that was
+  // a quiet loosening in the one file whose stated job (`.github/CODEOWNERS`)
+  // is catching look-alike hosts, so the order is written down rather than left
+  // to whoever edits these two lines next.
+  if (!/^[\x20-\x7e]+$/.test(m[2]) || !/^[a-z0-9.-]+$/.test(authority)) {
+    return refuse(`"${m[2]}" is not a literal host`);
+  }
+  return { host: authority, authority, reason: null };
+}
+
+for (const pattern of manifest.host_permissions ?? []) {
+  const parsed = parseHostPermission(pattern);
+  if (!parsed.host) {
+    fail(`host_permissions declares "${pattern}" — ${parsed.reason}`);
     continue;
   }
+  const m = [pattern, parsed.host];
   const host = m[1].toLowerCase();
-  if (!providerHosts.has(host)) {
+  // Two ways a host earns its entry, and a private build needs the second:
+  // named in the reviewed source, or compiled into this bundle by a build-time
+  // endpoint variable. The second is not a loophole — that string is in the
+  // package a reviewer reads, and it got there because whoever ran the build
+  // set the variable on purpose.
+  if (!providerHosts.has(host) && !bundleHosts.has(host)) {
     fail(
       `host_permissions declares "${pattern}", but no URL for host ${host} appears in ` +
-        `src/lib/cardano/provider.ts or src/lib/cardano/chainEnv.ts — the manifest is ` +
-        `claiming reach the code does not use`,
+        `src/lib/cardano/provider.ts or src/lib/cardano/chainEnv.ts, and this build was ` +
+        `not compiled to read the chain from it — the manifest is claiming reach the ` +
+        `code does not use`,
+    );
+  }
+}
+
+/**
+ * 2b — and the manifest cannot fall behind the bundle either.
+ *
+ * The loop above asks one direction: does the manifest claim reach the code
+ * does not use. That is the direction that matters to a store reviewer, and it
+ * is not the direction that breaks a user. The endpoint is now a build-time
+ * choice while the manifest is a static file, so the pair can drift the other
+ * way: build with `VITE_CHAIN_BASE_PREPROD=https://my-node.example/api/v0`,
+ * forget the manifest, and Chrome blocks every chain read. What the wallet then
+ * reports is `ProviderUnreachableError` — "the request did not arrive, or a
+ * reply did and the browser discarded it" — which sends the operator to inspect
+ * a node that is answering perfectly.
+ *
+ * `bundleHosts` is gathered above, where the other direction also needs it.
+ */
+const declaredHosts = new Set(
+  (manifest.host_permissions ?? []).map((p) => parseHostPermission(p).host).filter(Boolean),
+);
+/**
+ * Every authority the manifest mentions, valid pattern or not.
+ *
+ * One cause must produce one sentence. A pattern rejected above for carrying a
+ * port is absent from `declaredHosts`, so this loop would go on to say the
+ * manifest does not declare a host it declares verbatim — a second sentence,
+ * contradicting the first, about the same one mistake. The reader then has to
+ * guess which of the two to act on, and the reachable wrong guess is adding a
+ * wildcard.
+ */
+const mentionedAuthorities = new Set(
+  (manifest.host_permissions ?? []).map((p) => parseHostPermission(p).authority).filter(Boolean),
+);
+for (const host of bundleHosts) {
+  if (!declaredHosts.has(host)) {
+    if (mentionedAuthorities.has(host)) continue; // already reported, by its real cause
+    fail(
+      `this build reads the chain from ${host}, which host_permissions does not declare — ` +
+        `Chrome blocks every chain read and the wallet reports "no readable reply", which ` +
+        `reads as the endpoint being down`,
     );
   }
 }
@@ -350,10 +612,44 @@ if (problems.length) {
   process.exit(1);
 }
 
+/**
+ * The closing sentence names what was measured, and it took two tries to get
+ * right — both wrong in the same way, which is why the shape is written out.
+ *
+ * Version one said every host was "backed by provider.ts or chainEnv.ts". True
+ * while source was the only blessing, false the moment a build could widen the
+ * manifest for itself, and it went on printing about hosts neither file names.
+ *
+ * Version two split the list by `bundleHosts.has(h)` — asking one question and
+ * inferring the other from its negation. A host holding *both* blessings then
+ * landed in the build-only bucket and was announced as "reviewed only by whoever
+ * set the build variable", which is the ordinary case: the receipt lists only
+ * origins the manifest did not already declare, and every vendor host is named
+ * in `chainEnv.ts`, so `VITE_BLOCKFROST_PROJECT_ID_PREPROD` alone produced that
+ * sentence about a host CODEOWNERS gates on its own line. Understating is the
+ * safe direction, but a warning that is wrong in the reassuring-to-ignore
+ * direction teaches the reader to skip the line — and the line exists for the
+ * day it is right.
+ *
+ * So each host is asked *both* questions, and the three answers are named.
+ */
+const declaredHostList = (manifest.host_permissions ?? [])
+  .map((p) => parseHostPermission(p).host)
+  .filter(Boolean);
+const inSource = (h) => providerHosts.has(h);
+const inBuild = (h) => bundleHosts.has(h);
+const both = declaredHostList.filter((h) => inSource(h) && inBuild(h));
+const sourceOnly = declaredHostList.filter((h) => inSource(h) && !inBuild(h));
+const buildOnly = declaredHostList.filter((h) => !inSource(h) && inBuild(h));
+const reviewed = sourceOnly.length + both.length;
+const backing =
+  buildOnly.length === 0
+    ? `${reviewed} host permissions, all named as URL literals in provider.ts or chainEnv.ts`
+    : `${reviewed} host permissions named in provider.ts or chainEnv.ts, and ` +
+      `${buildOnly.length} this build declared for itself and no source names ` +
+      `(${buildOnly.join(", ")}) — reviewed only by whoever set the build variable`;
 console.log(
   `Extension package OK — manifest v3 loads, no manifest key or permission outside ` +
     `the reviewed set, CSP allows no remote code, page-world code imports nothing but ` +
-    `the rules, and all ` +
-    `${(manifest.host_permissions ?? []).length} host permissions are literal hosts backed by ` +
-    `provider.ts or chainEnv.ts`,
+    `the rules, and ${backing}`,
 );

@@ -55,6 +55,41 @@ export class NotOnChainError extends Error {
   }
 }
 
+/**
+ * A redirect is refused here, with a sentence that names the real cause.
+ *
+ * Under `redirect: "manual"` a browser hands back an opaque response — status
+ * `0`, type `opaqueredirect` — while Node hands back the real 3xx. Both shapes
+ * are checked because this module is compiled into a browser bundle and
+ * exercised under Node in the test suite, and a check that only understood one
+ * of them would pass its tests and do nothing where it matters.
+ *
+ * The browser shape is conditional, and the condition is worth stating so
+ * nobody reads a `TypeError` here as proof that this guard is inert. A CORS
+ * check runs before redirect handling, and every chain call from an extension
+ * page is cross-origin — so a 3xx that carries no `access-control-allow-origin`
+ * becomes a network error, and `fetch` rejects rather than returning anything
+ * for this function to look at. That path lands in `ProviderUnreachableError`,
+ * which says the request did not arrive about a server that answered. It is not
+ * a regression — `redirect: "follow"` wants the same header on the 3xx, so the
+ * old behaviour was identical — and it is not something this function can fix
+ * from inside. [CHƯA KIỂM trong trình duyệt thật: đọc từ đặc tả Fetch, các ca ở
+ * `__tests__/noRedirect.test.ts` dựng `Response` giả dưới Node.]
+ *
+ * Kept out of the `catch` deliberately. Wrapping it as `ProviderUnreachableError`
+ * would say the request never arrived, about a server that answered — the same
+ * wrong fact `validateChainSource` refuses a credentialed URL to avoid.
+ */
+export function assertNoRedirect(res: Response, path: string, base: string): void {
+  const redirected = res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400);
+  if (!redirected) return;
+  throw new Error(
+    `Chain endpoint ${path} answered a redirect. The receive screen names ` +
+      `${new URL(base).host} as the host that sees the addresses this wallet looks up, and ` +
+      `following a redirect would make that sentence false. Point the endpoint at its final address.`,
+  );
+}
+
 async function bf<T>(
   ep: BlockfrostEndpoint,
   path: string,
@@ -70,6 +105,25 @@ async function bf<T>(
       method: init?.method ?? "GET",
       headers,
       body: init?.body,
+      /**
+       * A redirect must be refused, and refused in its own words.
+       *
+       * `chainReadHost` names this endpoint's host on the receive screen, and
+       * the sentence around it says whoever runs that host sees the addresses
+       * being queried. `fetch` follows redirects by default, so an endpoint
+       * answering `302` would move every query to a host the screen never
+       * names — the sentence stays specific and becomes false, which is worse
+       * than saying nothing.
+       *
+       * `manual`, not `error`. `error` rejects with the same `TypeError` a dead
+       * socket produces, so the `catch` below would report that the request
+       * never arrived — about a server that answered. That is the exact
+       * confusion `validateChainSource` was extended to prevent, recreated one
+       * file away, and this time about a machine that really is up: a proxy
+       * normalising a trailing slash in front of a self-hosted node is an
+       * ordinary `302`, not a misconfiguration.
+       */
+      redirect: "manual",
     });
   } catch (cause) {
     // Same reasoning as the Koios path: a `TypeError` from `fetch` says nothing
@@ -77,6 +131,7 @@ async function bf<T>(
     // confidently. See `ProviderUnreachableError`.
     throw new ProviderUnreachableError(`Chain endpoint ${path}`, cause);
   }
+  assertNoRedirect(res, path, ep.base);
   if (res.status === 404) throw new NotOnChainError(path);
   if (!res.ok) {
     // Blockfrost puts a reason in the body and it is the only useful thing a
@@ -219,8 +274,19 @@ export async function bfAddressBalance(
       if (e instanceof NotOnChainError) continue;
       throw e;
     }
+    // Same rule as `bfUtxos` below, and stated separately because the cost is
+    // different: this one only misinforms. An address row with no `amount` is
+    // not an empty address — `amount` is where the lovelace lives, so a row
+    // without it did not answer. Reading it as zero would show a funded wallet
+    // as empty, and a gap scan would read it as an unused address and stop.
+    if (!Array.isArray(row.amount)) {
+      throw new Error(
+        `the chain endpoint returned an address row with no amount — the balance of ` +
+          `${addr.slice(0, 12)}… is unknown, and reporting it as empty would hide funds`,
+      );
+    }
     readAmounts(
-      row.amount ?? [],
+      row.amount,
       (q) => (lovelace += q),
       (unit, policyId, assetNameHex, q) => {
         const prev = byUnit.get(unit);
@@ -263,10 +329,29 @@ export async function bfUtxos(
       if (typeof r.tx_hash !== "string" || typeof r.output_index !== "number") {
         throw new Error("the chain endpoint returned an unspent output with no id");
       }
+      // The same distinction the Koios path draws on `asset_list`, on the field
+      // that carries it here. `?? []` reads "this output holds nothing" out of a
+      // response that did not say — and every Blockfrost-shaped output has an
+      // `amount`, because that is where the lovelace lives too. A missing one is
+      // a shape change, and reading it as an empty output is the more expensive
+      // half of the pair: a wrong balance misinforms, a wrong input builds a
+      // transaction the ledger rejects, so the wallet stops sending and blames a
+      // ledger rule.
+      //
+      // Blockfrost is also the endpoint a self-hosted Dolos serves, and the
+      // whole point of allowing that is that it is not Blockfrost — so "the
+      // vendor would never" is not an argument available here.
+      if (!Array.isArray(r.amount)) {
+        throw new Error(
+          `the chain endpoint returned an unspent output (${r.tx_hash}#${r.output_index}) with ` +
+            `no amount — what it holds is unknown, and spending it as if it were empty would ` +
+            `build a transaction the ledger rejects`,
+        );
+      }
       let amount = new BigNumber(0);
       const tokens: tyTypes.Token[] = [];
       readAmounts(
-        r.amount ?? [],
+        r.amount,
         (q) => (amount = new BigNumber(q.toString())),
         (_unit, policyId, assetNameHex, q) =>
           tokens.push({
@@ -307,10 +392,15 @@ export async function bfSubmitTx(ep: BlockfrostEndpoint, signedCborHex: string):
       method: "POST",
       headers,
       body: body as unknown as BodyInit,
+      // See the read path above. A submit that silently lands on a different
+      // host than the one named on screen is the same wrong fact, carrying a
+      // signed transaction.
+      redirect: "manual",
     });
   } catch (cause) {
     throw new ProviderUnreachableError("Chain endpoint /tx/submit", cause);
   }
+  assertNoRedirect(res, "/tx/submit", ep.base);
   const text = (await res.text()).trim();
   if (!res.ok) {
     throw new Error(`Chain endpoint /tx/submit → HTTP ${res.status}: ${text.slice(0, 300)}`);

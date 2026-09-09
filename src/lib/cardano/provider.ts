@@ -32,6 +32,7 @@ import {
   bfAddressBalance,
   bfUtxos,
   bfSubmitTx,
+  assertNoRedirect,
 } from "./blockfrost";
 
 const KOIOS_BASE: Record<"mainnet" | "preprod" | "preview", string> = {
@@ -200,10 +201,18 @@ export async function koios<T>(
         prefer: "count=exact",
       },
       body: body ? JSON.stringify(body) : undefined,
+      // The same refusal the configurable endpoint gets, on the path the
+      // default build actually takes. The argument for it — the receive screen
+      // names a host and a followed redirect makes that sentence false — does
+      // not become weaker because this host happens to be the built-in one, and
+      // protecting only the path somebody had to opt into would leave the
+      // common case uncovered.
+      redirect: "manual",
     });
   } catch (cause) {
     throw new ProviderUnreachableError(`Koios ${path}`, cause);
   }
+  assertNoRedirect(res, `Koios ${path}`, koiosBase(network));
   // `res.ok` covers 200–299, so it is true for the 206 that says "partial".
   // Checking the range rather than the status is what closes that.
   if (!res.ok) throw new Error(`Koios ${path} → HTTP ${res.status}`);
@@ -372,17 +381,58 @@ export async function fetchAddressBalance(
      * and the identical lovelace.
      *
      * `utxo_set` is in the same response, so this costs no extra request.
-     * The row-level field is still preferred when a deployment does send it.
+     * The row-level field is still preferred when a deployment does send it —
+     * but only when it actually carries something. A deployment that retires
+     * the field by emptying it rather than removing it (the more common way to
+     * drop a field, since it keeps the response's shape stable) would otherwise
+     * walk straight back into the bug above: `Array.isArray([])` is true, the
+     * empty array wins the preference, and the wallet reports "no tokens" for
+     * an address whose `utxo_set` — in the same response — lists them.
      */
-    const rowLevel = Array.isArray(r.asset_list) ? r.asset_list : null;
-    const perUtxo = Array.isArray(r.utxo_set) ? r.utxo_set.flatMap((u) => u.asset_list ?? []) : null;
-    if (!rowLevel && !perUtxo) {
+    const hasRowShape = Array.isArray(r.asset_list);
+    const hasUtxoShape = Array.isArray(r.utxo_set);
+    const rowLevel: KoiosAsset[] = hasRowShape ? (r.asset_list as KoiosAsset[]) : [];
+    const perUtxo: KoiosAsset[] = hasUtxoShape
+      ? (r.utxo_set as Array<{ asset_list?: KoiosAsset[] | null }>).flatMap((u) => u.asset_list ?? [])
+      : [];
+    if (!hasRowShape && !hasUtxoShape) {
       // Neither shape present. Reporting "no tokens" here would be inventing an
       // answer to a question this response did not address — the failure this
       // whole comment is about.
       throw new Error("Koios /address_info carried neither asset_list nor utxo_set — token balances unknown");
     }
-    for (const a of rowLevel ?? perUtxo ?? []) {
+    /**
+     * The same refusal one level down, where the field that can disappear is
+     * the leaf rather than the container.
+     *
+     * `u.asset_list ?? []` per entry is fine when the key is missing because
+     * the UTxO holds no tokens, and is the original bug when the key is missing
+     * because the shape moved. Nothing in a per-entry `??` can tell those apart,
+     * so the question is asked of the whole set: measured on live preprod
+     * 2026-09-09, Koios v1 emits `asset_list` on **every** entry — `[]` for an
+     * ADA-only UTxO (address `addr_test1vqutu…`, 1 UTxO, key present and empty)
+     * and populated when there are tokens (`addr_test1wp5eh…`, 1 UTxO, 2 assets).
+     * So a non-empty `utxo_set` where no entry carries the key at all is a
+     * shape change, not an address without tokens, and saying "no tokens" there
+     * would be the same confident wrong answer in a smaller place.
+     *
+     * Gated on `rowLevel` being **empty**, not on the row field being absent.
+     * The selection below falls through to `perUtxo` whenever `rowLevel` has
+     * nothing in it, and that includes the present-but-empty case this file
+     * exists for. Guarding only the absent case left the two apart by exactly
+     * one key: `{utxo_set:[{tx_hash}]}` threw, and `{asset_list:[], utxo_set:
+     * [{tx_hash}]}` returned "no tokens" without a word — a deployment that
+     * retires the field at both levels at once gets the confident wrong answer.
+     */
+    if (hasUtxoShape && rowLevel.length === 0) {
+      const set = r.utxo_set as Array<Record<string, unknown>>;
+      if (set.length > 0 && !set.some((u) => "asset_list" in u)) {
+        throw new Error(
+          "Koios /address_info utxo_set carried no asset_list on any entry — token balances unknown",
+        );
+      }
+    }
+    for (const a of rowLevel.length > 0 ? rowLevel : perUtxo) {
       const assetNameHex = a.asset_name ?? "";
       const unit = a.policy_id + assetNameHex;
       const prev = byUnit.get(unit);
@@ -446,11 +496,37 @@ export async function fetchUtxos(
   const out: tyTypes.Input[] = [];
   for (const r of rows) {
     if (r.inline_datum != null || r.reference_script != null) continue;
+    // The same distinction `fetchAddressBalance` draws, on the endpoint that
+    // decides transaction *inputs* rather than a displayed number. `?? []` reads
+    // "no tokens" out of two different facts: this UTxO holds only ADA, and this
+    // response no longer carries the field. The first is ordinary; the second
+    // has happened once already on the sibling endpoint, which is why the
+    // balance path was rewritten — and leaving it here means the fix took its
+    // scope from the symptom rather than the cause.
+    //
+    // Measured on live Koios preprod, 2026-09-09: `/address_utxos` with
+    // `_extended: true` carries `asset_list` on every leaf — `[]` on an ADA-only
+    // address (41 UTxOs, key present and empty on each) and populated where
+    // tokens exist. So `null` is not a shape this endpoint produces, and reading
+    // it as "no tokens" would be answering a question that was never asked.
+    //
+    // Costly if wrong in a way the user cannot diagnose: coin selection would
+    // run on inputs claiming to be ADA-only, build change that drops the tokens,
+    // and the node would reject with `ValueNotConservedUTxO`. Nothing is lost —
+    // but the wallet stops being able to send anything, and the message names a
+    // ledger rule instead of the indexer.
+    if (!Array.isArray(r.asset_list)) {
+      throw new Error(
+        `Koios /address_utxos carried no asset_list on ${r.tx_hash}#${r.tx_index} — ` +
+          `the tokens on this UTxO are unknown, and spending it as if it held none ` +
+          `would build a transaction the ledger rejects`,
+      );
+    }
     out.push({
       txId: r.tx_hash,
       index: r.tx_index,
       amount: new BigNumber(r.value),
-      tokens: (r.asset_list ?? []).map((a) => ({
+      tokens: r.asset_list.map((a) => ({
         policyId: a.policy_id,
         assetName: a.asset_name ?? "",
         amount: new BigNumber(a.quantity),
@@ -478,7 +554,10 @@ export async function submitTx(network: PhoenixNetwork, signedCborHex: string): 
     method: "POST",
     headers: { "content-type": "application/cbor" },
     body: body as unknown as BodyInit,
+    // A signed transaction must not be handed to a host nobody named.
+    redirect: "manual",
   });
+  assertNoRedirect(res, "Koios /submittx", koiosBase(network));
   const text = (await res.text()).trim();
   if (!res.ok) throw new Error(`Koios /submittx → HTTP ${res.status}: ${text.slice(0, 300)}`);
   const hash = text.replace(/^"|"$/g, "");

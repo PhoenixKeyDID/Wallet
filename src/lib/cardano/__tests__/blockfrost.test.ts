@@ -200,3 +200,56 @@ describe("blockfrost adapter — the shapes that would be silent wrong numbers",
     expect(new NotOnChainError("/x").name).toBe("NotOnChainError");
   });
 });
+
+/**
+ * The field that carries the value, and what happens when it stops arriving.
+ *
+ * This is the sibling of the Koios `asset_list` defect, on the dialect a
+ * self-hosted Dolos speaks. It was left in place when that one was fixed —
+ * the patch took its scope from the symptom rather than the cause — and this
+ * half is the more expensive one, because `bfUtxos` chooses what to spend.
+ *
+ * "The vendor would never change this" is not an argument available here: the
+ * documented reason this adapter exists is that the endpoint may be somebody's
+ * own node, and the wallet cannot tell which it is talking to.
+ */
+const UTXO_ROW = { tx_hash: "d".repeat(64), output_index: 0 };
+const AMOUNT = [{ unit: "lovelace", quantity: "2000000" }];
+
+describe("blockfrost adapter — an output with no amount is not an empty output", () => {
+  it("refuses a UTxO whose amount did not arrive", async () => {
+    routes({ "/addresses/": { body: [UTXO_ROW] } });
+    await expect(bfUtxos(EP, [ADDR])).rejects.toThrow(/what it holds is unknown/);
+  });
+
+  it("names the UTxO, so the caller has something to look at", async () => {
+    routes({ "/addresses/": { body: [UTXO_ROW] } });
+    await expect(bfUtxos(EP, [ADDR])).rejects.toThrow(new RegExp(`${"d".repeat(64)}#0`));
+  });
+
+  it("accepts an ordinary output and reads its lovelace", async () => {
+    // The direction that decides whether the rule survives: refusing correct
+    // responses is what gets a check deleted rather than fixed.
+    routes({ "/addresses/": { body: [{ ...UTXO_ROW, amount: AMOUNT }] } });
+    const utxos = await bfUtxos(EP, [ADDR]);
+    expect(utxos).toHaveLength(1);
+    expect(utxos[0].amount.toString()).toBe("2000000");
+  });
+
+  it("refuses an address row with no amount rather than calling the wallet empty", async () => {
+    // Cheaper to be wrong about than the one above — it only misinforms — but
+    // wrong in a way nobody can see: a funded wallet reads as empty, and a gap
+    // scan reads the same row as an unused address and stops walking.
+    routes({ "/addresses/": { body: {} } });
+    await expect(bfAddressBalance(EP, [ADDR])).rejects.toThrow(/reporting it as empty would hide funds/);
+  });
+
+  it("still treats a never-used address as holding nothing, which it does", async () => {
+    // The one case where "no balance" is the true answer, and it arrives as a
+    // 404 rather than a missing field. Conflating the two would stop every gap
+    // scan at its first unused address.
+    routes({ "/addresses/": { status: 404, body: {} } });
+    const bal = await bfAddressBalance(EP, [ADDR]);
+    expect(bal.lovelace).toBe(BigInt(0));
+  });
+});
