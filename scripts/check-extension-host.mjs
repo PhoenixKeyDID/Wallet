@@ -35,7 +35,7 @@
  * could not look" is worse than no gate, because the green goes into a merge
  * decision. Unmeasurable entries are listed by name and the gate fails.
  */
-import { readFileSync, existsSync, readdirSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -86,6 +86,40 @@ if (!existsSync(DIST)) {
   process.exit(1);
 }
 
+/**
+ * Refuse to grade a bundle older than the source it came from.
+ *
+ * This gate reads the BUILT files, so without this it answers about whatever
+ * build happens to be lying around. Both directions are wrong, and the second
+ * is the dangerous one:
+ *
+ *  - run it before `build:extension` and it reports a stand-in that the current
+ *    source no longer uses — a false red, which teaches people to re-run gates;
+ *  - break the alias order in `extension/vite.config.ts`, do NOT rebuild, and it
+ *    reports OK on a bundle that predates the break — a false green on exactly
+ *    the wiring this gate exists to prove.
+ *
+ * `check:package` grew the same guard in #32 for the same reason. `locales/` is
+ * included because `extension/src/i18n.ts` imports the JSON, so a translation
+ * edit changes the bundle just as a source edit does — and this gate DOES read
+ * locale strings, unlike the package one.
+ */
+const newestUnder = (dir) => {
+  if (!existsSync(dir)) return 0;
+  let newest = 0;
+  for (const entry of readdirSync(dir)) {
+    if (entry === "node_modules") continue;
+    const full = join(dir, entry);
+    // `extension/smoke/out` is build output living under a source root — the
+    // trap #32 documented. Counting it as source makes this gate refuse a
+    // package that is not stale, right after `check:bundle` writes there.
+    if (full === join(REPO, "extension", "smoke", "out")) continue;
+    const st = statSync(full);
+    newest = Math.max(newest, st.isDirectory() ? newestUnder(full) : st.mtimeMs);
+  }
+  return newest;
+};
+
 const bundles = readdirSync(DIST).filter((f) => f.endsWith(".js"));
 if (bundles.length === 0) {
   console.error(
@@ -93,6 +127,27 @@ if (bundles.length === 0) {
       "A build that failed part-way leaves a directory behind. Run `bun run build:extension`.",
   );
   process.exit(1);
+}
+
+// Only meaningful against the real output directory; `PHOENIX_DIST` points this
+// gate at a fixture, which has no source to be newer than it.
+if (!process.env.PHOENIX_DIST) {
+  const builtAt = Math.max(
+    ...bundles.map((f) => statSync(join(DIST, f)).mtimeMs),
+  );
+  const sourceAt = Math.max(
+    newestUnder(join(REPO, "extension")),
+    newestUnder(join(REPO, "src")),
+    newestUnder(join(REPO, "locales")),
+  );
+  if (sourceAt > builtAt) {
+    console.error(
+      "dist-extension/ is older than the source it was built from — this check\n" +
+        "would be grading a stale artifact, and a stale PASS here is a false green\n" +
+        "about host wiring. Run `bun run build:extension` first.",
+    );
+    process.exit(1);
+  }
 }
 
 const text = bundles.map((f) => readFileSync(join(DIST, f), "utf8")).join("\n");
