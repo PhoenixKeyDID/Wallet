@@ -14,7 +14,7 @@
  * quieter wallet.
  */
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { fetchAddressBalance } from "../provider";
+import { fetchAddressBalance, fetchUtxos } from "../provider";
 import { resetChainSources } from "../chainSource";
 
 const ADDR = "addr_test1vre6qly5vj7hmre72smsl3q5aae3cd49rennzmfplm9jl7csuup3g";
@@ -131,5 +131,58 @@ describe("fetchAddressBalance > Koios moved the tokens, and the wallet follows",
   it("keeps the ADA figure exact while doing it", async () => {
     koiosReplies({ balance: "9997607002", utxo_set: [{ asset_list: [TOKEN] }] });
     expect((await fetchAddressBalance(0, [ADDR])).lovelace).toBe(BigInt("9997607002"));
+  });
+});
+
+/**
+ * The sibling endpoint, which decides transaction inputs rather than a number
+ * on a screen.
+ *
+ * `/address_info` and `/address_utxos` carry a field of the same name from the
+ * same indexer. The first one lost it. Patching only the first would be taking
+ * the scope of a fix from the scope of its symptom — and this is the more
+ * expensive half: a wrong balance misinforms, wrong inputs build a transaction
+ * the ledger rejects, so the wallet stops sending and blames a ledger rule.
+ */
+const UTXO = {
+  tx_hash: "c".repeat(64),
+  tx_index: 0,
+  value: "2000000",
+  address: ADDR,
+  inline_datum: null,
+  reference_script: null,
+};
+
+describe("fetchUtxos > a UTxO whose tokens are unknown is not a UTxO with no tokens", () => {
+  it("refuses when the leaf carries no asset_list at all", async () => {
+    // Measured on live Koios preprod 2026-09-09: this endpoint puts `asset_list`
+    // on every leaf, `[]` included. A leaf without it is a shape change, not an
+    // ADA-only UTxO, and the two must not read the same.
+    koiosReplies(UTXO);
+    await expect(fetchUtxos(0, [ADDR])).rejects.toThrow(/tokens on this UTxO are unknown/);
+  });
+
+  it("names the UTxO it could not read", async () => {
+    // Which one matters: the caller is holding a list, and a message that says
+    // only "something was wrong" leaves them nothing to look at.
+    koiosReplies(UTXO);
+    await expect(fetchUtxos(0, [ADDR])).rejects.toThrow(new RegExp(`${"c".repeat(64)}#0`));
+  });
+
+  it("accepts an empty asset_list, because that is an ordinary ADA-only UTxO", async () => {
+    // The direction that decides whether the rule survives: 41 of 41 leaves on
+    // a live ADA-only address came back exactly like this.
+    koiosReplies({ ...UTXO, asset_list: [] });
+    const utxos = await fetchUtxos(0, [ADDR]);
+    expect(utxos).toHaveLength(1);
+    expect(utxos[0].tokens).toEqual([]);
+  });
+
+  it("carries the tokens through when they are there", async () => {
+    koiosReplies({ ...UTXO, asset_list: [TOKEN] });
+    const utxos = await fetchUtxos(0, [ADDR]);
+    expect(utxos[0].tokens).toHaveLength(1);
+    expect(utxos[0].tokens[0].policyId).toBe(TOKEN.policy_id);
+    expect(utxos[0].tokens[0].amount.toString()).toBe("7");
   });
 });

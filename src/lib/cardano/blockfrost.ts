@@ -353,9 +353,6 @@ export async function bfSubmitTx(ep: BlockfrostEndpoint, signedCborHex: string):
       // See the read path above. A submit that silently lands on a different
       // host than the one named on screen is the same wrong fact, carrying a
       // signed transaction.
-      // See the read path above. A submit that silently lands on a different
-      // host than the one named on screen is the same wrong fact, carrying a
-      // signed transaction.
       redirect: "manual",
     });
   } catch (cause) {

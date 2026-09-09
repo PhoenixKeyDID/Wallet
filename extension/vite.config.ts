@@ -47,7 +47,7 @@ const ORIGINS_RECEIPT = ".chain-origins.json";
  * shipped extension's reach because of a variable left in a shell by the web
  * app's dev loop — a permission granted for a host the package never calls.
  */
-function extraChainOrigins(env: Record<string, string | undefined>): string[] {
+export function extraChainOrigins(env: Record<string, string | undefined>): string[] {
   const viteOnly = Object.fromEntries(Object.entries(env).filter(([k]) => k.startsWith("VITE_")));
   const origins = new Set<string>();
   for (const network of [0, 1, 2] as PhoenixNetwork[]) {
@@ -60,6 +60,52 @@ function extraChainOrigins(env: Record<string, string | undefined>): string[] {
     if (src && src.kind === "blockfrost") origins.add(new URL(src.base).origin);
   }
   return [...origins];
+}
+
+/**
+ * The manifest this build should ship, and the origins it granted itself.
+ *
+ * Split out of `closeBundle` so it can be tested. What lives here is every
+ * decision — which origins are new, what `host_permissions` becomes, what the
+ * CSP becomes — and what stays in `closeBundle` is reading and writing files.
+ * The version that kept the decisions inside the plugin hook had no test at all:
+ * deleting the `VITE_` filter and the whole CSP-widening block left the suite
+ * fully green, and `check:package` stayed OK too, because the receipt and the
+ * manifest widen together so both directions still agreed.
+ *
+ * `granted` is returned rather than recomputed by the caller, so the receipt the
+ * gate reads and the permissions Chrome enforces come from one decision. Two
+ * computations of the same list is the shape where they drift apart.
+ */
+export function manifestForBuild(
+  manifest: Record<string, unknown>,
+  env: Record<string, string | undefined>,
+): { manifest: Record<string, unknown>; granted: string[] } {
+  // Compared against the parsed list, not against the file's text: an origin
+  // that is a prefix of one already declared (`https://chain.example` under
+  // `https://chain.example.org/*`) reads as "already there" in a substring test,
+  // and the build then quietly fails to grant it.
+  const declared = (manifest.host_permissions as string[]) ?? [];
+  const already = new Set(declared.map((p) => p.replace(/\/\*$/, "")));
+  const granted = extraChainOrigins(env).filter((o) => !already.has(o));
+  if (granted.length === 0) return { manifest, granted };
+
+  const m = JSON.parse(JSON.stringify(manifest)) as Record<string, unknown>;
+  m.host_permissions = [...declared, ...granted.map((o) => o + "/*")];
+  const csp = (m.content_security_policy as { extension_pages?: string } | undefined)
+    ?.extension_pages;
+  if (typeof csp === "string") {
+    // Both lists move together. Widening `host_permissions` alone gets past
+    // Chrome's permission check and is then blocked by the page's own CSP —
+    // the request fails with no status, which the wallet reports as the
+    // endpoint being unreachable. Same wrong sentence as a blocked host, from
+    // a different layer.
+    (m.content_security_policy as { extension_pages: string }).extension_pages = csp.replace(
+      /(connect-src [^;]*)/,
+      (seg: string) => seg + " " + granted.join(" "),
+    );
+  }
+  return { manifest: m, granted };
 }
 
 export default defineConfig(({ mode }) => ({
@@ -122,30 +168,15 @@ export default defineConfig(({ mode }) => ({
         // `.env` first, shell second — the same precedence Vite gives them.
         const env = { ...loadEnv(mode, here, "VITE_"), ...process.env };
         const raw = readFileSync(resolve(here, "manifest.json"), "utf8");
-        const m = JSON.parse(raw);
-        // Compared against the parsed list, not against the file's text: an
-        // origin that is a prefix of one already declared (`https://chain.example`
-        // under `https://chain.example.org/*`) reads as "already there" in a
-        // substring test, and the build then quietly fails to grant it.
-        const declared: string[] = m.host_permissions ?? [];
-        const already = new Set(declared.map((p: string) => p.replace(/\/\*$/, "")));
-        const extra = extraChainOrigins(env).filter((o) => !already.has(o));
+        const { manifest, granted } = manifestForBuild(JSON.parse(raw), env);
 
-        writeFileSync(resolve(out, ORIGINS_RECEIPT), JSON.stringify(extra) + "\n");
-        if (extra.length === 0) {
+        writeFileSync(resolve(out, ORIGINS_RECEIPT), JSON.stringify(granted) + "\n");
+        if (granted.length === 0) {
           copyFileSync(resolve(here, "manifest.json"), resolve(out, "manifest.json"));
           return;
         }
-        m.host_permissions = [...declared, ...extra.map((o) => o + "/*")];
-        const csp = m.content_security_policy?.extension_pages;
-        if (typeof csp === "string") {
-          m.content_security_policy.extension_pages = csp.replace(
-            /(connect-src [^;]*)/,
-            (seg: string) => seg + " " + extra.join(" "),
-          );
-        }
-        writeFileSync(resolve(out, "manifest.json"), JSON.stringify(m, null, 2) + "\n");
-        console.log("[phoenix] manifest widened for this build: " + extra.join(", "));
+        writeFileSync(resolve(out, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
+        console.log("[phoenix] manifest widened for this build: " + granted.join(", "));
       },
     },
   ],

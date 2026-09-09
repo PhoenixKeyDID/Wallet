@@ -102,6 +102,23 @@ export async function apiFetch<T = unknown>(
 
   let res: Response;
   try {
+    // No `redirect: "manual"` here, and that is a decision rather than an
+    // oversight — the chain calls in `src/lib/cardano/` all carry it.
+    //
+    // The reason they do does not transfer: those refuse a redirect because the
+    // receive screen names one host as the party that learns which addresses
+    // this wallet looks up, and a followed redirect makes that sentence false.
+    // No screen makes that promise about the backend. What this path does carry
+    // is a session bearer, and a browser strips `Authorization` on a
+    // cross-origin redirect, so the leak this would prevent is one the platform
+    // already prevents where the wallet ships.
+    //
+    // What it would break is ordinary: a backend behind a load balancer that
+    // answers `308` for a trailing slash, or an operator moving a deployment.
+    // Refusing those turns a working deployment into a wallet that cannot reach
+    // its own backend, in exchange for nothing the browser was not already
+    // doing. If this ever runs outside a browser against a backend whose host
+    // is shown to the user, revisit it.
     res = await fetch(url, {
       ...rest,
       headers: { Accept: "application/json", ...(headers as Record<string, string>) },

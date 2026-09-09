@@ -19,13 +19,18 @@
  *    a gate listing what is *forbidden* is out of date the day the platform
  *    ships a new key. Adding CIP-30 injection means editing this list on
  *    purpose, in a diff a reviewer sees.
- * 2. **`host_permissions` cannot outgrow the source.** That list is the whole
- *    answer to "who can this wallet talk to". Each pattern must be
- *    `https://<literal host>` followed by a path wildcard — no wildcard scheme,
- *    no `<all_urls>`, no wildcard
- *    inside the host — and the host must appear as a URL literal in
- *    `src/lib/cardano/provider.ts` or `src/lib/cardano/chainEnv.ts`, both of
- *    which CODEOWNERS gates. An earlier version
+ * 2. **`host_permissions` and the build must say the same thing, both ways.**
+ *    That list is the whole answer to "who can this wallet talk to". Each
+ *    pattern must be `https://<literal host>` followed by a path wildcard — no
+ *    wildcard scheme, no `<all_urls>`, no wildcard inside the host — and the
+ *    host must hold one of exactly two blessings: it appears as a URL literal
+ *    in `src/lib/cardano/provider.ts` or `src/lib/cardano/chainEnv.ts`, both of
+ *    which CODEOWNERS gates, **or** this build declared it in
+ *    `.chain-origins.json`. The second blessing is weaker on purpose and the
+ *    closing line says so by name: nobody reviewed it, the build variable
+ *    decided it. The reverse direction is checked too — a host the build reads
+ *    and the manifest omits is refused, because Chrome silently blocks it and
+ *    the wallet then reports the endpoint as unreachable. An earlier version
  *    compared the pattern after stripping it down to bare text, so a pattern
  *    meaning "every https host" reduced to a single star, and `provider.ts`
  *    contains a star on every comment line: the gate printed OK for an
@@ -55,6 +60,25 @@ const REPO = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DIST = process.env.PHOENIX_DIST || join(REPO, "dist-extension");
 const problems = [];
 const fail = (msg) => problems.push(msg);
+
+// A seam that is on says so, before any verdict.
+//
+// The risk here is not somebody reaching for the variable on purpose — that
+// person could edit this file. It is a variable left over in a shell, after
+// which this prints a confident OK about a different directory, or about source
+// files that are not the ones CODEOWNERS gates. That is the third state: not
+// "matches", not "differs", but "measured something else" — and it has to be
+// louder than a mismatch, because a mismatch at least says something is wrong.
+for (const [name, value, normally] of [
+  ["PHOENIX_DIST", process.env.PHOENIX_DIST, "dist-extension/"],
+  ["PHOENIX_BACKING_SOURCES", process.env.PHOENIX_BACKING_SOURCES, "provider.ts + chainEnv.ts"],
+]) {
+  if (!value) continue;
+  console.error(
+    `⚠ ${name} is set: grading "${value}" instead of ${normally}. ` +
+      `Every line below is about that, not about what a release would ship.`,
+  );
+}
 
 if (!existsSync(DIST)) {
   console.error(`No dist-extension/ — run \`bun run build:extension\` first.`);
@@ -471,10 +495,25 @@ if (problems.length) {
   process.exit(1);
 }
 
+// The closing sentence names what was actually measured, split by which of the
+// two blessings each host holds. The single-source version of this line said
+// every host was "backed by provider.ts or chainEnv.ts" — true when source was
+// the only blessing, and false the moment a build could widen the manifest for
+// itself. It kept printing the old sentence about hosts neither file mentions,
+// which is the failure this whole check exists to catch, committed by the check.
+const declaredHostList = (manifest.host_permissions ?? []).map((p) =>
+  p.replace(/^https:\/\//, "").replace(/\/.*$/, "").toLowerCase(),
+);
+const fromBuild = declaredHostList.filter((h) => bundleHosts.has(h));
+const fromSource = declaredHostList.filter((h) => !bundleHosts.has(h));
+const backing =
+  fromBuild.length === 0
+    ? `${fromSource.length} host permissions, all named as URL literals in provider.ts or chainEnv.ts`
+    : `${fromSource.length} host permissions named in provider.ts or chainEnv.ts, and ` +
+      `${fromBuild.length} this build declared for itself (${fromBuild.join(", ")}) — ` +
+      `reviewed only by whoever set the build variable`;
 console.log(
   `Extension package OK — manifest v3 loads, no manifest key or permission outside ` +
     `the reviewed set, CSP allows no remote code, page-world code imports nothing but ` +
-    `the rules, and all ` +
-    `${(manifest.host_permissions ?? []).length} host permissions are literal hosts backed by ` +
-    `provider.ts or chainEnv.ts`,
+    `the rules, and ${backing}`,
 );

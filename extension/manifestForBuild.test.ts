@@ -1,0 +1,140 @@
+/**
+ * The build decides what the shipped extension may reach. Nothing checked it.
+ *
+ * After the build began generating `manifest.json`, `extension/vite.config.ts`
+ * became the file that produces both the permissions Chrome enforces and the
+ * receipt `check:package` trusts. It had zero coverage: deleting the `VITE_`
+ * prefix filter and the entire CSP-widening block left the suite at 521 green,
+ * `tsc` silent, and `check:package` printing OK — because the receipt and the
+ * manifest widen from the same call, so both directions still agreed with each
+ * other while agreeing about the wrong thing.
+ *
+ * These cases are about the decision only. Whether the file lands on disk is
+ * `check:package`'s question, and it answers it on a real build.
+ */
+import { describe, it, expect } from "vitest";
+import { manifestForBuild, extraChainOrigins } from "./vite.config";
+
+/** The shipped manifest's shape, trimmed to the two fields under test. */
+const BASE = () => ({
+  host_permissions: ["https://api.koios.rest/*", "https://preprod.koios.rest/*"],
+  content_security_policy: {
+    extension_pages: "script-src 'self'; connect-src 'self' https://api.koios.rest; object-src 'none'",
+  },
+});
+
+const hosts = (m: Record<string, unknown>) => m.host_permissions as string[];
+const csp = (m: Record<string, unknown>) =>
+  (m.content_security_policy as { extension_pages: string }).extension_pages;
+
+describe("manifestForBuild > a plain build grants nothing", () => {
+  it("returns the manifest untouched and an empty receipt", () => {
+    const { manifest, granted } = manifestForBuild(BASE(), {});
+    expect(granted).toEqual([]);
+    expect(hosts(manifest)).toEqual(BASE().host_permissions);
+  });
+
+  it("ignores variables that are not chain endpoints", () => {
+    const { granted } = manifestForBuild(BASE(), { VITE_SOMETHING_ELSE: "https://x.example" });
+    expect(granted).toEqual([]);
+  });
+});
+
+describe("manifestForBuild > only VITE_ reaches an extension bundle", () => {
+  it("grants the origin a VITE_ variable names", () => {
+    const { manifest, granted } = manifestForBuild(BASE(), {
+      VITE_CHAIN_BASE_MAINNET: "https://chain.example/api/v0",
+    });
+    expect(granted).toEqual(["https://chain.example"]);
+    expect(hosts(manifest)).toContain("https://chain.example/*");
+  });
+
+  it("ignores NEXT_PUBLIC_, which no extension bundle can read", () => {
+    // The scenario this filter exists for: the web app's dev loop leaves a
+    // variable in the shell, and without the filter a shipped extension gains
+    // permission over a host its own code never calls. Nothing downstream
+    // catches it — the receipt would widen too, so `check:package` sees two
+    // lists agreeing.
+    const { manifest, granted } = manifestForBuild(BASE(), {
+      NEXT_PUBLIC_CHAIN_BASE_MAINNET: "https://web-only.example/api/v0",
+    });
+    expect(granted).toEqual([]);
+    expect(hosts(manifest)).toEqual(BASE().host_permissions);
+    expect(csp(manifest)).not.toContain("web-only.example");
+  });
+
+  it("takes the VITE_ one when both prefixes are present", () => {
+    const { granted } = manifestForBuild(BASE(), {
+      VITE_CHAIN_BASE_MAINNET: "https://chain.example/api/v0",
+      NEXT_PUBLIC_CHAIN_BASE_MAINNET: "https://web-only.example/api/v0",
+    });
+    expect(granted).toEqual(["https://chain.example"]);
+  });
+});
+
+describe("manifestForBuild > both lists move together", () => {
+  it("widens connect-src alongside host_permissions", () => {
+    // Widening one alone gets past Chrome's permission check and is then
+    // blocked by the page's own CSP. The request fails with no status, and the
+    // wallet reports the endpoint as unreachable — the same wrong sentence a
+    // blocked host produces, from a different layer, so the symptom cannot tell
+    // an operator which half is missing.
+    const { manifest } = manifestForBuild(BASE(), {
+      VITE_CHAIN_BASE_MAINNET: "https://chain.example/api/v0",
+    });
+    expect(csp(manifest)).toContain("https://chain.example");
+    expect(csp(manifest)).toMatch(/connect-src[^;]*chain\.example/);
+  });
+
+  it("leaves script-src alone while doing it", () => {
+    // `connect-src` is where a chain host belongs. Landing in `script-src`
+    // would let that host serve code into the extension's own pages.
+    const { manifest } = manifestForBuild(BASE(), {
+      VITE_CHAIN_BASE_MAINNET: "https://chain.example/api/v0",
+    });
+    expect(csp(manifest)).toMatch(/script-src 'self';/);
+    expect(csp(manifest)).not.toMatch(/script-src[^;]*chain\.example/);
+  });
+});
+
+describe("manifestForBuild > an origin already declared is not declared twice", () => {
+  it("grants nothing when the build points at a host the manifest already has", () => {
+    const { manifest, granted } = manifestForBuild(BASE(), {
+      VITE_CHAIN_BASE_MAINNET: "https://api.koios.rest/api/v1",
+    });
+    expect(granted).toEqual([]);
+    expect(hosts(manifest)).toEqual(BASE().host_permissions);
+  });
+
+  it("does grant a host that merely shares a prefix with a declared one", () => {
+    // The reason the comparison is against the parsed list rather than the
+    // file's text: `https://api.koios.rest` is a substring of nothing here, but
+    // a naive substring test would read a shorter host as already covered by a
+    // longer one and silently fail to grant it — after which the build calls a
+    // host Chrome blocks, and the wallet says the endpoint is unreachable.
+    const m = BASE();
+    m.host_permissions = ["https://chain.example.org/*"];
+    const { granted } = manifestForBuild(m, {
+      VITE_CHAIN_BASE_MAINNET: "https://chain.example/api/v0",
+    });
+    expect(granted).toEqual(["https://chain.example"]);
+  });
+});
+
+describe("extraChainOrigins > a project id alone still names a host", () => {
+  it("resolves the vendor origin with no URL in the variable", () => {
+    // The case a text search of the bundle cannot see, and the reason the gate
+    // reads a receipt instead: nothing resembling a URL is compiled in, while
+    // the package really does call that host.
+    const origins = extraChainOrigins({ VITE_BLOCKFROST_PROJECT_ID_PREPROD: "preprodDEADBEEF" });
+    expect(origins).toHaveLength(1);
+    expect(origins[0]).toMatch(/^https:\/\//);
+    expect(new URL(origins[0]).host).toContain("blockfrost");
+  });
+
+  it("keeps one network's variable out of another network's origin", () => {
+    const preprod = extraChainOrigins({ VITE_BLOCKFROST_PROJECT_ID_PREPROD: "preprodDEADBEEF" });
+    const mainnet = extraChainOrigins({ VITE_BLOCKFROST_PROJECT_ID_MAINNET: "mainnetDEADBEEF" });
+    expect(preprod).not.toEqual(mainnet);
+  });
+});

@@ -496,11 +496,37 @@ export async function fetchUtxos(
   const out: tyTypes.Input[] = [];
   for (const r of rows) {
     if (r.inline_datum != null || r.reference_script != null) continue;
+    // The same distinction `fetchAddressBalance` draws, on the endpoint that
+    // decides transaction *inputs* rather than a displayed number. `?? []` reads
+    // "no tokens" out of two different facts: this UTxO holds only ADA, and this
+    // response no longer carries the field. The first is ordinary; the second
+    // has happened once already on the sibling endpoint, which is why the
+    // balance path was rewritten — and leaving it here means the fix took its
+    // scope from the symptom rather than the cause.
+    //
+    // Measured on live Koios preprod, 2026-09-09: `/address_utxos` with
+    // `_extended: true` carries `asset_list` on every leaf — `[]` on an ADA-only
+    // address (41 UTxOs, key present and empty on each) and populated where
+    // tokens exist. So `null` is not a shape this endpoint produces, and reading
+    // it as "no tokens" would be answering a question that was never asked.
+    //
+    // Costly if wrong in a way the user cannot diagnose: coin selection would
+    // run on inputs claiming to be ADA-only, build change that drops the tokens,
+    // and the node would reject with `ValueNotConservedUTxO`. Nothing is lost —
+    // but the wallet stops being able to send anything, and the message names a
+    // ledger rule instead of the indexer.
+    if (!Array.isArray(r.asset_list)) {
+      throw new Error(
+        `Koios /address_utxos carried no asset_list on ${r.tx_hash}#${r.tx_index} — ` +
+          `the tokens on this UTxO are unknown, and spending it as if it held none ` +
+          `would build a transaction the ledger rejects`,
+      );
+    }
     out.push({
       txId: r.tx_hash,
       index: r.tx_index,
       amount: new BigNumber(r.value),
-      tokens: (r.asset_list ?? []).map((a) => ({
+      tokens: r.asset_list.map((a) => ({
         policyId: a.policy_id,
         assetName: a.asset_name ?? "",
         amount: new BigNumber(a.quantity),
