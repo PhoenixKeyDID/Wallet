@@ -22,6 +22,7 @@ import {
   rmSync,
   cpSync,
   utimesSync,
+  statSync,
 } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { tmpdir } from "node:os";
@@ -193,6 +194,22 @@ describe("check:package > one reading of a host pattern, not three", () => {
     expect(out).not.toMatch(/host_permissions does not declare/);
   });
 
+  it("does not blame a port for a colon that is not one", () => {
+    // A colon shows up in three different mistakes and only one is a port.
+    // `includes(":")` sent `https://[::1]/*` and `https://user:pass@host/*` away
+    // with "point the endpoint at 443" — advice for a problem neither one has,
+    // in a check whose whole subject is naming the real cause rather than the
+    // nearest rule.
+    const m = BASE_MANIFEST();
+    m.host_permissions.push("https://[::1]/*");
+    m.content_security_policy.extension_pages += " https://[::1]";
+    stage({ manifest: m, receipt: [] });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/is not a literal host/);
+    expect(out).not.toMatch(/no place for a port/);
+  });
+
   it("still refuses an actual wildcard, and says so", () => {
     // The direction that keeps the rule honest: renaming the reason must not
     // have cost the original one.
@@ -336,6 +353,52 @@ describe("check:package > the manifest cannot fall behind the build", () => {
 });
 
 describe("check:package > an unmeasurable package is refused, not waved through", () => {
+  it("counts a locale edit as source, because locales are compiled in", () => {
+    // `extension/src/i18n.ts` imports the JSON, so a translation change alters
+    // the bundle exactly as a code change does. The staleness rule scanned
+    // `extension/` and `src/` only, so a package built before a locale edit was
+    // graded as current — and until this case existed, deleting `locales/` from
+    // that list left the whole suite green.
+    stage({ receipt: [] });
+    const soon = new Date(Date.now() + 60_000);
+    const locale = join(REPO, "locales", "en", "wallet.json");
+    const before = statSync(locale);
+    try {
+      utimesSync(locale, soon, soon);
+      const { code, out } = runGate();
+      expect(code).toBe(1);
+      expect(out).toMatch(/older than the source/);
+    } finally {
+      // Restored whatever the assertion did — a case that leaves a repo file
+      // with a future mtime makes every later run of this gate red.
+      utimesSync(locale, before.atime, before.mtime);
+    }
+  });
+
+  it("refuses a receipt that is not a list, rather than throwing over it", () => {
+    // `for…of` on an object throws `TypeError` with a stack trace, about a file
+    // whose whole job is to be read by this check. The shape rule was there;
+    // nothing measured it.
+    stage({ receipt: { a: 1 } });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/must hold an array/);
+    expect(out).not.toMatch(/TypeError/);
+  });
+
+  it("refuses a manifest whose CSP and host_permissions disagree", () => {
+    // The cross-check that catches a build widening one list and not the other.
+    // It predates this work and nothing exercised it — which matters more now,
+    // because the build writes both lists and a mismatch between the two
+    // expressions that write them would land exactly here.
+    const m = BASE_MANIFEST();
+    m.host_permissions.push("https://my-node.example/*");
+    stage({ manifest: m, receipt: ["https://my-node.example"] });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/connect-src/);
+  });
+
   it("refuses a directory a failed build left behind, and says so", () => {
     // Reached on an ordinary path, not a strange one: the build throws after
     // Vite has emptied the output and written the bundle — a chain endpoint

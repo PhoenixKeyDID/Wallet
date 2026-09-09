@@ -511,7 +511,14 @@ function parseHostPermission(pattern) {
   // whole, and a pattern carrying `:8443` matches nothing, so the extension
   // simply cannot reach that endpoint. Caught here rather than left to Chrome,
   // which reports it as a chain read that returned nothing.
-  if (authority.includes(":")) {
+  //
+  // `/:\d*$/`, not `includes(":")`. A colon appears in three different mistakes
+  // and only one of them is a port: `https://[::1]/*` and
+  // `https://user:pass@host/*` were both told to "point the endpoint at 443",
+  // which names a cause neither one has. Same error the rest of this function
+  // exists to stop, one level down — a rule reporting the nearest reason rather
+  // than the real one.
+  if (/:\d*$/.test(authority)) {
     return refuse(
       `a Chrome match pattern has no place for a port, so this one matches nothing and ` +
         `the extension cannot reach that endpoint at all — point the endpoint at ` +

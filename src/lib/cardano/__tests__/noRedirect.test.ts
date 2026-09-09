@@ -11,7 +11,9 @@
  * with ordinary-looking data. That is why this is refused rather than logged.
  */
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
+import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import { assertNoRedirect, bfTipSlot, bfSubmitTx } from "../blockfrost";
 import { koios, submitTx } from "../provider";
 import { fetchAdaPrice, forgetPrice } from "../price";
@@ -97,9 +99,10 @@ const SIGNED_TX = "84a300818258" + "00".repeat(40);
  * the indexer and the price service as the only hosts this wallet contacts, and
  * a followed redirect makes that sentence false in the place nobody checks — the
  * price arrives, the figure is plausible, and a third party nobody listed has
- * seen each user's IP. The two paths that are deliberately absent are the
- * backend client in `src/lib/api.ts`, argued at its call site, and this list is
- * where to notice if a third joins them.
+ * seen each user's IP. Exactly one path is deliberately absent — the backend
+ * client in `src/lib/api.ts`, argued at its own call site — and the case below
+ * is what makes a second absence something somebody has to decide about rather
+ * than something nobody sees.
  */
 const CHAIN_CALLS: Array<{ name: string; run: () => Promise<unknown> }> = [
   { name: "koios read", run: () => koios(0, "/tip") },
@@ -146,28 +149,90 @@ describe("chain reads > every call site tells fetch not to follow a redirect", (
   }
 });
 
+/**
+ * Every `.ts`/`.tsx` under `src/` that is not itself a test.
+ *
+ * Walked, not listed. The first version of the case below named four files and
+ * called itself "finds no fetch in src/" — so a `fetch` added to any fifth file
+ * was exactly the silent gap it claimed to close. Measured: a new call site in
+ * `src/lib/cardano/history.ts` left the suite at 569 green.
+ */
+function sourceFilesUnderSrc(dir: string, out: string[] = []): string[] {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name !== "__tests__") sourceFilesUnderSrc(full, out);
+    } else if (/\.tsx?$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name)) {
+      out.push(full);
+    }
+  }
+  return out;
+}
+
+/**
+ * Where a call to `fetch` can appear, including the spellings a hand-written
+ * predicate misses.
+ *
+ * `(?<![.\w])fetch\(` alone excluded every member form on purpose — and that is
+ * precisely the spelling somebody reaching past this rule would use. Measured:
+ * `globalThis.fetch(` and `globalThis["fetch"](` both left the suite green.
+ * Comments are stripped first, because the same measurement found the opposite
+ * error: the prose `// we then fetch(url) here` turned this red for no reason,
+ * and a check that cries wolf is a check somebody deletes.
+ */
+const stripComments = (text: string) =>
+  text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+const FETCH_CALL = /(?:globalThis|window|self)?\s*(?:\.\s*fetch|\[\s*["'`]fetch["'`]\s*\]|(?<![.\w"'`])fetch)\s*\(/g;
+
 describe("chain reads > the list above is every outbound call there is", () => {
-  it("finds no fetch in src/ that this file has not accounted for", () => {
-    // `CHAIN_CALLS` is written by hand, so it can only pin the paths somebody
-    // remembered to add. This case is what makes a seventh call site a red line
-    // instead of a silent gap: it reads the source rather than a list, and a new
-    // `fetch` anywhere under `src/` fails here until it is either added above or
-    // named as a deliberate exception.
+  it("accounts for every fetch under src/, file by file", () => {
+    // A table rather than a total. A total is one number two changes can cancel
+    // out; a table names the file, so a `fetch` appearing somewhere new is a new
+    // key rather than an unchanged sum.
     //
-    // Counted rather than parsed, and that is the honest limit: this cannot tell
-    // which function a call belongs to, so it says "something changed, decide".
-    // The alternative — a rule that guesses which path a new call is on — would
-    // be a check that answers a question it cannot see.
-    const files = ["api.ts", "cardano/price.ts", "cardano/blockfrost.ts", "cardano/provider.ts"];
-    const found = files.flatMap((f) => {
-      const text = readFileSync(new URL(`../../${f}`, import.meta.url), "utf8");
-      return [...text.matchAll(/(?<![.\w])fetch\(/g)].map(() => f);
+    // Counted, not parsed, and that is the honest limit: this cannot tell which
+    // function a call belongs to, so what it says is "something changed here,
+    // decide". A rule that guessed which path a new call was on would be
+    // answering a question it cannot see.
+    const root = fileURLToPath(new URL("../../..", import.meta.url));
+    const counts: Record<string, number> = {};
+    for (const file of sourceFilesUnderSrc(root)) {
+      const n = [...stripComments(readFileSync(file, "utf8")).matchAll(FETCH_CALL)].length;
+      if (n > 0) counts[relative(root, file)] = n;
+    }
+    expect(counts).toEqual({
+      // The documented exception, argued at its own call site.
+      "lib/api.ts": 1,
+      // The five in CHAIN_CALLS, each exercised by both describes below.
+      "lib/cardano/price.ts": 1,
+      "lib/cardano/blockfrost.ts": 2,
+      "lib/cardano/provider.ts": 2,
     });
-    // 1 in api.ts (the documented exception) + 1 price + 2 blockfrost + 2 provider.
-    expect(found).toHaveLength(6);
-    expect(found.filter((f) => f === "api.ts")).toHaveLength(1);
-    // Every one of the other five is exercised by both describes below.
     expect(CHAIN_CALLS).toHaveLength(5);
+  });
+
+  it("would notice a call written to slip past a naive predicate", () => {
+    // The predicate is itself worth a case: it is the thing that decides whether
+    // the table above can be trusted, and the version it replaced was blind to
+    // every member spelling.
+    const spellings = [
+      `const r = await fetch(url);`,
+      `const r = await globalThis.fetch(url);`,
+      `const r = await window.fetch(url);`,
+      `const r = await globalThis["fetch"](url);`,
+      `const r = await self['fetch'] (url);`,
+    ];
+    for (const s of spellings) {
+      expect([...stripComments(s).matchAll(FETCH_CALL)]).toHaveLength(1);
+    }
+  });
+
+  it("does not turn red because somebody wrote the word in prose", () => {
+    const prose = `// we then fetch(url) here\n/* or fetch(x) in a block */\nconst a = 1;`;
+    expect([...stripComments(prose).matchAll(FETCH_CALL)]).toHaveLength(0);
+    // A URL is not a comment: `https://…` must survive the stripper, or the
+    // table above would start missing calls written on the same line as one.
+    expect(stripComments(`fetch("https://x.example/a");`)).toContain("https://x.example/a");
   });
 });
 

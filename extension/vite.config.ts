@@ -143,8 +143,14 @@ export function manifestForBuild(
     // the request fails with no status, which the wallet reports as the
     // endpoint being unreachable. Same wrong sentence as a blocked host, from
     // a different layer.
+    // `\s+`, matching how `check-extension-package.mjs` reads the same field.
+    // The two used different spellings — one literal space here, `\s+` there —
+    // so a CSP written with a tab would have widened `host_permissions` and not
+    // the CSP, silently, and been caught only by a cross-check one layer down.
+    // Two expressions for one field is the shape that produced every
+    // contradiction in this build step so far.
     (m.content_security_policy as { extension_pages: string }).extension_pages = csp.replace(
-      /(connect-src [^;]*)/,
+      /(connect-src\s+[^;]*)/,
       (seg: string) => seg + " " + granted.join(" "),
     );
   }

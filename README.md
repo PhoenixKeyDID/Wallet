@@ -162,6 +162,18 @@ VITE_CHAIN_BASE_PREPROD=https://<your endpoint>/api/v0          # Vite, incl. th
 VITE_BLOCKFROST_PROJECT_ID_PREPROD=<key>   # only if the endpoint is Blockfrost's own service
 ```
 
+**The extension is stricter than the web app, and refuses at build time rather
+than at run time.** `bun run build:extension` rejects an endpoint carrying a
+port or served over plain HTTP, with a message saying why. Both are fine on the
+web — `chainSource` allows a loopback endpoint over HTTP on purpose — but
+neither can be expressed as an extension permission: a Chrome match pattern has
+no place for a port, so `https://host:8443/*` matches nothing at all, and a
+plain-HTTP grant would let any network between the browser and that host read
+every address the wallet looks up. That grant would also outlive the setting,
+staying in the manifest whatever the chain source is later set to. So a variable
+left over from a web dev loop fails the extension build instead of quietly
+producing a package that reaches nothing, or one that reaches too much.
+
 Per network, deliberately: `…_MAINNET`, `…_PREPROD`, `…_PREVIEW`. Pointing a
 mainnet read at a preprod node returns a confident zero rather than an error.
 `setChainSource` still wins over the build; setting neither keeps today's
@@ -217,7 +229,7 @@ session at all — they never touch the Phoenix backend.
 
 ```bash
 bun install
-bun run test          # 569 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
+bun run test          # 575 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
 bun run typecheck
 bun run check:locales # 4 languages × 2 namespaces must stay in step
 bun run check:host-contract # what a host must wire up, checked against what the code imports
@@ -265,8 +277,14 @@ extension adds is a container the web page cannot give you:
   on that website. The extension page is not scriptable from any web page.
 - **`script-src 'self'`.** Nothing is fetched at runtime — not the locale files,
   not a font, not a CDN script. Everything that can run shipped in the package.
-- **`host_permissions` limited to the three Koios hosts.** That list is checkable
-  against the build: the only `fetch` in `dist-extension/popup.js` targets Koios.
+- **`host_permissions` limited to the hosts the build actually calls.** Four in
+  the published package: the three Koios networks and the price service. The
+  list is not taken on trust — `check:package` compares it against the build in
+  both directions, refusing a host that no source names and this build does not
+  read, and refusing a host this build reads that the list omits. A build
+  pointed at a custom endpoint widens both the manifest and the CSP for itself,
+  and the closing line of that check names any host that reached the list that
+  way rather than through a reviewed source file.
 
 The build is deliberately **not minified**. An open-source wallet whose published
 bundle cannot be read is open source in name only — you should be able to rebuild
