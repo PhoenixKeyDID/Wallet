@@ -86,6 +86,22 @@ describe("manifestForBuild > both lists move together", () => {
     expect(csp(manifest)).toMatch(/connect-src[^;]*chain\.example/);
   });
 
+  it("widens a connect-src written with any whitespace, as the gate reads it", () => {
+    // The writer here and the reader in `check-extension-package.mjs` parse the
+    // same field, and they had different spellings of it — one literal space
+    // against `\s+`. A CSP written with a tab would have widened
+    // `host_permissions` and not the CSP, silently, and only a cross-check one
+    // layer down would have caught it. Two expressions for one field is the
+    // shape behind every contradiction this build step has produced.
+    const m = BASE();
+    m.content_security_policy.extension_pages =
+      "script-src 'self'; connect-src\t'self' https://api.koios.rest; object-src 'none'";
+    const { manifest } = manifestForBuild(m, {
+      VITE_CHAIN_BASE_MAINNET: "https://chain.example/api/v0",
+    });
+    expect(csp(manifest)).toContain("https://chain.example");
+  });
+
   it("leaves script-src alone while doing it", () => {
     // `connect-src` is where a chain host belongs. Landing in `script-src`
     // would let that host serve code into the extension's own pages.
