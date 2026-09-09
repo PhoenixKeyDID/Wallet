@@ -36,6 +36,12 @@
 /src/components/night/NightRedeem.tsx    @AladinContract
 /src/lib/cardano/connect.test.ts         @AladinContract
 /src/components/wallet/Cip30Panel.tsx    @AladinContract
+# Carries example URLs, including one asserted to be REFUSED. The addresses are
+# reserved-for-documentation names that resolve nowhere, so they add nobody to
+# the list of hosts this wallet can reach — but a URL in a test is still a URL
+# somebody could quietly turn into a real one, and the fixture that proves plain
+# HTTP is rejected is exactly the line worth noticing if it changes.
+/src/lib/cardano/__tests__/blockfrost.test.ts  @AladinContract
 
 # The two files a stranger reads first, and the ones a search engine indexes.
 # `docs/Phoenix Wallet-Feat.md` names the Midnight redemption portal and two

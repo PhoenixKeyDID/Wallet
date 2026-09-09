@@ -200,3 +200,86 @@ describe("wallet session", () => {
     expect(s.get().status).toBe("locked");
   });
 });
+
+/**
+ * `onLock` — a lock that HAPPENED, told apart from a lock the wallet is IN.
+ *
+ * `subscribe` delivers the current state first and every change after, which is
+ * what a screen wants and the opposite of what a handler wants. The difference
+ * is invisible while a wallet is open and decisive before one ever is: a
+ * brand-new session reads `locked`, so a handler wired to `subscribe` runs its
+ * walk-away cleanup on first paint. The cost was paid in the wallet-creation
+ * screen, where that cleanup hid the recovery phrase behind "the wallet locked
+ * while your recovery phrase was on screen" — shown to every person creating a
+ * first wallet, at the one step whose entire job is to display those words.
+ */
+describe("session > onLock fires on the transition, not on the state", () => {
+  it("stays silent when a wallet nobody has opened is subscribed to", () => {
+    const s = new WalletSession();
+    let fired = 0;
+    s.onLock(() => (fired += 1));
+    expect(fired).toBe(0);
+  });
+
+  it("stays silent when an already-open wallet is subscribed to", () => {
+    const s = new WalletSession();
+    s.unlock("w1", fakeAccount());
+    let fired = 0;
+    s.onLock(() => (fired += 1));
+    expect(fired).toBe(0);
+  });
+
+  it("fires once when an open wallet locks", () => {
+    const s = new WalletSession();
+    s.unlock("w1", fakeAccount());
+    let fired = 0;
+    s.onLock(() => (fired += 1));
+    s.lock();
+    expect(fired).toBe(1);
+  });
+
+  it("does not fire again when an already-locked wallet is locked", () => {
+    // `lock()` emits unconditionally — it bumps the epoch even when nothing was
+    // open — so silence here has to come from `onLock` itself, not from the
+    // absence of a notification.
+    const s = new WalletSession();
+    s.unlock("w1", fakeAccount());
+    let fired = 0;
+    s.onLock(() => (fired += 1));
+    s.lock();
+    s.lock();
+    s.lock();
+    expect(fired).toBe(1);
+  });
+
+  it("fires when the idle timer locks the wallet, not only the Lock button", () => {
+    vi.useFakeTimers();
+    const s = new WalletSession(1000);
+    s.unlock("w1", fakeAccount());
+    let fired = 0;
+    s.onLock(() => (fired += 1));
+    vi.advanceTimersByTime(1001);
+    expect(fired).toBe(1);
+  });
+
+  it("fires again on the second lock of a wallet that was reopened", () => {
+    const s = new WalletSession();
+    let fired = 0;
+    s.onLock(() => (fired += 1));
+    s.unlock("w1", fakeAccount());
+    s.lock();
+    s.unlock("w2", fakeAccount());
+    s.lock();
+    expect(fired).toBe(2);
+  });
+
+  it("unsubscribes", () => {
+    const s = new WalletSession();
+    s.unlock("w1", fakeAccount());
+    let fired = 0;
+    const off = s.onLock(() => (fired += 1));
+    off();
+    s.lock();
+    expect(fired).toBe(0);
+  });
+});

@@ -30,6 +30,14 @@ jobs:
       - name: Locale parity
         run: bun run check:locales
 
+      # This module is consumed as source by host apps, so what a host has to
+      # wire up is part of the interface — and it broke without a single red
+      # line here: a new `@/lib/keystore` directory and a new dependency landed,
+      # the host had neither, and the wallet-creation screen simply did not
+      # exist on the site while every gate in this repo passed.
+      - name: Host contract
+        run: bun run check:host-contract
+
       # Public repo: a homoglyph swap in a shipped URL would be blessed by the
       # wallet's own brand. An absolute URL may only live in a CODEOWNERS-gated
       # file, so adding one anywhere else pulls in a maintainer review.

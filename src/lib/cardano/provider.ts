@@ -3,9 +3,19 @@
  * watch-only address balances/UTxOs.
  *
  * Why Koios and not Blockfrost: Blockfrost needs a project key that must not be
- * exposed to the browser. Koios is a free public REST indexer with permissive
- * CORS, fine for read-only client calls. When the PhoenixKey backend exposes a
+ * exposed to the browser. Koios is a free public REST indexer, so a read-only
+ * client call needs nothing kept secret. When the PhoenixKey backend exposes a
  * UTxO/params proxy (`PhoenixKey-Wallet-API-v2`), swap `PROVIDER_BASE` for it.
+ *
+ * **This file used to say Koios has permissive CORS. Measured 2026-09-08, it
+ * does not** — and the wrong half is the half that decides whether a browser can
+ * use it at all. All three hosts answer a preflight with
+ * `access-control-allow-origin: *` and then omit that header from the response
+ * that carries the data, so a page gets a `TypeError` while `curl` gets `200`
+ * and the rows. The extension is unaffected: `host_permissions` puts its
+ * requests outside the same-origin rules entirely. A page is not, which is why
+ * `ProviderUnreachableError` below refuses to describe this as silence from the
+ * indexer.
  */
 import "../node-globals";
 import { Buffer } from "buffer";
@@ -14,6 +24,15 @@ import { types as tyTypes, utils as tyUtils } from "@stricahq/typhonjs";
 
 type ProtocolParams = tyTypes.ProtocolParams;
 import type { PhoenixNetwork } from "./address";
+import { getChainSource } from "./chainSource";
+import {
+  bfProtocolParams,
+  bfTipSlot,
+  bfTipBlockHeight,
+  bfAddressBalance,
+  bfUtxos,
+  bfSubmitTx,
+} from "./blockfrost";
 
 const KOIOS_BASE: Record<"mainnet" | "preprod" | "preview", string> = {
   mainnet: "https://api.koios.rest/api/v1",
@@ -90,6 +109,32 @@ export class KoiosTruncatedError extends Error {
  */
 export const KOIOS_ROW_CAP = 1000;
 
+/**
+ * The request never came back in a form this code could read.
+ *
+ * Its own category because it is the one failure where **nothing is known about
+ * the server**. An HTTP error is the server speaking; this is `fetch` refusing
+ * to hand anything over, and it covers two situations a browser deliberately
+ * makes indistinguishable: the request never arrived, or a reply *did* arrive
+ * and the browser discarded it for lacking cross-origin permission. No status,
+ * no body, and no way to tell those apart from inside a page.
+ *
+ * Collapsing this into "the indexer did not answer" is a wrong fact stated
+ * confidently, and an expensive one — see the header of this file for what the
+ * indexer actually does. Anyone debugging the old message checks the indexer,
+ * finds it healthy, and stops.
+ */
+export class ProviderUnreachableError extends Error {
+  constructor(path: string, cause?: unknown) {
+    super(
+      `${path} → no readable reply: the request did not arrive, or a reply did and the ` +
+        `browser discarded it for lacking cross-origin permission. Both look identical here.`,
+    );
+    this.name = "ProviderUnreachableError";
+    this.cause = cause;
+  }
+}
+
 export type KoiosPage = {
   limit: number;
   /** PostgREST ordering, e.g. `block_height.desc`. Ask explicitly: a page of
@@ -115,20 +160,29 @@ export async function koios<T>(
     ? `?limit=${encodeURIComponent(String(page.limit))}` +
       (page.order ? `&order=${encodeURIComponent(page.order)}` : "")
     : "";
-  const res = await fetch(`${koiosBase(network)}${path}${query}`, {
-    method: body ? "POST" : "GET",
-    headers: {
-      "content-type": "application/json",
-      accept: "application/json",
-      // Koios is PostgREST, and PostgREST caps a response at 1000 rows without
-      // saying so in the status: measured 2026-09-05 on `/pool_list`, HTTP 200
-      // with `content-range: 0-999/*` and exactly 1000 rows, the other 5163
-      // simply absent. Asking for an exact count is what makes the cap visible
-      // — the same request answers `206` with `content-range: 0-999/6163`.
-      prefer: "count=exact",
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  // `fetch` rejects with a bare `TypeError` for everything that stops a reply
+  // from reaching this code, and that class of failure says nothing about the
+  // server. Naming it here rather than letting a `TypeError` travel upward is
+  // what lets a screen stop claiming the indexer stayed silent when it did not.
+  let res: Response;
+  try {
+    res = await fetch(`${koiosBase(network)}${path}${query}`, {
+      method: body ? "POST" : "GET",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+        // Koios is PostgREST, and PostgREST caps a response at 1000 rows without
+        // saying so in the status: measured 2026-09-05 on `/pool_list`, HTTP 200
+        // with `content-range: 0-999/*` and exactly 1000 rows, the other 5163
+        // simply absent. Asking for an exact count is what makes the cap visible
+        // — the same request answers `206` with `content-range: 0-999/6163`.
+        prefer: "count=exact",
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch (cause) {
+    throw new ProviderUnreachableError(`Koios ${path}`, cause);
+  }
   // `res.ok` covers 200–299, so it is true for the 206 that says "partial".
   // Checking the range rather than the status is what closes that.
   if (!res.ok) throw new Error(`Koios ${path} → HTTP ${res.status}`);
@@ -189,6 +243,8 @@ function checked(name: keyof typeof PARAM_CEILING, raw: string | number): BigNum
  * `/epoch_params` returns the latest epoch first.
  */
 export async function fetchProtocolParams(network: PhoenixNetwork): Promise<ProtocolParams> {
+  const src = getChainSource(network);
+  if (src.kind === "blockfrost") return bfProtocolParams(src);
   const rows = await koios<
     Array<{
       min_fee_a: number;
@@ -221,6 +277,8 @@ export async function fetchProtocolParams(network: PhoenixNetwork): Promise<Prot
 
 /** Current chain tip absolute slot — used to set a transaction TTL. */
 export async function fetchTipSlot(network: PhoenixNetwork): Promise<number> {
+  const src = getChainSource(network);
+  if (src.kind === "blockfrost") return bfTipSlot(src);
   const rows = await koios<Array<{ abs_slot: number }>>(network, "/tip");
   const slot = rows[0]?.abs_slot;
   if (typeof slot !== "number") throw new Error("Koios returned no tip slot");
@@ -238,6 +296,8 @@ export async function fetchTipSlot(network: PhoenixNetwork): Promise<number> {
  * roughly a factor of twenty.
  */
 export async function fetchTipBlockHeight(network: PhoenixNetwork): Promise<number> {
+  const src = getChainSource(network);
+  if (src.kind === "blockfrost") return bfTipBlockHeight(src);
   const rows = await koios<Array<{ block_no: number }>>(network, "/tip");
   const height = rows[0]?.block_no;
   if (typeof height !== "number") throw new Error("Koios returned no tip block height");
@@ -255,6 +315,8 @@ export async function fetchAddressBalance(
   addresses: string[],
 ): Promise<AddressBalance> {
   if (addresses.length === 0) return { lovelace: BigInt("0"), assets: [] };
+  const src = getChainSource(network);
+  if (src.kind === "blockfrost") return bfAddressBalance(src, addresses);
   const rows = await koios<
     Array<{
       balance: string;
@@ -313,6 +375,8 @@ export async function fetchUtxos(
   addresses: string[],
 ): Promise<tyTypes.Input[]> {
   if (addresses.length === 0) return [];
+  const src = getChainSource(network);
+  if (src.kind === "blockfrost") return bfUtxos(src, addresses);
   const rows = await koios<
     Array<{
       tx_hash: string;
@@ -353,6 +417,8 @@ export async function fetchUtxos(
  * into the error rather than swallowed behind the status code.
  */
 export async function submitTx(network: PhoenixNetwork, signedCborHex: string): Promise<string> {
+  const src = getChainSource(network);
+  if (src.kind === "blockfrost") return bfSubmitTx(src, signedCborHex);
   const body = Buffer.from(signedCborHex, "hex");
   const res = await fetch(`${koiosBase(network)}/submittx`, {
     method: "POST",

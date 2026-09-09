@@ -13,6 +13,10 @@ export * from "./address";
 export * from "./xpub";
 export * from "./cip30";
 export * from "./provider";
+// Where the chain is read from. Exported because it is the one thing a host has
+// to be able to change from outside: the platform runs its own chain access, and
+// a wallet that can only reach a hard-coded public indexer cannot use it.
+export * from "./chainSource";
 export * from "./qr";
 export * from "./watchAddress";
 export * from "./history";

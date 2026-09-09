@@ -1,0 +1,51 @@
+{
+  "$comment": [
+    "What a host app must wire up to mount this module. Checked against the code by",
+    "scripts/check-host-contract.mjs, so it cannot fall behind what the code imports.",
+    "",
+    "aliasesIntoModule: the host's bundler and tsconfig must resolve these INTO this",
+    "module's source. Miss one and the host's build fails on a file that compiles",
+    "fine here — which is exactly how the wallet-creation screen stayed invisible on",
+    "a live site while every gate in this repo was green.",
+    "",
+    "aliasesFromHost: the host supplies these. This repo ships minimal stand-ins so",
+    "it type-checks and tests standalone; a real host points them at its own.",
+    "",
+    "hostMustInstall: runtime dependencies. They live in the host's node_modules,",
+    "not this module's, because the module is consumed as source."
+  ],
+  "aliasesIntoModule": {
+    "@/lib/cardano": "src/lib/cardano/index.ts, and src/lib/cardano/* for the feature builders",
+    "@/lib/keystore": "src/lib/keystore/index.ts, and src/lib/keystore/* — the self-custody vault, seed and signing keys",
+    "@/lib/night": "src/lib/night.ts",
+    "@/lib/wallet": "src/lib/wallet.ts",
+    "@/components/wallet": "src/components/wallet/*",
+    "@/components/night": "src/components/night/*"
+  },
+  "aliasesFromHost": {
+    "@/lib/api": "session-authed API client; this repo ships a plain fetch client",
+    "@/lib/toast": "user-facing notifications with i18n; this repo ships a console logger",
+    "@/components/CopyBtn": "the host's styled copy-to-clipboard control",
+    "@/components/Nav": "the host's site chrome",
+    "@/components/Footer": "the host's site chrome"
+  },
+  "hostMustInstall": [
+    "@noble/hashes",
+    "@scure/bip39",
+    "@stricahq/bip32ed25519",
+    "@stricahq/cbors",
+    "@stricahq/typhonjs",
+    "bech32",
+    "bignumber.js",
+    "buffer",
+    "qrcode.react",
+    "react",
+    "react-i18next"
+  ],
+  "alsoRequired": {
+    "designTokens": "Tailwind tokens the components use: bg-bg1, bg-bg2, text-text, text-text-dim, text-text-hint, border-border-soft, rounded-brand, teal-brand, amber-brand",
+    "locales": "copy locales/<lang>/wallet.json and night.json into the host's i18n namespaces; the host's build should sync them rather than fork them",
+    "did": "pass the signed-in DID to <WalletHub did={...} /> if the Phoenix custody view is wanted; omit it and that one mode says 'sign in first'",
+    "chainSource": "optional. Default reads the chain from Koios. A browser cannot use Koios directly (see src/lib/cardano/chainSource.ts), so a host serving this on the web should call setChainSource(network, { kind: 'blockfrost', base }) with its own Blockfrost-compatible endpoint — the platform's Dolos MiniBF speaks that dialect."
+  }
+}
