@@ -317,10 +317,17 @@ export async function fetchAddressBalance(
   if (addresses.length === 0) return { lovelace: BigInt("0"), assets: [] };
   const src = getChainSource(network);
   if (src.kind === "blockfrost") return bfAddressBalance(src, addresses);
+  type KoiosAsset = { policy_id: string; asset_name: string | null; quantity: string };
   const rows = await koios<
     Array<{
       balance: string;
-      asset_list: Array<{ policy_id: string; asset_name: string | null; quantity: string }> | null;
+      /**
+       * Absent from Koios v1 today. Kept in the type because its absence is the
+       * whole reason the `utxo_set` branch below exists, and a reader who does
+       * not see it named here will assume tokens were never asked for.
+       */
+      asset_list?: KoiosAsset[] | null;
+      utxo_set?: Array<{ asset_list?: KoiosAsset[] | null }> | null;
     }>
   >(network, "/address_info", { _addresses: addresses });
 
@@ -328,7 +335,33 @@ export async function fetchAddressBalance(
   const byUnit = new Map<string, { policyId: string; assetNameHex: string; quantity: bigint }>();
   for (const r of rows) {
     lovelace += BigInt(r.balance ?? "0");
-    for (const a of r.asset_list ?? []) {
+
+    /**
+     * Where the tokens are, and why this is not one line.
+     *
+     * `/address_info` used to carry `asset_list` beside `balance`, and this read
+     * it with `?? []`. Koios v1 no longer returns that field — measured
+     * 2026-09-09 on preprod, the row's keys are exactly `address`, `balance`,
+     * `script_address`, `stake_address`, `utxo_set`. So `?? []` was answering
+     * "does this address hold tokens?" with a confident **no** for every address
+     * on the default source. The ADA figure was right, which is what kept it
+     * invisible: the balance looked correct and the token list looked empty,
+     * and an empty token list is what most addresses genuinely have. It surfaced
+     * only against a second source — the same address reported 3 tokens there,
+     * and the identical lovelace.
+     *
+     * `utxo_set` is in the same response, so this costs no extra request.
+     * The row-level field is still preferred when a deployment does send it.
+     */
+    const rowLevel = Array.isArray(r.asset_list) ? r.asset_list : null;
+    const perUtxo = Array.isArray(r.utxo_set) ? r.utxo_set.flatMap((u) => u.asset_list ?? []) : null;
+    if (!rowLevel && !perUtxo) {
+      // Neither shape present. Reporting "no tokens" here would be inventing an
+      // answer to a question this response did not address — the failure this
+      // whole comment is about.
+      throw new Error("Koios /address_info carried neither asset_list nor utxo_set — token balances unknown");
+    }
+    for (const a of rowLevel ?? perUtxo ?? []) {
       const assetNameHex = a.asset_name ?? "";
       const unit = a.policy_id + assetNameHex;
       const prev = byUnit.get(unit);
