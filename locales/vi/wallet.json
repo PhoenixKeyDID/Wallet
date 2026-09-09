@@ -59,7 +59,7 @@
   "acct_xvk_help": "Lấy khoá này ở đâu?",
   "acct_xvk_help_body": "Trong Lace / Eternl: mở Cài đặt → mục khoá (hoặc Advanced) → sao chép 'account public key' (bắt đầu bằng acct_xvk hoặc xpub). Đây là khoá CÔNG KHAI, không phải 24 từ khôi phục.",
   "watch_paste_own_only": "Chỉ dán khoá tài khoản CỦA BẠN. Địa chỉ suy ra từ khoá người khác sẽ nhận tiền vào ví của HỌ, không phải của bạn.",
-  "koios_privacy_note": "Số dư được tra qua một dịch vụ công khai (Koios). Dịch vụ đó thấy các địa chỉ bạn tra và địa chỉ IP của bạn.",
+  "indexer_privacy_note": "Số dư được tra qua {{host}}. Ai vận hành nơi đó đều thấy các địa chỉ bạn tra và địa chỉ IP của bạn.",
   "loading": "Đang tải…",
   "view_balance": "Xem số dư",
   "derived_addresses": "Địa chỉ dẫn ra",

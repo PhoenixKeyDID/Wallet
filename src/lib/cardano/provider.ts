@@ -60,6 +60,27 @@ const KOIOS_BASE: Record<"mainnet" | "preprod" | "preview", string> = {
  */
 export const PRICE_BASE = "https://api.coingecko.com/api/v3";
 
+/**
+ * The host balance lookups actually go to, for the privacy note to name.
+ *
+ * The note used to say "Koios" as a constant, and it was a privacy claim — the
+ * kind a reader acts on, by deciding whether to paste an address at all. The
+ * moment the endpoint became configurable, that constant could be wrong while
+ * still sounding specific, which is worse than saying nothing: it names an
+ * organisation that may never see the query, and hides the one that does.
+ */
+export function chainReadHost(network: PhoenixNetwork): string {
+  const src = getChainSource(network);
+  if (src.kind === "blockfrost") {
+    try {
+      return new URL(src.base).host;
+    } catch {
+      return src.base;
+    }
+  }
+  return new URL(koiosBase(network)).host;
+}
+
 function koiosBase(network: PhoenixNetwork): string {
   if (network === 1) return KOIOS_BASE.mainnet;
   if (network === 2) return KOIOS_BASE.preview;

@@ -8,6 +8,7 @@ import {
   parseWatchAddress,
   deriveWatchWallet,
   fetchAddressBalance,
+  chainReadHost,
   type WatchWallet,
   type PhoenixNetwork,
 } from "@/lib/cardano";
@@ -187,7 +188,8 @@ export function WatchOnlyPanel() {
             {busy ? t("loading") : t("view_balance")}
           </button>
         </div>
-        <p className="text-xs text-text-hint">{t("koios_privacy_note")}</p>
+        {/* Names the host this build actually reads from — see chainReadHost. */}
+        <p className="text-xs text-text-hint">{t("indexer_privacy_note", { host: chainReadHost(network) })}</p>
       </div>
 
       {watched && (

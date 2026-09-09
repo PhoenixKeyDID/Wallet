@@ -153,18 +153,33 @@ export function readBuildEnv(): BuildEnv {
   }
 
   try {
-    // Next (the web app).
-    if (typeof process !== "undefined" && process && typeof process.env === "object") {
-      keep("NEXT_PUBLIC_BLOCKFROST_PROJECT_ID_MAINNET", process.env.NEXT_PUBLIC_BLOCKFROST_PROJECT_ID_MAINNET);
-      keep("NEXT_PUBLIC_BLOCKFROST_PROJECT_ID_PREPROD", process.env.NEXT_PUBLIC_BLOCKFROST_PROJECT_ID_PREPROD);
-      keep("NEXT_PUBLIC_BLOCKFROST_PROJECT_ID_PREVIEW", process.env.NEXT_PUBLIC_BLOCKFROST_PROJECT_ID_PREVIEW);
-      keep("NEXT_PUBLIC_CHAIN_BASE_MAINNET", process.env.NEXT_PUBLIC_CHAIN_BASE_MAINNET);
-      keep("NEXT_PUBLIC_CHAIN_BASE_PREPROD", process.env.NEXT_PUBLIC_CHAIN_BASE_PREPROD);
-      keep("NEXT_PUBLIC_CHAIN_BASE_PREVIEW", process.env.NEXT_PUBLIC_CHAIN_BASE_PREVIEW);
-    }
+    /**
+     * Next (the web app). No `typeof process` guard, and that absence is the
+     * whole point — an earlier version had one and it defeated the inlining it
+     * was meant to protect.
+     *
+     * Next replaces the **text** `process.env.NEXT_PUBLIC_…` with a string
+     * constant, so in a working build there is no `process` left to guard: the
+     * six reads below are six literals. Wrapping them in
+     * `typeof process !== "undefined"` therefore asks a question about an
+     * identifier that no longer appears, gets `false` in the browser, and skips
+     * six values that were sitting right there. Measured in the real app: the
+     * page went on reading the default source with the variables correctly set.
+     *
+     * Where the replacement did *not* happen — the extension's bundler — the
+     * reference survives, `process` is genuinely undefined, and the throw lands
+     * in this `catch`. That is the case the guard was for, and `catch` covers it
+     * without lying about the other one.
+     */
+    keep("NEXT_PUBLIC_BLOCKFROST_PROJECT_ID_MAINNET", process.env.NEXT_PUBLIC_BLOCKFROST_PROJECT_ID_MAINNET);
+    keep("NEXT_PUBLIC_BLOCKFROST_PROJECT_ID_PREPROD", process.env.NEXT_PUBLIC_BLOCKFROST_PROJECT_ID_PREPROD);
+    keep("NEXT_PUBLIC_BLOCKFROST_PROJECT_ID_PREVIEW", process.env.NEXT_PUBLIC_BLOCKFROST_PROJECT_ID_PREVIEW);
+    keep("NEXT_PUBLIC_CHAIN_BASE_MAINNET", process.env.NEXT_PUBLIC_CHAIN_BASE_MAINNET);
+    keep("NEXT_PUBLIC_CHAIN_BASE_PREPROD", process.env.NEXT_PUBLIC_CHAIN_BASE_PREPROD);
+    keep("NEXT_PUBLIC_CHAIN_BASE_PREVIEW", process.env.NEXT_PUBLIC_CHAIN_BASE_PREVIEW);
   } catch {
-    // The Node-globals shim defines `process.env` as `{}`, and a real browser
-    // defines no `process` at all. Both land here as "nothing was inlined".
+    // No `process` in this bundle, or a shim whose `env` is empty. Both mean
+    // "nothing was inlined", which is a normal build.
   }
   return out;
 }

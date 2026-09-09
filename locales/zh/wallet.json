@@ -59,7 +59,7 @@
   "acct_xvk_help": "在哪里获取此密钥？",
   "acct_xvk_help_body": "在 Lace / Eternl 中：打开 设置 → 密钥部分（或 Advanced）→ 复制“account public key”（以 acct_xvk 或 xpub 开头）。这是公钥，不是助记词。",
   "watch_paste_own_only": "只粘贴属于你自己的账户公钥。用他人密钥派生的地址会将资金收入他人钱包，而不是你的。",
-  "koios_privacy_note": "余额通过公共服务 (Koios) 查询。该服务能看到你查询的地址和你的 IP 地址。",
+  "indexer_privacy_note": "余额通过 {{host}} 查询。运营该服务的一方能看到你查询的地址和你的 IP 地址。",
   "loading": "加载中…",
   "view_balance": "查看余额",
   "derived_addresses": "派生地址",

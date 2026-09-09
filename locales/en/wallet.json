@@ -59,7 +59,7 @@
   "acct_xvk_help": "Where do I get this key?",
   "acct_xvk_help_body": "In Lace / Eternl: open Settings → the keys section (or Advanced) → copy the 'account public key' (starts with acct_xvk or xpub). This is a PUBLIC key, not your recovery phrase.",
   "watch_paste_own_only": "Only paste an account key that is YOURS. Addresses derived from someone else's key receive into their wallet, not yours.",
-  "koios_privacy_note": "Balances are looked up through a public service (Koios). That service sees the addresses you query and your IP address.",
+  "indexer_privacy_note": "Balances are looked up through {{host}}. Whoever runs it sees the addresses you query and your IP address.",
   "loading": "Loading…",
   "view_balance": "View balance",
   "derived_addresses": "Derived addresses",
