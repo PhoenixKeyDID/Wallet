@@ -301,6 +301,24 @@ describe("chain reads > the list above is every outbound call there is", () => {
     expect(fetchCallCount(prose)).toBe(0);
   });
 
+  it("reads a .tsx file as TSX, so markup does not swallow the call inside it", () => {
+    // The file name is passed through to the parser, and nothing measured that:
+    // no `.tsx` file under `src/` makes an outbound call today, so dropping the
+    // argument changed no count and the whole suite stayed green. Pinned here
+    // rather than left to the day somebody adds a `fetch` to a component — which
+    // is precisely the day this table needs to be right.
+    //
+    // The body is chosen to tell the two parses apart, which most JSX does not:
+    // TypeScript's recovery is good enough that ordinary markup read as
+    // TypeScript still yields the call, and a case scoring 1 both ways would be
+    // testing nothing. A comparison inside an attribute is where recovery stops
+    // being good enough — read as TypeScript the `<` opens an expression that
+    // swallows the rest, and the call inside disappears. Measured: 1 as TSX, 0
+    // as TypeScript.
+    const tsx = `const A = ({ a, b }) => <div hidden={a < b}>{fetch(u)}</div>;\n`;
+    expect(fetchCallCount(tsx, "Comp.tsx")).toBe(1);
+  });
+
   it("counts a call whose argument is a URL, which a comment stripper can eat", () => {
     // `//` inside a string is not a comment. A stripper working on raw text has
     // to be told that; a scanner cannot get it wrong.
