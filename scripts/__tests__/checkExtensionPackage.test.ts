@@ -434,7 +434,41 @@ describe("check:package > an unmeasurable package is refused, not waved through"
   });
 });
 
-describe("check:package > a malformed field is a finding, not a crash", () => {
+/**
+ * A malformed manifest is reported, never a stack trace.
+ *
+ * The block was called *"…at every depth"* for one round, and that name was
+ * measurably false while it was there: `background.service_worker` is a scalar
+ * at depth one and still killed the gate. A coverage claim in a block name ages
+ * badly in the one direction that matters — it reads as a guarantee, so the next
+ * person adding a manifest field has been told they need not think about it.
+ *
+ * So the name states the property, and the coverage is stated here, where it can
+ * be kept honest. Cases exist for: a list field given a string; a list given a
+ * non-list; a string entry inside `host_permissions`; a `null` inside
+ * `content_scripts`; the scalar path fields `action.default_popup` and
+ * `background.service_worker`; and a non-path value inside `icons`.
+ *
+ * The root object is checked too, and by an exit rather than a finding: a
+ * manifest that parses to `null` leaves nothing to report on.
+ *
+ * **What is not covered.** The other scalars the gate reads — `manifest_version`,
+ * the CSP string, `content_scripts[].run_at`, `content_scripts[].all_frames` —
+ * are compared or pattern-matched rather than joined onto a path, so a wrong
+ * type there produces a wrong-looking finding rather than a crash.
+ *
+ * That list was itself wrong in both directions for one round, which is worth
+ * leaving on the record: it named `version` and `name`, which this gate does not
+ * read anywhere (they appear only in `ALLOWED_KEYS`), and it omitted
+ * `all_frames`, which it does. A hand-written coverage note is a copy of
+ * something the code knows, and it drifts the way copies drift — so treat it as
+ * a reading aid, and the claim anything actually enforces is the block name.
+ *
+ * A rule added later that joins a new field onto `DIST` gets no protection from
+ * any of this; the thing to copy is `stringAt`, not the shape of the rule next
+ * to it.
+ */
+describe("check:package > a malformed manifest is reported, never a stack trace", () => {
   it("says which field is the wrong type instead of dying with a TypeError", () => {
     // `manifest.host_permissions ?? []` covers absence and nothing else, so a
     // hand-edit dropping the brackets reached `.map` and killed the gate with a
@@ -466,6 +500,444 @@ describe("check:package > a malformed field is a finding, not a crash", () => {
     expect(out).toMatch(/permissions is string, not a list/);
     // A second, unrelated complaint in the same run.
     expect(out.split("\n").filter((l) => l.trim().startsWith("•")).length).toBeGreaterThan(1);
+  });
+
+  it("says so for a list nested inside content_scripts, not only a top-level one", () => {
+    // The first version of this rule wrapped the top-level fields and stopped
+    // there, which left the identical crash live a few lines further down. Both
+    // cases above pass with the nested reads unguarded, so neither of them is
+    // watching this: the two live at different depths in the same file, and a
+    // fix scoped to where a defect was first noticed is a fix that leaves the
+    // cause in place.
+    const m = BASE_MANIFEST();
+    m.content_scripts[0].matches = 5;
+    stage({ manifest: m });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/content_scripts\[\]\.matches is number, not a list/);
+    expect(out).not.toMatch(/TypeError/);
+    expect(out).not.toMatch(/check-extension-package\.mjs:\d+/);
+  });
+
+  it("refuses a string where a list of files belongs, instead of reading it letter by letter", () => {
+    // The quiet half of the same defect, and the worse half. A string is
+    // iterable, so `for (const f of cs.js)` walked `"content.js"` one character
+    // at a time and the gate reported, with a straight face, that the manifest
+    // names files called `c`, `o`, `n`. Every real rule about `js` was skipped
+    // in the same breath, and the exit code was 1 either way — so the run looked
+    // like a gate doing its job while it was grading nothing.
+    const m = BASE_MANIFEST();
+    m.content_scripts[0].js = "content.js";
+    stage({ manifest: m });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/content_scripts\[\]\.js is string, not a list/);
+    // The letter-by-letter reading, named so the case fails if it comes back.
+    expect(out).not.toMatch(/names "c"/);
+    expect(out).not.toMatch(/names "o"/);
+  });
+
+  it("refuses an icons field that is not a name-to-path map", () => {
+    // `Object.values` on a string is the same trap one type over: it hands back
+    // characters, and the gate goes looking for files named `i`, `c`, `o`.
+    // `icons` is a map rather than a list, so it needs its own door — bending it
+    // through the list reader would accept `["icon.png"]`, which Chrome does not.
+    const m = BASE_MANIFEST();
+    m.icons = "icon.png";
+    stage({ manifest: m });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/icons is string, not a name-to-path map/);
+    expect(out).not.toMatch(/names "i"/);
+  });
+
+  it("says so for the resource list nested inside web_accessible_resources", () => {
+    // Named separately rather than folded into the content_scripts case because
+    // they are two different call sites, and a case that covers one while
+    // claiming both is how the other gets missed.
+    const m = BASE_MANIFEST();
+    m.web_accessible_resources[0].resources = "inpage.js";
+    stage({ manifest: m });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/web_accessible_resources\[\]\.resources is string, not a list/);
+    expect(out).not.toMatch(/TypeError/);
+  });
+
+  it("says so for the match list nested inside web_accessible_resources", () => {
+    // The fifth nested read, and the one the first four cases did not watch:
+    // with the four above written and passing, putting this read back to
+    // `?? []` left all thirty of them green. Measured, and it is the reason this
+    // case exists — a sweep that stops at the defects somebody happened to name
+    // leaves the last one behind, looking exactly like the ones that were fixed.
+    //
+    // This field decides which pages may reach the provider script, so the read
+    // that goes unguarded here is the read that governs reach.
+    const m = BASE_MANIFEST();
+    m.web_accessible_resources[0].matches = "https://*/*";
+    stage({ manifest: m });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/web_accessible_resources\[\]\.matches is string, not a list/);
+    // Character-by-character again: without the guard the gate complains that
+    // the resources are exposed to "h", then "t", then "t".
+    expect(out).not.toMatch(/exposed to "h"/);
+  });
+
+  it("says so for an entry inside a well-formed list, not only for the list", () => {
+    // Guarding the containers was still a fix scoped to where the symptom was
+    // noticed. `["https://…", 123]` is a list, so it walks straight through the
+    // container check and dies one level down on `p.replace` — same crash, same
+    // line-of-our-own-source, one nesting level deeper. The container was never
+    // the whole question.
+    const m = BASE_MANIFEST();
+    m.host_permissions = [...m.host_permissions, 123];
+    stage({ manifest: m });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/host_permissions contains number, not a string/);
+    expect(out).not.toMatch(/TypeError/);
+    expect(out).not.toMatch(/check-extension-package\.mjs:\d+/);
+  });
+
+  it("says so for a null sitting in a list of objects", () => {
+    // `[null]` passes every check about the list. The rules then read `.matches`
+    // off it and the gate dies. Null rather than a number because it is the
+    // shape a hand-edit leaves behind — a deleted entry, comma still in place.
+    const m = BASE_MANIFEST();
+    m.content_scripts = [null];
+    stage({ manifest: m });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/content_scripts contains null, not an object/);
+    expect(out).not.toMatch(/TypeError/);
+  });
+
+  it("says so for a path field that is not a path", () => {
+    // `join(DIST, 5)` throws `ERR_INVALID_ARG_TYPE`, which is the same failure
+    // wearing a different error name — and `default_popup` is the single field
+    // that decides whether the extension opens at all, so this is the manifest
+    // edit most worth reporting clearly.
+    const m = BASE_MANIFEST();
+    m.action.default_popup = 5;
+    stage({ manifest: m });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/action\.default_popup is number, not a string/);
+    expect(out).not.toMatch(/ERR_INVALID_ARG_TYPE/);
+    expect(out).not.toMatch(/check-extension-package\.mjs:\d+/);
+  });
+
+  it("says so for an icon whose path is not a path", () => {
+    // The map is the right shape and one value in it is not. Reported by name,
+    // so the reader is told which icon rather than which line of this gate.
+    const m = BASE_MANIFEST();
+    m.icons = { ...(m.icons ?? {}), "16": 16 };
+    stage({ manifest: m });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/icons\["16"\] is number, not a path/);
+    expect(out).not.toMatch(/ERR_INVALID_ARG_TYPE/);
+  });
+
+  it("says so for a service worker that is not a path", () => {
+    // The last field in the file still going straight into `join(DIST, …)`. It
+    // survived a round of fixing the same defect elsewhere because the fix was
+    // scoped to where the crash had been *noticed*: containers, then elements,
+    // then one scalar — and this one sat 162 lines below the others.
+    const m = BASE_MANIFEST();
+    m.background = { service_worker: 5 };
+    stage({ manifest: m });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/background\.service_worker is number, not a string/);
+    expect(out).not.toMatch(/ERR_INVALID_ARG_TYPE/);
+    expect(out).not.toMatch(/check-extension-package\.mjs:\d+/);
+  });
+
+  it("still reports a widened permission when another field is unreadable", () => {
+    // Why a crash is worse than a wrong message, stated as a measurement rather
+    // than an argument. The findings are printed at the end; a crash happens
+    // before that block runs, so *nothing* is printed — and a manifest that both
+    // widens `host_permissions` and holds one bad type reported neither. The
+    // widening is the finding this gate exists for, and the type error is the
+    // cheapest thing in the world to introduce by hand next to it.
+    const m = BASE_MANIFEST();
+    m.host_permissions = [...m.host_permissions, "https://*/*"];
+    m.background = { service_worker: 5 };
+    stage({ manifest: m });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/background\.service_worker is number, not a string/);
+    // The one that matters, and the one a crash used to swallow. Anchored on the
+    // whole sentence, not the pattern: `https://*/*` is also the first entry of
+    // `ALLOWED_MATCHES`, which the `content_scripts` finding interpolates in
+    // full — so a bare match on the pattern goes green for a package that never
+    // widened anything.
+    expect(out).toMatch(/host_permissions declares "https:\/\/\*\/\*"/);
+  });
+
+  it("says a field is the wrong type without also saying it is missing", () => {
+    // One cause, one sentence. Reading the field through `stringAt` and then
+    // testing the result for falsiness merged two questions, because a wrong
+    // type comes back `null` and an absent field comes back `""`. The report
+    // then held both lines, and the second contradicts the first — the field IS
+    // declared — so a reader acting on it adds a key that is already there.
+    //
+    // The `not` assertions are the whole point of the case: the suite was green
+    // on both sides of this defect, because every case asserted that the right
+    // sentence was present and none asserted the wrong one was absent.
+    const m = BASE_MANIFEST();
+    m.background = { service_worker: 5 };
+    m.action.default_popup = 5;
+    stage({ manifest: m });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/background\.service_worker is number, not a string/);
+    expect(out).toMatch(/action\.default_popup is number, not a string/);
+    expect(out).not.toMatch(/declares no service_worker/);
+    expect(out).not.toMatch(/declares no action\.default_popup/);
+  });
+
+  it("still says a field is missing when it is actually missing", () => {
+    // The other direction, and the one that decides whether the fix is a fix
+    // rather than a deletion: an empty `background` block really does declare no
+    // service worker, and that sentence has to survive.
+    const m = BASE_MANIFEST();
+    m.background = {};
+    delete m.action.default_popup;
+    stage({ manifest: m });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/background declares no service_worker/);
+    expect(out).toMatch(/declares no action\.default_popup/);
+  });
+
+  it("calls an empty or null path missing, rather than calling the package fine", () => {
+    // The direction a fix goes quiet in. Asking the raw value `=== undefined`
+    // reads as the tighter test and is the looser one: `?? ""` collapses `null`
+    // and `undefined` together, so `null` and `""` matched neither branch —
+    // not wrong-typed, because `""` is a string, and not absent, because the key
+    // is there. Measured, all four shapes below went from a finding to
+    // `Extension package OK`, exit 0.
+    //
+    // A gate answering "fine" for a package with no popup and no service worker
+    // is worse than one that crashes: a crash is read as broken, and this is
+    // read as passed.
+    for (const empty of [null, ""]) {
+      const mp = BASE_MANIFEST();
+      mp.action.default_popup = empty;
+      stage({ manifest: mp });
+      const p = runGate();
+      expect(p.code, `default_popup=${JSON.stringify(empty)}`).toBe(1);
+      expect(p.out, `default_popup=${JSON.stringify(empty)}`).toMatch(
+        /declares no action\.default_popup/,
+      );
+      expect(p.out, `default_popup=${JSON.stringify(empty)}`).not.toMatch(
+        /action\.default_popup is \w+.*, not a string/,
+      );
+
+      const mb = BASE_MANIFEST();
+      mb.background = { service_worker: empty };
+      stage({ manifest: mb });
+      const b = runGate();
+      expect(b.code, `service_worker=${JSON.stringify(empty)}`).toBe(1);
+      expect(b.out, `service_worker=${JSON.stringify(empty)}`).toMatch(
+        /background declares no service_worker/,
+      );
+      expect(b.out, `service_worker=${JSON.stringify(empty)}`).not.toMatch(
+        /service_worker is \w+.*, not a string/,
+      );
+    }
+  });
+
+  it("names a wrong-typed container instead of blaming the field inside it", () => {
+    // `"background": "background.js"` — a plausible hand-edit, and the shape
+    // optional chaining hides best: `manifest.background?.service_worker` reads
+    // a string exactly as quietly as it reads a missing key, so the gate
+    // reported a missing field on a manifest whose problem is one level up.
+    //
+    // **All three containers, not just the one that was noticed.** `objectAt`
+    // was written for `background` and wired to `background` alone, while
+    // `action` sat three lines above it and `content_security_policy` directly
+    // below — both still read with bare optional chaining. `"action":
+    // "popup.html"` gave *"declares no action.default_popup"*, and a CSP string
+    // gave two findings at once, both false: *"got: (none)"* for a policy
+    // printed in full in the manifest, and *"has no connect-src"* under it.
+    //
+    // So this case iterates the containers rather than naming one. A test that
+    // pins the instance that was noticed grows a gate no faster than the defect
+    // moves.
+    // Each container carries its own expected sentence rather than one built by
+    // escaping the field name. The escaping version looked careful and did
+    // nothing — its character class closed at the first `]`, so every name came
+    // back unchanged. Harmless while the three names are plain words, and a
+    // silently loosened assertion the day someone adds `content_scripts[0]`.
+    const CONTAINERS: Array<{ field: string; wrongType: RegExp; downstream: RegExp }> = [
+      {
+        field: "background",
+        wrongType: /manifest background is \w+.*, not an object/,
+        downstream: /declares no service_worker/,
+      },
+      {
+        field: "action",
+        wrongType: /manifest action is \w+.*, not an object/,
+        downstream: /declares no action\.default_popup/,
+      },
+      {
+        field: "content_security_policy",
+        wrongType: /manifest content_security_policy is \w+.*, not an object/,
+        downstream: /got: \(none\)|has no `connect-src`/,
+      },
+    ];
+    for (const { field, wrongType, downstream } of CONTAINERS) {
+      for (const bad of [5, "a-string.js", [], null]) {
+        const label = `${field}=${JSON.stringify(bad)}`;
+        const m = BASE_MANIFEST();
+        m[field] = bad;
+        stage({ manifest: m });
+        const { code, out } = runGate();
+        expect(code, label).toBe(1);
+        expect(out, label).toMatch(wrongType);
+        // The sentence about the field inside it must not appear: that is the
+        // whole defect, and asserting only the correct line leaves the suite
+        // green on both sides of it.
+        expect(out, label).not.toMatch(downstream);
+      }
+    }
+  });
+
+  it("still refuses a container that is missing outright, not only a wrong-typed one", () => {
+    // The state the three-state `objectAt` was written for, and the one nothing
+    // was watching. Measured: reverting `objectAt` to return `null` for absent —
+    // the two-state version it replaced — left the whole suite at 604/604 and
+    // all eight gates at exit 0, while a manifest with no `content_security_policy`
+    // block and one with no `action` block both went from a finding to
+    // `Extension package OK`.
+    //
+    // The cases above only ever *replace* a container with a wrong value. Absent
+    // is a third thing, it is the commonest shape a bad edit leaves behind, and
+    // for the CSP it removes the two rules that keep remote code out.
+    for (const field of ["action", "background", "content_security_policy"]) {
+      const m = BASE_MANIFEST();
+      delete m[field];
+      stage({ manifest: m });
+      const { code, out } = runGate();
+      expect(code, `absent ${field}`).toBe(1);
+      expect(out, `absent ${field}`).not.toMatch(/Extension package OK/);
+    }
+  });
+
+  it("does not derive findings from a list it has just called unreadable", () => {
+    // The type finding for `host_permissions` says "every rule below about
+    // host_permissions was skipped". That sentence was false: `stringsIn`
+    // returns `[]`, an empty list is a valid answer, and the cross-check against
+    // `connect-src` reasoned from it — so one cause printed five sentences, and
+    // the four loudest ones pointed away from it at hosts that were fine.
+    //
+    // Both depths, because the first fix only covered the container: `[123]` is
+    // a list, so the container reads fine, and the element does not. It printed
+    // its element finding plus the same four derived lines — unchanged by the
+    // fix that was supposed to have killed them. This file has already written
+    // that lesson down twice about itself.
+    const CASES: Array<[unknown, RegExp]> = [
+      [5, /host_permissions is number, not a list/],
+      [[123], /host_permissions contains number, not a string/],
+      [[null], /host_permissions contains null, not a string/],
+    ];
+    for (const [value, own] of CASES) {
+      const m = BASE_MANIFEST();
+      m.host_permissions = value;
+      stage({ manifest: m });
+      const { code, out } = runGate();
+      expect(code, JSON.stringify(value)).toBe(1);
+      expect(out, JSON.stringify(value)).toMatch(own);
+      expect(out, JSON.stringify(value)).not.toMatch(/which is not in host_permissions/);
+    }
+  });
+
+  it("still compares against a list that is genuinely empty", () => {
+    // The direction the fix above breaks if it is written one notch too tight,
+    // and it was: a predicate reading "undefined or an array" excludes `null`,
+    // which `asArray` accepts as an empty list without complaint. The gate then
+    // had nothing to say about a manifest whose CSP reaches four hosts it holds
+    // no permission for, and exited 0.
+    //
+    // An empty `host_permissions` really does disagree with a CSP naming hosts.
+    // Suppressing a consequence is one edit away from suppressing the cause.
+    for (const empty of [null, []]) {
+      const m = BASE_MANIFEST();
+      m.host_permissions = empty;
+      stage({ manifest: m });
+      const { code, out } = runGate();
+      expect(code, JSON.stringify(empty)).toBe(1);
+      expect(out, JSON.stringify(empty)).toMatch(/which is not in host_permissions/);
+    }
+  });
+
+  it("reports a wrong-typed CSP string once, not as two claims about its contents", () => {
+    // `"extension_pages": 5` printed `got: 5` and then `has no connect-src` — a
+    // claim about the contents of something that has no contents. `[]` was
+    // worse: `got:` followed by nothing, so the offending value appeared as
+    // empty space.
+    for (const bad of [5, [], {}, true, null]) {
+      const m = BASE_MANIFEST();
+      m.content_security_policy = { extension_pages: bad };
+      stage({ manifest: m });
+      const { code, out } = runGate();
+      expect(code, JSON.stringify(bad)).toBe(1);
+      expect(out, JSON.stringify(bad)).toMatch(
+        /content_security_policy\.extension_pages is \w+.*, not a string/,
+      );
+      expect(out, JSON.stringify(bad)).not.toMatch(/has no `connect-src`/);
+      expect(out, JSON.stringify(bad)).not.toMatch(/must be exactly/);
+    }
+  });
+
+  it("refuses a manifest whose root is not an object, without a stack trace", () => {
+    // `JSON.parse` succeeds on `null`, on `[]`, on `5`. None is a manifest, and
+    // the first field read off one died naming a line of the gate's own source
+    // — the exact shape this block is named after, sitting above every case in
+    // it. `null` because that is what a build step writes from a variable
+    // nothing assigned.
+    for (const root of ["null", "[]", "5", '"manifest"']) {
+      stage({});
+      writeFileSync(join(dir, "manifest.json"), root);
+      const { code, out } = runGate();
+      expect(code, root).toBe(1);
+      expect(out, root).toMatch(/root is (null|a list|number|string) rather than an object/);
+      expect(out, root).not.toMatch(/Cannot read properties/);
+      expect(out, root).not.toMatch(/check-extension-package\.mjs:\d+/);
+    }
+  });
+
+  it("does not print a finding that reads as its own bug", () => {
+    // `"manifest_version": "3"` is the commonest way to fail a `!==` comparison
+    // against a number, and interpolated bare it printed `manifest_version is 3,
+    // expected 3`. A reader shown that has been told the checker is broken —
+    // the same wrong conclusion a stack trace produces, arrived at politely.
+    const m = BASE_MANIFEST();
+    m.manifest_version = "3";
+    stage({ manifest: m });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/manifest_version is "3", expected 3/);
+  });
+
+  it("names one bad host entry once, not once per rule that reads the list", () => {
+    // Five separate rules read `host_permissions`, each re-reading it, so one
+    // bad entry printed the same line five times. The report is what a reader
+    // scans for the *other* findings; five copies of one line is how the rest
+    // stop being read. Same failure mode as the crash above, by volume instead
+    // of by absence.
+    const m = BASE_MANIFEST();
+    m.host_permissions = [...m.host_permissions, 123];
+    stage({ manifest: m });
+    const { out } = runGate();
+    const hits = out
+      .split("\n")
+      .filter((l) => /host_permissions contains number/.test(l)).length;
+    expect(hits).toBe(1);
   });
 });
 
