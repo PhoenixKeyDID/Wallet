@@ -14,6 +14,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 import { assertNoRedirect, bfTipSlot, bfSubmitTx } from "../blockfrost";
 import { koios, submitTx } from "../provider";
 import { fetchAdaPrice, forgetPrice } from "../price";
@@ -170,19 +171,65 @@ function sourceFilesUnderSrc(dir: string, out: string[] = []): string[] {
 }
 
 /**
- * Where a call to `fetch` can appear, including the spellings a hand-written
- * predicate misses.
+ * Calls to `fetch`, counted with the language's own scanner.
  *
- * `(?<![.\w])fetch\(` alone excluded every member form on purpose — and that is
- * precisely the spelling somebody reaching past this rule would use. Measured:
+ * Two hand-written versions of this were wrong, in opposite directions, and the
+ * second was wrong in a way this repo had already written down. Kept here
+ * because the reasoning is not obvious from the fix.
+ *
+ * Version one, `(?<![.\w])fetch\(`, excluded every member spelling on purpose —
+ * which is exactly the spelling somebody reaching past this rule would use.
  * `globalThis.fetch(` and `globalThis["fetch"](` both left the suite green.
- * Comments are stripped first, because the same measurement found the opposite
- * error: the prose `// we then fetch(url) here` turned this red for no reason,
- * and a check that cries wolf is a check somebody deletes.
+ *
+ * Version two widened the pattern and stripped comments first with two regexes.
+ * That is the mistake `scripts/check-extension-package.mjs` documents in its own
+ * host scan: stripping answers by elimination, and gets it wrong on code that
+ * compiles. `provider.ts` has a prose line reading ``content-range: 0-999/*`` —
+ * `/*` inside a `//` comment — which opened a phantom block that ran to the next
+ * `*` + `/` fifty-seven lines below. Measured: a `fetch` to an unnamed host
+ * placed inside `koios()`, the function every Koios read goes through, left all
+ * 576 tests green; the same line forty-three lines lower turned the table red.
+ * The same version also counted the word inside a string, so an error message
+ * mentioning `fetch(url)` failed the suite for nothing.
+ *
+ * Wrong in both directions means the predicate was measuring the wrong thing, so
+ * this parses instead of trying a third pattern. It counts call expressions whose
+ * callee names `fetch`, which is the property the rule is actually about —
+ * comments, strings, template text and regex literals are not call expressions,
+ * so neither error is expressible rather than merely unlikely.
+ *
+ * A token scanner is not enough on its own: `/` is division or the start of a
+ * regex depending on what precedes it, and only the parser knows which. Run over
+ * this repository, a scanner-only version desynchronised and reported zero calls
+ * in every file.
+ *
+ * `globalThis["fetch"]` is the one call spelled with a string, and it is matched
+ * as the callee of a call rather than by looking at string contents — a sentence
+ * that merely contains the word stays invisible.
  */
-const stripComments = (text: string) =>
-  text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/[^\n]*/g, "$1");
-const FETCH_CALL = /(?:globalThis|window|self)?\s*(?:\.\s*fetch|\[\s*["'`]fetch["'`]\s*\]|(?<![.\w"'`])fetch)\s*\(/g;
+function fetchCallCount(text: string, fileName = "inline.ts"): number {
+  const source = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true);
+
+  /** `fetch`, `x.fetch`, `x["fetch"]` — every way of naming the one function. */
+  const namesFetch = (e: ts.Expression): boolean => {
+    if (ts.isIdentifier(e)) return e.text === "fetch";
+    if (ts.isPropertyAccessExpression(e)) return e.name.text === "fetch";
+    if (ts.isElementAccessExpression(e)) {
+      return (
+        ts.isStringLiteralLike(e.argumentExpression) && e.argumentExpression.text === "fetch"
+      );
+    }
+    return false;
+  };
+
+  let count = 0;
+  const walk = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && namesFetch(node.expression)) count++;
+    ts.forEachChild(node, walk);
+  };
+  walk(source);
+  return count;
+}
 
 describe("chain reads > the list above is every outbound call there is", () => {
   it("accounts for every fetch under src/, file by file", () => {
@@ -197,7 +244,9 @@ describe("chain reads > the list above is every outbound call there is", () => {
     const root = fileURLToPath(new URL("../../..", import.meta.url));
     const counts: Record<string, number> = {};
     for (const file of sourceFilesUnderSrc(root)) {
-      const n = [...stripComments(readFileSync(file, "utf8")).matchAll(FETCH_CALL)].length;
+      // The name is passed through: a `.tsx` file has to be parsed as TSX, or
+      // its markup is read as comparison operators and the walk goes wrong.
+      const n = fetchCallCount(readFileSync(file, "utf8"), file);
       if (n > 0) counts[relative(root, file)] = n;
     }
     expect(counts).toEqual({
@@ -211,28 +260,52 @@ describe("chain reads > the list above is every outbound call there is", () => {
     expect(CHAIN_CALLS).toHaveLength(5);
   });
 
-  it("would notice a call written to slip past a naive predicate", () => {
-    // The predicate is itself worth a case: it is the thing that decides whether
-    // the table above can be trusted, and the version it replaced was blind to
-    // every member spelling.
-    const spellings = [
+  it("counts every spelling of a call, including the ones written to hide", () => {
+    // The predicate decides whether the table above can be trusted, so it gets
+    // cases of its own. The first version was blind to every member spelling —
+    // which is the spelling somebody reaching past this rule would reach for.
+    for (const s of [
       `const r = await fetch(url);`,
       `const r = await globalThis.fetch(url);`,
       `const r = await window.fetch(url);`,
       `const r = await globalThis["fetch"](url);`,
       `const r = await self['fetch'] (url);`,
-    ];
-    for (const s of spellings) {
-      expect([...stripComments(s).matchAll(FETCH_CALL)]).toHaveLength(1);
+    ]) {
+      expect(fetchCallCount(s)).toBe(1);
     }
   });
 
-  it("does not turn red because somebody wrote the word in prose", () => {
-    const prose = `// we then fetch(url) here\n/* or fetch(x) in a block */\nconst a = 1;`;
-    expect([...stripComments(prose).matchAll(FETCH_CALL)]).toHaveLength(0);
-    // A URL is not a comment: `https://…` must survive the stripper, or the
-    // table above would start missing calls written on the same line as one.
-    expect(stripComments(`fetch("https://x.example/a");`)).toContain("https://x.example/a");
+  it("counts a call sitting under a comment line that contains /*", () => {
+    // The exact shape that let a real call hide. `provider.ts` carries the prose
+    // ``content-range: 0-999/*`` inside a `//` comment; a stripper that removes
+    // block comments first reads that as an opening delimiter and swallows
+    // everything to the next `*` + `/`. Measured: fifty-seven lines of
+    // `provider.ts` became invisible, `koios()` among them.
+    const src =
+      `// with \`content-range: 0-999/*\` and exactly 1000 rows\n` +
+      `const a = 1;\n` +
+      `await fetch("https://telemetry.invalid/ping");\n` +
+      `const b = 2; /* an ordinary block */\n`;
+    expect(fetchCallCount(src)).toBe(1);
+  });
+
+  it("does not count the word where it is only being talked about", () => {
+    // The other direction, and the one that decides whether this rule survives
+    // contact: an error message naming `fetch(url)` turned the suite red for
+    // nothing, and a check that cries wolf gets deleted rather than fixed.
+    const prose =
+      `// we then fetch(url) here\n` +
+      `/* or fetch(x) in a block */\n` +
+      `const msg = "the browser refused the fetch(url) this wallet made";\n` +
+      `const tpl = \`a fetch(y) inside a template\`;\n`;
+    expect(fetchCallCount(prose)).toBe(0);
+  });
+
+  it("counts a call whose argument is a URL, which a comment stripper can eat", () => {
+    // `//` inside a string is not a comment. A stripper working on raw text has
+    // to be told that; a scanner cannot get it wrong.
+    expect(fetchCallCount(`fetch("https://x.example/a");`)).toBe(1);
+    expect(fetchCallCount(`const re = /\\/\\//; fetch(u);`)).toBe(1);
   });
 });
 
