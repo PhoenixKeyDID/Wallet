@@ -13,6 +13,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { assertNoRedirect, bfTipSlot, bfSubmitTx } from "../blockfrost";
 import { koios, submitTx } from "../provider";
+import { fetchAdaPrice, forgetPrice } from "../price";
 
 /** The shape Node returns under `redirect: "manual"`: the real 3xx. */
 const nodeRedirect = (status: number) =>
@@ -88,7 +89,17 @@ describe("assertNoRedirect > refuses a redirect on both runtimes", () => {
  */
 const SIGNED_TX = "84a300818258" + "00".repeat(40);
 
-/** Every runtime path that reaches the chain, so a new one cannot be forgotten. */
+/**
+ * Every outbound path, so a new one cannot be added without being seen.
+ *
+ * The price service is here even though it is not the chain: the README names
+ * the indexer and the price service as the only hosts this wallet contacts, and
+ * a followed redirect makes that sentence false in the place nobody checks — the
+ * price arrives, the figure is plausible, and a third party nobody listed has
+ * seen each user's IP. The two paths that are deliberately absent are the
+ * backend client in `src/lib/api.ts`, argued at its call site, and this list is
+ * where to notice if a third joins them.
+ */
 const CHAIN_CALLS: Array<{ name: string; run: () => Promise<unknown> }> = [
   { name: "koios read", run: () => koios(0, "/tip") },
   { name: "koios submit", run: () => submitTx(0, SIGNED_TX) },
@@ -96,6 +107,15 @@ const CHAIN_CALLS: Array<{ name: string; run: () => Promise<unknown> }> = [
   {
     name: "blockfrost submit",
     run: () => bfSubmitTx({ base: "https://example.invalid/api/v0" }, SIGNED_TX),
+  },
+  // `forgetPrice()` first: a cached reading short-circuits the fetch, and a
+  // case that never reaches the network proves nothing about it either way.
+  {
+    name: "price service",
+    run: () => {
+      forgetPrice();
+      return fetchAdaPrice("usd");
+    },
   },
 ];
 

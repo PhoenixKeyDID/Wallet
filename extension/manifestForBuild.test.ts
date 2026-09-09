@@ -121,6 +121,39 @@ describe("manifestForBuild > an origin already declared is not declared twice", 
   });
 });
 
+describe("extraChainOrigins > a port cannot be expressed in a match pattern", () => {
+  it("refuses a chain endpoint carrying a port, and says why", () => {
+    // Measured: a build pointed at `https://my-node.example:8443` wrote a
+    // manifest declaring that pattern, and the packaging gate then printed two
+    // contradictory sentences about it. The manifest was the wrong artifact to
+    // argue about — Chrome matches the host part whole, so the pattern matches
+    // nothing and the extension reaches that endpoint never. Refused where it
+    // is written rather than where it is later noticed.
+    expect(() =>
+      extraChainOrigins({ VITE_CHAIN_BASE_MAINNET: "https://my-node.example:8443/api/v0" }),
+    ).toThrow(/no place for one/);
+  });
+
+  it("says what to do instead", () => {
+    let message = "";
+    try {
+      extraChainOrigins({ VITE_CHAIN_BASE_MAINNET: "https://my-node.example:8443/api/v0" });
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).toContain("my-node.example:8443");
+    expect(message).toMatch(/443|web app/);
+  });
+
+  it("accepts the same host on the default port", () => {
+    // The direction that keeps the rule from being a nuisance: a self-hosted
+    // endpoint is the documented reason this variable exists.
+    expect(extraChainOrigins({ VITE_CHAIN_BASE_MAINNET: "https://my-node.example/api/v0" })).toEqual(
+      ["https://my-node.example"],
+    );
+  });
+});
+
 describe("extraChainOrigins > a project id alone still names a host", () => {
   it("resolves the vendor origin with no URL in the variable", () => {
     // The case a text search of the bundle cannot see, and the reason the gate

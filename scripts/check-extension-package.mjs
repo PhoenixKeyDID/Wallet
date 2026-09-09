@@ -434,15 +434,57 @@ if (!existsSync(join(DIST, RECEIPT))) {
   }
 }
 
-for (const pattern of manifest.host_permissions ?? []) {
-  const m = /^https:\/\/([a-z0-9.-]+)\/\*$/i.exec(pattern);
+/**
+ * One reading of a `host_permissions` pattern, used everywhere it is read.
+ *
+ * There were three, and they disagreed. The strict regex here dropped a
+ * pattern carrying a port; `bundleHosts` above parses with `new URL`, which
+ * keeps the port. So a build pointed at `https://my-node.example:8443` produced
+ * a manifest declaring that host, and the gate then printed, two lines apart,
+ * that the pattern was rejected for "a wildcard scheme or host" — there was no
+ * wildcard — and that `host_permissions` did not declare a host it declares
+ * verbatim. A reader following those two sentences adds a wildcard.
+ *
+ * `reason` is what the pattern is wrong about, so the message can name the
+ * actual cause instead of the nearest rule.
+ */
+function parseHostPermission(pattern) {
+  const m = /^https:\/\/([^/*]+)\/\*$/i.exec(pattern);
   if (!m) {
-    fail(
-      `host_permissions declares "${pattern}" — only \`https://<host>/*\` with a literal ` +
-        `host is allowed; a wildcard scheme or host grants reach over sites nobody reviewed`,
-    );
+    return {
+      host: null,
+      reason:
+        `only \`https://<host>/*\` with a literal host is allowed; a wildcard scheme or ` +
+        `host grants reach over sites nobody reviewed`,
+    };
+  }
+  const authority = m[1].toLowerCase();
+  // Chrome's match patterns have no place for a port — the host part is matched
+  // whole, and a pattern carrying `:8443` matches nothing, so the extension
+  // simply cannot reach that endpoint. Caught here rather than left to Chrome,
+  // which reports it as a chain read that returned nothing.
+  if (authority.includes(":")) {
+    return {
+      host: null,
+      reason:
+        `a Chrome match pattern has no place for a port, so this one matches nothing and ` +
+        `the extension cannot reach that endpoint at all — point the endpoint at ` +
+        `443, or run the wallet as a web page, where ports are ordinary`,
+    };
+  }
+  if (!/^[a-z0-9.-]+$/.test(authority)) {
+    return { host: null, reason: `"${authority}" is not a literal host` };
+  }
+  return { host: authority, reason: null };
+}
+
+for (const pattern of manifest.host_permissions ?? []) {
+  const parsed = parseHostPermission(pattern);
+  if (!parsed.host) {
+    fail(`host_permissions declares "${pattern}" — ${parsed.reason}`);
     continue;
   }
+  const m = [pattern, parsed.host];
   const host = m[1].toLowerCase();
   // Two ways a host earns its entry, and a private build needs the second:
   // named in the reviewed source, or compiled into this bundle by a build-time
@@ -475,12 +517,26 @@ for (const pattern of manifest.host_permissions ?? []) {
  * `bundleHosts` is gathered above, where the other direction also needs it.
  */
 const declaredHosts = new Set(
+  (manifest.host_permissions ?? []).map((p) => parseHostPermission(p).host).filter(Boolean),
+);
+/**
+ * Every authority the manifest mentions, valid pattern or not.
+ *
+ * One cause must produce one sentence. A pattern rejected above for carrying a
+ * port is absent from `declaredHosts`, so this loop would go on to say the
+ * manifest does not declare a host it declares verbatim — a second sentence,
+ * contradicting the first, about the same one mistake. The reader then has to
+ * guess which of the two to act on, and the reachable wrong guess is adding a
+ * wildcard.
+ */
+const mentionedAuthorities = new Set(
   (manifest.host_permissions ?? [])
-    .map((p) => /^https:\/\/([a-z0-9.-]+)\/\*$/i.exec(p)?.[1]?.toLowerCase())
+    .map((p) => /^https:\/\/([^/*]+)\/\*$/i.exec(p)?.[1]?.toLowerCase())
     .filter(Boolean),
 );
 for (const host of bundleHosts) {
   if (!declaredHosts.has(host)) {
+    if (mentionedAuthorities.has(host)) continue; // already reported, by its real cause
     fail(
       `this build reads the chain from ${host}, which host_permissions does not declare — ` +
         `Chrome blocks every chain read and the wallet reports "no readable reply", which ` +
@@ -495,23 +551,42 @@ if (problems.length) {
   process.exit(1);
 }
 
-// The closing sentence names what was actually measured, split by which of the
-// two blessings each host holds. The single-source version of this line said
-// every host was "backed by provider.ts or chainEnv.ts" — true when source was
-// the only blessing, and false the moment a build could widen the manifest for
-// itself. It kept printing the old sentence about hosts neither file mentions,
-// which is the failure this whole check exists to catch, committed by the check.
-const declaredHostList = (manifest.host_permissions ?? []).map((p) =>
-  p.replace(/^https:\/\//, "").replace(/\/.*$/, "").toLowerCase(),
-);
-const fromBuild = declaredHostList.filter((h) => bundleHosts.has(h));
-const fromSource = declaredHostList.filter((h) => !bundleHosts.has(h));
+/**
+ * The closing sentence names what was measured, and it took two tries to get
+ * right — both wrong in the same way, which is why the shape is written out.
+ *
+ * Version one said every host was "backed by provider.ts or chainEnv.ts". True
+ * while source was the only blessing, false the moment a build could widen the
+ * manifest for itself, and it went on printing about hosts neither file names.
+ *
+ * Version two split the list by `bundleHosts.has(h)` — asking one question and
+ * inferring the other from its negation. A host holding *both* blessings then
+ * landed in the build-only bucket and was announced as "reviewed only by whoever
+ * set the build variable", which is the ordinary case: the receipt lists only
+ * origins the manifest did not already declare, and every vendor host is named
+ * in `chainEnv.ts`, so `VITE_BLOCKFROST_PROJECT_ID_PREPROD` alone produced that
+ * sentence about a host CODEOWNERS gates on its own line. Understating is the
+ * safe direction, but a warning that is wrong in the reassuring-to-ignore
+ * direction teaches the reader to skip the line — and the line exists for the
+ * day it is right.
+ *
+ * So each host is asked *both* questions, and the three answers are named.
+ */
+const declaredHostList = (manifest.host_permissions ?? [])
+  .map((p) => parseHostPermission(p).host)
+  .filter(Boolean);
+const inSource = (h) => providerHosts.has(h);
+const inBuild = (h) => bundleHosts.has(h);
+const both = declaredHostList.filter((h) => inSource(h) && inBuild(h));
+const sourceOnly = declaredHostList.filter((h) => inSource(h) && !inBuild(h));
+const buildOnly = declaredHostList.filter((h) => !inSource(h) && inBuild(h));
+const reviewed = sourceOnly.length + both.length;
 const backing =
-  fromBuild.length === 0
-    ? `${fromSource.length} host permissions, all named as URL literals in provider.ts or chainEnv.ts`
-    : `${fromSource.length} host permissions named in provider.ts or chainEnv.ts, and ` +
-      `${fromBuild.length} this build declared for itself (${fromBuild.join(", ")}) — ` +
-      `reviewed only by whoever set the build variable`;
+  buildOnly.length === 0
+    ? `${reviewed} host permissions, all named as URL literals in provider.ts or chainEnv.ts`
+    : `${reviewed} host permissions named in provider.ts or chainEnv.ts, and ` +
+      `${buildOnly.length} this build declared for itself and no source names ` +
+      `(${buildOnly.join(", ")}) — reviewed only by whoever set the build variable`;
 console.log(
   `Extension package OK — manifest v3 loads, no manifest key or permission outside ` +
     `the reviewed set, CSP allows no remote code, page-world code imports nothing but ` +

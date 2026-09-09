@@ -57,7 +57,29 @@ export function extraChainOrigins(env: Record<string, string | undefined>): stri
     // into a scheme is a host nobody reviewed. Nothing is assembled here. The
     // whole origin is parsed out of one value that already exists, so there is
     // no seam where a different host could be introduced.
-    if (src && src.kind === "blockfrost") origins.add(new URL(src.base).origin);
+    if (src && src.kind === "blockfrost") {
+      const u = new URL(src.base);
+      // Refused at the point of writing, not left for the packaging gate.
+      //
+      // A Chrome match pattern has no place for a port: `https://host:8443/*`
+      // matches nothing, so the extension cannot reach that endpoint at all.
+      // Writing it anyway produces a manifest that loads and an extension that
+      // silently reaches nothing, and the wallet reports the endpoint as down.
+      // The gate catches it, but by then the build has already succeeded and
+      // somebody may have packed the directory.
+      //
+      // `chainSource.ts` allows a port on purpose — the wallet also runs as a
+      // web page, where a self-hosted endpoint on 8443 is ordinary. The
+      // restriction belongs to this target, so it is stated here.
+      if (u.port) {
+        throw new Error(
+          `Chain endpoint "${src.base}" carries a port, and a Chrome match pattern has no ` +
+            `place for one — an extension built against it would reach nothing. Point the ` +
+            `endpoint at 443, or build the web app, where ports are ordinary.`,
+        );
+      }
+      origins.add(u.origin);
+    }
   }
   return [...origins];
 }

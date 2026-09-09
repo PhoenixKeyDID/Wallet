@@ -10,9 +10,17 @@
 # their own pull request — so with a single owner the rule was unsatisfiable for
 # every PR that owner opened, and every merge went through with admin override.
 # A rule that is bypassed every time stops being read, which is worse than not
-# having it. The second account carries the review role: it opens no PRs here,
-# it reviews them, and it is expected to say no. A review round that never
-# refuses is a rubber stamp, and a rubber stamp detects nothing.
+# having it.
+#
+# What is enforced, and what is only a convention — the two are separate, and
+# writing them as one sentence would be this file claiming a property nothing
+# measures. **Enforced by GitHub:** an approving review from an account other
+# than the one that opened the PR. **Convention:** the second account is used
+# for the review role rather than for authoring, and a review round is expected
+# to be able to refuse — a round that never says no is a rubber stamp, and a
+# rubber stamp detects nothing. Nothing in this file prevents that account from
+# opening a PR; if that matters enough to enforce, it belongs in branch
+# protection, not in a comment.
 
 /src/lib/cardano/connect.ts     @AladinContract @GreenSun-Tech
 /src/lib/cardano/send.ts        @AladinContract @GreenSun-Tech

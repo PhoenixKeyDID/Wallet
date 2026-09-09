@@ -14,7 +14,15 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, cpSync, existsSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  rmSync,
+  cpSync,
+  utimesSync,
+} from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -46,6 +54,13 @@ function stage(opts: {
     writeFileSync(join(dir, ".chain-origins.json"), JSON.stringify(opts.receipt ?? []) + "\n");
   }
   writeFileSync(join(dir, "popup.js"), `export const x = 1;\n${opts.js ?? ""}`);
+}
+
+/** Stages a backing source in `where` and returns its path. */
+function backingSourceIn(where: string, body: string): string {
+  const f = join(where, "fake-source.ts");
+  writeFileSync(f, body);
+  return f;
 }
 
 function runGate(backingSources?: string[]) {
@@ -92,6 +107,103 @@ describe("check:package > the default package passes", () => {
     stage({ receipt: [] });
     expect(runGate().code).toBe(0);
   });
+
+  it("says out loud that it is grading a directory that is not dist-extension/", () => {
+    // Every case in this file sets PHOENIX_DIST, so every case triggers this
+    // warning — and until this assertion existed, none of them looked at it.
+    // The warning is not for whoever reaches for the variable on purpose; it is
+    // for the variable left over in a shell, after which the gate prints a
+    // confident OK about somewhere else. That is the third state: not "matches",
+    // not "differs", but "measured something else".
+    stage({ receipt: [] });
+    expect(runGate().out).toMatch(/PHOENIX_DIST is set/);
+  });
+
+  it("refuses a directory older than the source it was built from", () => {
+    // Staleness is the failure where every other rule in this gate is graded
+    // against an artifact nobody is shipping. It had no case at all until the
+    // PHOENIX_DIST seam made one possible in three lines.
+    stage({ receipt: [] });
+    const longAgo = new Date("2020-01-01T00:00:00Z");
+    utimesSync(join(dir, "manifest.json"), longAgo, longAgo);
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/older than the source/);
+  });
+});
+
+describe("check:package > the closing sentence says what was measured", () => {
+  // Two earlier versions of this line were wrong in the same way: each asked one
+  // question and inferred the other from its negation. Asserting the sentence
+  // itself, because a line nobody reads for content is a line that drifts.
+
+  it("calls every host reviewed when the receipt is empty", () => {
+    stage({ receipt: [] });
+    const { out } = runGate();
+    expect(out).toMatch(/all named as URL literals in provider\.ts or chainEnv\.ts/);
+    expect(out).not.toMatch(/reviewed only by whoever/);
+  });
+
+  it("does not call a host build-only when a source names it too", () => {
+    // The ordinary build, and the case version two got wrong: the receipt lists
+    // only origins the manifest did not already declare, and the vendor host is
+    // named in chainEnv.ts — so a host holding both blessings was announced as
+    // reviewed by nobody. A warning wrong in the ignorable direction teaches the
+    // reader to skip the line it exists to make them read.
+    const src = backingSourceIn(dir, `export const H = ["https://api.koios.rest"];\n`);
+    const m = BASE_MANIFEST();
+    m.host_permissions = ["https://api.koios.rest/*"];
+    m.content_security_policy.extension_pages =
+      "script-src 'self'; connect-src 'self' https://api.koios.rest; object-src 'none'";
+    stage({ manifest: m, receipt: ["https://api.koios.rest"] });
+    const { code, out } = runGate([src]);
+    expect(code).toBe(0);
+    expect(out).not.toMatch(/reviewed only by whoever/);
+  });
+
+  it("names the host nobody reviewed when there really is one", () => {
+    const src = backingSourceIn(dir, `export const H = ["https://api.koios.rest"];\n`);
+    const m = BASE_MANIFEST();
+    m.host_permissions = ["https://api.koios.rest/*", "https://my-node.example/*"];
+    m.content_security_policy.extension_pages =
+      "script-src 'self'; connect-src 'self' https://api.koios.rest https://my-node.example; object-src 'none'";
+    stage({ manifest: m, receipt: ["https://my-node.example"] });
+    const { code, out } = runGate([src]);
+    expect(code).toBe(0);
+    expect(out).toMatch(/1 this build declared for itself and no source names \(my-node\.example\)/);
+  });
+});
+
+describe("check:package > one reading of a host pattern, not three", () => {
+  it("names the port as the reason, not a wildcard that is not there", () => {
+    // A build pointed at a self-hosted endpoint on a non-default port produced
+    // two contradictory sentences two lines apart: the pattern rejected for "a
+    // wildcard scheme or host" — there was none — and `host_permissions` said
+    // not to declare a host it declares verbatim. The strict regex dropped the
+    // port; `new URL` kept it. A reader following those two sentences adds a
+    // wildcard, which is the one change that would make things worse.
+    const m = BASE_MANIFEST();
+    m.host_permissions.push("https://my-node.example:8443/*");
+    m.content_security_policy.extension_pages += " https://my-node.example:8443";
+    stage({ manifest: m, receipt: ["https://my-node.example:8443"] });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/no place for a port/);
+    expect(out).not.toMatch(/wildcard scheme or host/);
+    expect(out).not.toMatch(/host_permissions does not declare/);
+  });
+
+  it("still refuses an actual wildcard, and says so", () => {
+    // The direction that keeps the rule honest: renaming the reason must not
+    // have cost the original one.
+    const m = BASE_MANIFEST();
+    m.host_permissions.push("https://*/*");
+    m.content_security_policy.extension_pages += " https://*";
+    stage({ manifest: m, receipt: [] });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/wildcard scheme or host/);
+  });
 });
 
 /**
@@ -109,12 +221,7 @@ const SOURCE_WITH_A_HOST_IN_PROSE =
   `];\n`;
 
 describe("check:package > a host must be reachable by code, not merely mentioned", () => {
-  /** Stages a backing source and returns its path. */
-  function backingSource(body: string): string {
-    const f = join(dir, "fake-source.ts");
-    writeFileSync(f, body);
-    return f;
-  }
+  const backingSource = (body: string) => backingSourceIn(dir, body);
 
   /**
    * Written as whole literals, not assembled from a host variable: `check:urls`

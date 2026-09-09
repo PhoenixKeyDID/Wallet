@@ -24,6 +24,7 @@
  * their own money with no sign that anything went wrong.
  */
 import { PRICE_BASE } from "./provider";
+import { assertNoRedirect } from "./blockfrost";
 
 /** Currencies offered. One per shipped locale, plus USD as the common ground. */
 export const FIAT_CURRENCIES = ["usd", "vnd", "eur", "jpy"] as const;
@@ -114,7 +115,20 @@ export async function fetchAdaPrice(currency: FiatCurrency, nowMs = Date.now()):
 
   const res = await fetch(`${PRICE_BASE}/simple/price?ids=cardano&vs_currencies=${currency}`, {
     headers: { accept: "application/json" },
+    // The chain calls refuse a redirect because a screen names their host. This
+    // one is named in a different place and just as publicly: the README says
+    // the indexer and the price service "are the only hosts this wallet
+    // contacts". A followed redirect makes that sentence false, and it does so
+    // where nobody would look — the price arrives, the number is plausible, and
+    // the third party seeing each user's IP is one nobody listed.
+    //
+    // Cheap to refuse, unlike the backend path: a price that cannot be fetched
+    // is an ordinary outcome here, already handled — the fiat line says where
+    // the number came from or says there is none, and the wallet is fully
+    // usable without it.
+    redirect: "manual",
   });
+  assertNoRedirect(res, "/simple/price", PRICE_BASE);
   // A rate limit is the expected failure on a free, key-less tier, and it is not
   // a different kind of event from any other refusal: in both cases there is no
   // price, and the screen must say so rather than reuse an old one.
