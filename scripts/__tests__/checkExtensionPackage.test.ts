@@ -768,12 +768,29 @@ describe("check:package > a malformed manifest is reported, never a stack trace"
     // So this case iterates the containers rather than naming one. A test that
     // pins the instance that was noticed grows a gate no faster than the defect
     // moves.
-    const CONTAINERS: Array<[string, RegExp]> = [
-      ["background", /declares no service_worker/],
-      ["action", /declares no action\.default_popup/],
-      ["content_security_policy", /got: \(none\)|has no `connect-src`/],
+    // Each container carries its own expected sentence rather than one built by
+    // escaping the field name. The escaping version looked careful and did
+    // nothing — its character class closed at the first `]`, so every name came
+    // back unchanged. Harmless while the three names are plain words, and a
+    // silently loosened assertion the day someone adds `content_scripts[0]`.
+    const CONTAINERS: Array<{ field: string; wrongType: RegExp; downstream: RegExp }> = [
+      {
+        field: "background",
+        wrongType: /manifest background is \w+.*, not an object/,
+        downstream: /declares no service_worker/,
+      },
+      {
+        field: "action",
+        wrongType: /manifest action is \w+.*, not an object/,
+        downstream: /declares no action\.default_popup/,
+      },
+      {
+        field: "content_security_policy",
+        wrongType: /manifest content_security_policy is \w+.*, not an object/,
+        downstream: /got: \(none\)|has no `connect-src`/,
+      },
     ];
-    for (const [field, downstream] of CONTAINERS) {
+    for (const { field, wrongType, downstream } of CONTAINERS) {
       for (const bad of [5, "a-string.js", [], null]) {
         const label = `${field}=${JSON.stringify(bad)}`;
         const m = BASE_MANIFEST();
@@ -781,14 +798,33 @@ describe("check:package > a malformed manifest is reported, never a stack trace"
         stage({ manifest: m });
         const { code, out } = runGate();
         expect(code, label).toBe(1);
-        expect(out, label).toMatch(
-          new RegExp(`manifest ${field.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")} is \\w+.*, not an object`),
-        );
+        expect(out, label).toMatch(wrongType);
         // The sentence about the field inside it must not appear: that is the
         // whole defect, and asserting only the correct line leaves the suite
         // green on both sides of it.
         expect(out, label).not.toMatch(downstream);
       }
+    }
+  });
+
+  it("still refuses a container that is missing outright, not only a wrong-typed one", () => {
+    // The state the three-state `objectAt` was written for, and the one nothing
+    // was watching. Measured: reverting `objectAt` to return `null` for absent —
+    // the two-state version it replaced — left the whole suite at 604/604 and
+    // all eight gates at exit 0, while a manifest with no `content_security_policy`
+    // block and one with no `action` block both went from a finding to
+    // `Extension package OK`.
+    //
+    // The cases above only ever *replace* a container with a wrong value. Absent
+    // is a third thing, it is the commonest shape a bad edit leaves behind, and
+    // for the CSP it removes the two rules that keep remote code out.
+    for (const field of ["action", "background", "content_security_policy"]) {
+      const m = BASE_MANIFEST();
+      delete m[field];
+      stage({ manifest: m });
+      const { code, out } = runGate();
+      expect(code, `absent ${field}`).toBe(1);
+      expect(out, `absent ${field}`).not.toMatch(/Extension package OK/);
     }
   });
 
@@ -798,13 +834,26 @@ describe("check:package > a malformed manifest is reported, never a stack trace"
     // returns `[]`, an empty list is a valid answer, and the cross-check against
     // `connect-src` reasoned from it — so one cause printed five sentences, and
     // the four loudest ones pointed away from it at hosts that were fine.
-    const m = BASE_MANIFEST();
-    m.host_permissions = 5;
-    stage({ manifest: m });
-    const { code, out } = runGate();
-    expect(code).toBe(1);
-    expect(out).toMatch(/host_permissions is number, not a list/);
-    expect(out).not.toMatch(/which is not in host_permissions/);
+    //
+    // Both depths, because the first fix only covered the container: `[123]` is
+    // a list, so the container reads fine, and the element does not. It printed
+    // its element finding plus the same four derived lines — unchanged by the
+    // fix that was supposed to have killed them. This file has already written
+    // that lesson down twice about itself.
+    const CASES: Array<[unknown, RegExp]> = [
+      [5, /host_permissions is number, not a list/],
+      [[123], /host_permissions contains number, not a string/],
+      [[null], /host_permissions contains null, not a string/],
+    ];
+    for (const [value, own] of CASES) {
+      const m = BASE_MANIFEST();
+      m.host_permissions = value;
+      stage({ manifest: m });
+      const { code, out } = runGate();
+      expect(code, JSON.stringify(value)).toBe(1);
+      expect(out, JSON.stringify(value)).toMatch(own);
+      expect(out, JSON.stringify(value)).not.toMatch(/which is not in host_permissions/);
+    }
   });
 
   it("still compares against a list that is genuinely empty", () => {
@@ -831,7 +880,7 @@ describe("check:package > a malformed manifest is reported, never a stack trace"
     // claim about the contents of something that has no contents. `[]` was
     // worse: `got:` followed by nothing, so the offending value appeared as
     // empty space.
-    for (const bad of [5, [], {}, true]) {
+    for (const bad of [5, [], {}, true, null]) {
       const m = BASE_MANIFEST();
       m.content_security_policy = { extension_pages: bad };
       stage({ manifest: m });

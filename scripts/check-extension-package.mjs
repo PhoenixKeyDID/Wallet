@@ -116,21 +116,36 @@ const typeName = (v) => (v === null ? "null" : Array.isArray(v) ? "a list" : typ
  * gates the array *and* every element in it — so this is the gate matching a
  * standard it had already set for itself, in a reader that carries less weight
  * than this one.
+ *
+ * Returns the readable entries **and** whether every level read cleanly, because
+ * callers that reason onward from the list need the second answer and cannot
+ * derive it: an empty list is a valid answer, so `[]` from a wrong-typed field
+ * is indistinguishable from `[]` the manifest really declared.
  */
-const stringsIn = (value, field) => {
-  const out = [];
+const stringListAt = (value, field) => {
+  const items = [];
+  let readable = true;
   for (const entry of asArray(value, field)) {
     if (typeof entry === "string") {
-      out.push(entry);
+      items.push(entry);
       continue;
     }
+    readable = false;
     fail(
       `manifest ${field} contains ${typeName(entry)}, not a string — Chrome refuses ` +
         `to load a manifest shaped this way, and that entry was not checked.`,
     );
   }
-  return out;
+  // `asArray` reports a wrong-typed container and hands back `[]`, which the loop
+  // above cannot see, so ask the value itself. Both depths, because a
+  // container-only version of this flag was written first and `[123]` walked
+  // straight past it — the same one-level-too-shallow fix this file has now made
+  // three times.
+  if (value !== undefined && value !== null && !Array.isArray(value)) readable = false;
+  return { items, readable };
 };
+
+const stringsIn = (value, field) => stringListAt(value, field).items;
 
 /**
  * One value that has to be an object before fields can be read off it.
@@ -369,9 +384,8 @@ if (manifest === null || typeof manifest !== "object" || Array.isArray(manifest)
  * runs. Counting call sites instead of running the case gives five; the number
  * that belongs in a file arguing "measured, not feared" is the measured one.
  */
-const hostPermissions = stringsIn(manifest.host_permissions, "host_permissions");
 /**
- * Whether that list can be compared against anything.
+ * …and whether that list can be compared against anything.
  *
  * `stringsIn` returns `[]` for a wrong-typed field, having already said so — and
  * an empty list is a *valid* answer that other rules then reason from. The
@@ -383,17 +397,24 @@ const hostPermissions = stringsIn(manifest.host_permissions, "host_permissions")
  * Worse, the type finding claims "every rule below about host_permissions was
  * skipped" — and that sentence was false while those four printed underneath it.
  *
- * The predicate has to match `asArray`'s own notion of readable, not a tighter
- * one. Written as "undefined or an array" it excluded `null` — which `asArray`
- * accepts as an empty list without complaint — so `"host_permissions": null`
- * produced no finding at all and the gate exited 0. That is the direction that
- * goes quiet, and it was introduced by the fix for the noise directly above:
- * suppressing a consequence is one edit away from suppressing the cause.
+ * The flag comes from the reader itself rather than being re-derived here. Two
+ * hand-written spellings failed first, in opposite directions, and neither was
+ * possible once this asked `stringListAt` instead:
+ *
+ *   • "undefined or an array" excluded `null` — which `asArray` accepts as an
+ *     empty list without complaint — so `"host_permissions": null` produced no
+ *     finding at all and the gate exited 0.
+ *   • adding `null` back fixed that and still only asked about the *container*,
+ *     so `[123]` printed its element finding plus the same four derived lines,
+ *     unchanged by the fix meant to have killed them.
+ *
+ * A predicate restating what another function already decided is a copy with no
+ * route back to its source: change the reader, and nothing here complains.
  */
-const hostPermissionsReadable =
-  manifest.host_permissions === undefined ||
-  manifest.host_permissions === null ||
-  Array.isArray(manifest.host_permissions);
+const { items: hostPermissions, readable: hostPermissionsReadable } = stringListAt(
+  manifest.host_permissions,
+  "host_permissions",
+);
 
 // 4 — it loads at all.
 if (manifest.manifest_version !== 3) {
@@ -464,10 +485,21 @@ const cspBlock = objectAt(manifest.content_security_policy, "content_security_po
  * worse: it printed `got:` with nothing after it, so the reader was shown an
  * empty space where the offending value should be.
  */
+// `?? ""` deliberately not used on `extension_pages`, unlike the two fields
+// above: this is the third field with that shape, and merging `null` into
+// "absent" is exactly what those two were just fixed for. A block that exists
+// holding `"extension_pages": null` is a wrong type and gets the type sentence;
+// a block that does not exist at all is an empty policy and gets the policy
+// sentences.
 const cspRaw =
   cspBlock === null
     ? null
-    : stringAt(cspBlock?.extension_pages ?? "", "content_security_policy.extension_pages");
+    : cspBlock === undefined
+      ? ""
+      : stringAt(
+          cspBlock.extension_pages === undefined ? "" : cspBlock.extension_pages,
+          "content_security_policy.extension_pages",
+        );
 const cspReadable = cspRaw !== null;
 const csp = cspRaw ?? "";
 if (cspReadable && !/(^|;)\s*script-src\s+'self'\s*(;|$)/.test(csp)) {
@@ -638,7 +670,18 @@ for (const war of objectsIn(manifest.web_accessible_resources, "web_accessible_r
  */
 const background = objectAt(manifest.background, "background");
 const sw = stringAt(background?.service_worker ?? "", "background.service_worker");
-if (background && sw === "") fail("background declares no service_worker");
+if (manifest.background === undefined) {
+  // Required, not optional, and the asymmetry with the old code is the point:
+  // `background &&` sent "absent" and "wrong type" down the same silent branch,
+  // so a manifest with no `background` block at all exited 0 while an empty one
+  // was a finding. The service worker is where a dApp's CIP-30 requests land —
+  // without it the package installs, opens, shows a balance, and is not a wallet
+  // any site can talk to. `action`, three rules above, has always got a sentence
+  // for the same reason.
+  fail("manifest declares no background service worker");
+} else if (background && sw === "") {
+  fail("background declares no service_worker");
+}
 if (sw && !existsSync(join(DIST, sw))) fail(`background names "${sw}", which is not in the package`);
 
 /**
