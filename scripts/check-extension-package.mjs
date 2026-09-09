@@ -99,7 +99,10 @@ const asArray = (value, field) => {
   if (value === undefined) return [];
   if (Array.isArray(value)) return value;
   fail(
-    `manifest ${field} is ${typeof value}, not a list — Chrome refuses to load a ` +
+    // `typeName`, not `typeof`: the latter answers "object" for `null`, which is
+    // the one value a reader most needs named. The other two readers in this
+    // file already used it; this one had been left behind.
+    `manifest ${field} is ${typeName(value)}, not a list — Chrome refuses to load a ` +
       `manifest shaped this way, and every rule below about ${field} was skipped.`,
   );
   return [];

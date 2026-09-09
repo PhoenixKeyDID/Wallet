@@ -861,6 +861,32 @@ describe("check:package > a malformed manifest is reported, never a stack trace"
       expect(out, `dropped ${drop}`).toMatch(new RegExp(`but not[^\\n]*${drop}`));
     }
 
+    // Present-but-empty, which is the same broken path wearing a declared key.
+    // Measured: under a key-presence version of this rule, `"content_scripts":
+    // []` and a missing `content_scripts` both exited 0 — the second level of
+    // the same mistake the rule itself was written to stop making.
+    for (const emptied of ["content_scripts", "web_accessible_resources"]) {
+      const m = BASE_MANIFEST();
+      m[emptied] = [];
+      stage({ manifest: m });
+      const { code, out } = runGate();
+      expect(code, `empty ${emptied}`).toBe(1);
+      expect(out, `empty ${emptied}`).toMatch(new RegExp(`but not[^\\n]*${emptied}`));
+    }
+
+    // `null` for a list is a wrong type, not an absence — the answer `objectAt`
+    // gives for objects. While the two readers disagreed, these two exited 0,
+    // and for these two keys that means a silently half-built CIP-30 path.
+    for (const nulled of ["content_scripts", "web_accessible_resources", "permissions"]) {
+      const m = BASE_MANIFEST();
+      m[nulled] = null;
+      stage({ manifest: m });
+      const { code, out } = runGate();
+      expect(code, `null ${nulled}`).toBe(1);
+      expect(out, `null ${nulled}`).toMatch(new RegExp(`manifest ${nulled} is null, not a list`));
+      expect(out, `null ${nulled}`).not.toMatch(/TypeError/);
+    }
+
     // And the direction that keeps the rule honest: a wallet with none of the
     // three is a popup-only wallet, which is a real thing to ship.
     const m = BASE_MANIFEST();
