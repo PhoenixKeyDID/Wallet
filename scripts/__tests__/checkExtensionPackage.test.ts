@@ -662,6 +662,19 @@ describe("check:package > a malformed manifest is reported, never a stack trace"
     expect(out).toMatch(/https:\/\/\*\/\*/);
   });
 
+  it("does not print a finding that reads as its own bug", () => {
+    // `"manifest_version": "3"` is the commonest way to fail a `!==` comparison
+    // against a number, and interpolated bare it printed `manifest_version is 3,
+    // expected 3`. A reader shown that has been told the checker is broken —
+    // the same wrong conclusion a stack trace produces, arrived at politely.
+    const m = BASE_MANIFEST();
+    m.manifest_version = "3";
+    stage({ manifest: m });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/manifest_version is "3", expected 3/);
+  });
+
   it("names one bad host entry once, not once per rule that reads the list", () => {
     // Five separate rules read `host_permissions`, each re-reading it, so one
     // bad entry printed the same line five times. The report is what a reader
