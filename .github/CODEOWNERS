@@ -57,6 +57,11 @@
 # somebody could quietly turn into a real one, and the fixture that proves plain
 # HTTP is rejected is exactly the line worth noticing if it changes.
 /src/lib/cardano/__tests__/blockfrost.test.ts  @AladinContract @GreenSun-Tech
+# Names the default indexer, because the assertion is about the sentence the
+# receive screen shows: a redirect refusal has to name the host the user was
+# told about, and a test that only checked "it threw" would stay green through
+# a message that named the wrong one — which is the whole defect.
+/src/lib/cardano/__tests__/noRedirect.test.ts  @AladinContract @GreenSun-Tech
 
 # The two files a stranger reads first, and the ones a search engine indexes.
 # `docs/Phoenix Wallet-Feat.md` names the Midnight redemption portal and two

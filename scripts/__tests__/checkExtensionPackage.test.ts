@@ -116,10 +116,15 @@ describe("check:package > a host must be reachable by code, not merely mentioned
     return f;
   }
 
-  const widened = (host: string) => {
+  /**
+   * Written as whole literals, not assembled from a host variable: `check:urls`
+   * refuses an interpolated host anywhere in the repo, and it is right to —
+   * a URL built by concatenation is one nobody can grep for.
+   */
+  const widenedToEvilExample = () => {
     const m = BASE_MANIFEST();
-    m.host_permissions.push(`https://${host}/*`);
-    m.content_security_policy.extension_pages += ` https://${host}`;
+    m.host_permissions.push("https://evil.example/*");
+    m.content_security_policy.extension_pages += " https://evil.example";
     return m;
   };
 
@@ -129,7 +134,7 @@ describe("check:package > a host must be reachable by code, not merely mentioned
     // inside string literals asks the question that matters, which is whether
     // the code can hand this host to `fetch`.
     const src = backingSource(SOURCE_WITH_A_HOST_IN_PROSE);
-    stage({ manifest: widened("evil.example"), receipt: [] });
+    stage({ manifest: widenedToEvilExample(), receipt: [] });
     const { code, out } = runGate([src]);
     expect(code).toBe(1);
     expect(out).toMatch(/evil\.example/);
