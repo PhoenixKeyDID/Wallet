@@ -90,7 +90,13 @@ const fail = (msg) => problems.push(msg);
  * `stringsIn` and `objectsIn` below, and those are what the rules use.
  */
 const asArray = (value, field) => {
-  if (value === undefined || value === null) return [];
+  // `null` is a wrong type, not an absence — the same answer `objectAt` gives.
+  // While the two disagreed, `"content_scripts": null` and
+  // `"web_accessible_resources": null` were read as "the key is not there" and
+  // the package exited 0, which for those two keys means the CIP-30 path is
+  // silently half-built. Two readers in one file holding different opinions
+  // about `null` is a difference nothing announces.
+  if (value === undefined) return [];
   if (Array.isArray(value)) return value;
   fail(
     `manifest ${field} is ${typeof value}, not a list — Chrome refuses to load a ` +
@@ -135,6 +141,14 @@ const stringListAt = (value, field) => {
       `manifest ${field} contains ${typeName(entry)}, not a string — Chrome refuses ` +
         `to load a manifest shaped this way, and that entry was not checked.`,
     );
+  }
+  // An empty entry is the right *type* and still nothing to compare, so a
+  // type-only flag let `[""]` rebuild the whole pile it exists to prevent: four
+  // derived lines about hosts that were fine, plus one printing the offending
+  // value as a blank space. "Readable" has to mean usable, not well-typed.
+  if (items.some((s) => s === "")) {
+    readable = false;
+    fail(`manifest ${field} contains an empty string, which names nothing`);
   }
   // `asArray` reports a wrong-typed container and hands back `[]`, which the loop
   // above cannot see, so ask the value itself. Both depths, because a
@@ -485,12 +499,26 @@ const cspBlock = objectAt(manifest.content_security_policy, "content_security_po
  * worse: it printed `got:` with nothing after it, so the reader was shown an
  * empty space where the offending value should be.
  */
-// `?? ""` deliberately not used on `extension_pages`, unlike the two fields
-// above: this is the third field with that shape, and merging `null` into
-// "absent" is exactly what those two were just fixed for. A block that exists
-// holding `"extension_pages": null` is a wrong type and gets the type sentence;
-// a block that does not exist at all is an empty policy and gets the policy
-// sentences.
+/**
+ * `null` here is a wrong type, not an absence — and that is a *different* answer
+ * from the two fields above, deliberately.
+ *
+ * The two path fields keep `?? ""`, so `null` there joins "absent" and gets
+ * *"declares no …"*. That is the right answer for them: the question a reader
+ * has is whether a usable path exists, `null` means no, and one sentence says
+ * so. An earlier attempt to split those two apart with `raw === undefined` is
+ * what let four broken packages exit 0.
+ *
+ * A CSP is not a path. There is no "declares no extension_pages" to fall back
+ * on — the fallback is the policy rules themselves, and running them against
+ * `null` printed `got: (none)` for a value the reader can see in their file,
+ * plus a second sentence about the contents of something with no contents. So
+ * this field wants the type sentence and the two above do not.
+ *
+ * Stated because the shapes look identical and the answers differ: an earlier
+ * version of this comment claimed all three had been made to agree, which was
+ * measurably untrue and pointed the next reader at the wrong edit.
+ */
 const cspRaw =
   cspBlock === null
     ? null
@@ -670,17 +698,53 @@ for (const war of objectsIn(manifest.web_accessible_resources, "web_accessible_r
  */
 const background = objectAt(manifest.background, "background");
 const sw = stringAt(background?.service_worker ?? "", "background.service_worker");
-if (manifest.background === undefined) {
-  // Required, not optional, and the asymmetry with the old code is the point:
-  // `background &&` sent "absent" and "wrong type" down the same silent branch,
-  // so a manifest with no `background` block at all exited 0 while an empty one
-  // was a finding. The service worker is where a dApp's CIP-30 requests land —
-  // without it the package installs, opens, shows a balance, and is not a wallet
-  // any site can talk to. `action`, three rules above, has always got a sentence
-  // for the same reason.
-  fail("manifest declares no background service worker");
-} else if (background && sw === "") {
-  fail("background declares no service_worker");
+if (background && sw === "") fail("background declares no service_worker");
+
+/**
+ * The CIP-30 path is whole, or it is absent. Half of it is the failure.
+ *
+ * Three keys carry it and each is useless without the others: `content_scripts`
+ * puts the relay in the page, `web_accessible_resources` is what lets the page
+ * load `inpage.js`, and `background` is where the request lands. Drop any one
+ * and `window.cardano.phoenix` either never appears or answers nothing — the
+ * extension still installs, still opens, still shows a balance, and is not a
+ * wallet any site can talk to.
+ *
+ * **Written as a property rather than a required field, on purpose.** The first
+ * version of this rule required `background` alone, because `background` was the
+ * key that happened to be under discussion. Measured, that rule was wrong in
+ * both directions at once: it rejected a legitimate popup-only wallet that never
+ * wanted CIP-30, and it passed three manifests that keep `background` and drop
+ * one of the other two — which kill the CIP-30 path just as completely. A
+ * boundary drawn around the symptom admits exactly the cases the symptom did not
+ * happen to name.
+ *
+ * **Carrying it means holding something, not holding the key.** `"content_scripts":
+ * []` is a declared key and an empty list, and it kills the path exactly as dead
+ * as leaving the key out — measured, both exited 0 under a key-presence version
+ * of this rule. Asking "is the key there" is the same mistake one level down as
+ * asking "is `background` there".
+ */
+const CIP30_KEYS = ["background", "content_scripts", "web_accessible_resources"];
+/** Whether a key is present at all, wrong type included — see below. */
+const declared = (k) => manifest[k] !== undefined;
+/** Whether it actually carries the path. `background` empty has its own sentence. */
+const carries = (k) =>
+  k === "background" ? declared(k) : Array.isArray(manifest[k]) && manifest[k].length > 0;
+// Skipped when any of the three is the wrong type: `asArray` and `objectAt` have
+// already said so, and a second sentence here would contradict the first by
+// calling a declared key missing.
+const cip30Typed = CIP30_KEYS.every(
+  (k) => !declared(k) || k === "background" || Array.isArray(manifest[k]),
+);
+const cip30Carrying = CIP30_KEYS.filter(carries);
+if (cip30Typed && cip30Carrying.length !== 0 && cip30Carrying.length !== CIP30_KEYS.length) {
+  const missing = CIP30_KEYS.filter((k) => !carries(k));
+  fail(
+    `manifest declares ${cip30Carrying.join(", ")} but not ${missing.join(", ")} — ` +
+      `a dApp-facing wallet needs all three, and a popup-only wallet needs none of them; ` +
+      `with this set the page-world provider never answers and the extension still installs`,
+  );
 }
 if (sw && !existsSync(join(DIST, sw))) fail(`background names "${sw}", which is not in the package`);
 
@@ -960,7 +1024,18 @@ const mentionedAuthorities = new Set(
   hostPermissions.map((p) => parseHostPermission(p).authority).filter(Boolean),
 );
 for (const host of bundleHosts) {
-  if (!declaredHosts.has(host)) {
+  // The **second** consumer that reasons from an empty `hostPermissions`, and
+  // the one the first fix missed. `declaredHosts` is built from that same list,
+  // so an unreadable one turned every host the build reads into a finding
+  // saying the manifest does not declare it — under a line claiming "every rule
+  // below about host_permissions was skipped".
+  //
+  // It stayed invisible because no case in the suite stages a non-empty
+  // `.chain-origins.json`, so `bundleHosts` was always empty and this loop never
+  // ran; and the case that pins the first consumer matches on that consumer's
+  // wording, which this one does not share. Gating one of two call sites and
+  // calling the class fixed is how this file has been wrong three times.
+  if (hostPermissionsReadable && !declaredHosts.has(host)) {
     if (mentionedAuthorities.has(host)) continue; // already reported, by its real cause
     fail(
       `this build reads the chain from ${host}, which host_permissions does not declare — ` +

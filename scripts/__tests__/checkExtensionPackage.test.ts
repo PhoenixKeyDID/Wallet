@@ -818,14 +818,103 @@ describe("check:package > a malformed manifest is reported, never a stack trace"
     // The cases above only ever *replace* a container with a wrong value. Absent
     // is a third thing, it is the commonest shape a bad edit leaves behind, and
     // for the CSP it removes the two rules that keep remote code out.
-    for (const field of ["action", "background", "content_security_policy"]) {
+    // Each container names the sentence it must produce. Asserting only
+    // `code === 1` and "not OK" was not enough and was measurably not enough: a
+    // gate dying with a `TypeError` satisfies both, so a one-line tidy-up of the
+    // nested conditional below — removing the `cspBlock === undefined` branch —
+    // kept all 605 green while the gate crashed on a manifest with no CSP. The
+    // block this case lives in is named "never a stack trace"; every other case
+    // in it already refuses one, and this one had fewer constraints than its
+    // neighbours with no line saying why.
+    const ABSENT: Array<[string, RegExp]> = [
+      ["action", /declares no action\.default_popup/],
+      ["background", /but not background/],
+      ["content_security_policy", /must be exactly `script-src 'self'`/],
+    ];
+    for (const [field, sentence] of ABSENT) {
       const m = BASE_MANIFEST();
       delete m[field];
       stage({ manifest: m });
       const { code, out } = runGate();
       expect(code, `absent ${field}`).toBe(1);
+      expect(out, `absent ${field}`).toMatch(sentence);
       expect(out, `absent ${field}`).not.toMatch(/Extension package OK/);
+      expect(out, `absent ${field}`).not.toMatch(/TypeError/);
+      expect(out, `absent ${field}`).not.toMatch(/check-extension-package\.mjs:\d+/);
     }
+  });
+
+  it("keeps the CIP-30 path whole or absent, and says which half is missing", () => {
+    // The rule this replaced required `background` and nothing else, because
+    // `background` was the key under discussion. Measured, it was wrong in both
+    // directions at once: it rejected a popup-only wallet that never wanted
+    // CIP-30, and it passed three manifests that keep `background` and drop one
+    // of the other two — which kill the dApp path just as completely, since
+    // without `web_accessible_resources` no page can load `inpage.js` at all.
+    const KEYS = ["background", "content_scripts", "web_accessible_resources"];
+    for (const drop of KEYS) {
+      const m = BASE_MANIFEST();
+      delete m[drop];
+      stage({ manifest: m });
+      const { code, out } = runGate();
+      expect(code, `dropped ${drop}`).toBe(1);
+      expect(out, `dropped ${drop}`).toMatch(new RegExp(`but not[^\\n]*${drop}`));
+    }
+
+    // And the direction that keeps the rule honest: a wallet with none of the
+    // three is a popup-only wallet, which is a real thing to ship.
+    const m = BASE_MANIFEST();
+    for (const k of KEYS) delete m[k];
+    m.permissions = ["storage"];
+    stage({ manifest: m });
+    const { out } = runGate();
+    expect(out).not.toMatch(/needs all three/);
+  });
+
+  it("refuses a CSP that allows a script from somewhere else", () => {
+    // Property 3 of the four this gate claims at the top of the file — "no
+    // remote code… an extension that can fetch a script is an extension whose
+    // published source proves nothing" — and nothing was checking it. Replacing
+    // the whole rule with `if (false)` left 605/605 green while the gate printed
+    // "CSP allows no remote code" for a package that allows exactly that.
+    const m = BASE_MANIFEST();
+    m.content_security_policy.extension_pages =
+      "script-src 'self' https://evil.example; connect-src 'self' https://api.koios.rest " +
+      "https://preprod.koios.rest https://preview.koios.rest https://api.coingecko.com";
+    stage({ manifest: m });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/must be exactly `script-src 'self'`/);
+    expect(out).not.toMatch(/Extension package OK/);
+  });
+
+  it("does not blame the manifest for a host the build reads when the list is unreadable", () => {
+    // The second consumer of `hostPermissions`, and the one the first fix
+    // missed. No case in this file stages a non-empty `.chain-origins.json`, so
+    // this loop never ran under test and the gap was invisible — and the case
+    // that pins the first consumer matches on that consumer's wording, which
+    // this one does not share.
+    const src = backingSourceIn(dir, `export const H = ["https://my-node.example"];\n`);
+    const m = BASE_MANIFEST();
+    m.host_permissions = 5;
+    stage({ manifest: m, receipt: ["https://my-node.example"] });
+    const { code, out } = runGate([src]);
+    expect(code).toBe(1);
+    expect(out).toMatch(/host_permissions is number, not a list/);
+    expect(out).not.toMatch(/which host_permissions does not declare/);
+  });
+
+  it("calls an empty entry nothing, rather than comparing against it", () => {
+    // `""` is the right type and still names nothing, so a type-only readable
+    // flag let it rebuild the whole pile: four derived lines about hosts that
+    // were fine, plus one printing the offending value as a blank space.
+    const m = BASE_MANIFEST();
+    m.host_permissions = [""];
+    stage({ manifest: m });
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/host_permissions contains an empty string/);
+    expect(out).not.toMatch(/which is not in host_permissions/);
   });
 
   it("does not derive findings from a list it has just called unreadable", () => {
