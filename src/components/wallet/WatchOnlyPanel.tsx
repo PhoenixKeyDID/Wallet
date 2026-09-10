@@ -132,7 +132,7 @@ export function WatchOnlyPanel() {
         <p className="text-sm text-text-dim">
           {mode === "address" ? t("watch_addr_intro") : t("watch_intro")}
         </p>
-        <p className="text-xs text-amber-brand">⚠ {t("never_paste_seed")}</p>
+        <p className="text-xs text-amber-brand">{t("never_paste_seed")}</p>
         {/* A standalone watch-only view has no connected wallet to check the key
             against, so warn explicitly: addresses derived from someone else's
             key receive into THEIR wallet, not yours. */}
@@ -140,8 +140,8 @@ export function WatchOnlyPanel() {
           <>
             {/* Only the key path can link a whole account, so the amplification
                 warning belongs to it and not to the single-address path. */}
-            <p className="text-xs text-amber-brand">⚠ {t("watch_paste_own_only")}</p>
-            <p className="text-xs text-amber-brand">⚠ {t("watch_xvk_links_account")}</p>
+            <p className="text-xs text-amber-brand">{t("watch_paste_own_only")}</p>
+            <p className="text-xs text-amber-brand">{t("watch_xvk_links_account")}</p>
             <label className="block">
               <span className="text-xs text-text-hint">{t("acct_xvk_label")}</span>
               <textarea

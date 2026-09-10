@@ -104,7 +104,7 @@ export function PhoenixCustodyPanel({ did }: Props) {
       </div>
 
       {denied && (
-        <p className="text-xs text-amber-brand px-1">⚠ {t("phoenix_unauthorized")}</p>
+        <p className="text-xs text-amber-brand px-1">{t("phoenix_unauthorized")}</p>
       )}
 
       {anchorName && (
@@ -122,7 +122,7 @@ export function PhoenixCustodyPanel({ did }: Props) {
       {phoenix ? (
         <>
           {custodyAddress && (
-            <p className="text-xs text-amber-brand px-1">⚠ {t("custody_verify_note")}</p>
+            <p className="text-xs text-amber-brand px-1">{t("custody_verify_note")}</p>
           )}
           <BalanceView
             lovelace={lovelace}
