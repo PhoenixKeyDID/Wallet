@@ -372,16 +372,54 @@ export function buildProposal(
  * leftover token, and set change = Σinputs − fee − depositDelta.
  */
 /**
- * Extra vkey-witness the input-derived fee estimate can miss on this path.
- * DREP_REG / DREP_DE_REG / vote require a witness for the dRep (CIP-1852 role-3)
- * key, which is tied to NO input — so typhon, which sizes the witness set from
- * the inputs' credentials, can under-count by one witness and produce a fee that
- * the node rejects with FeeTooSmall (a liveness failure, never a loss). A vkey
- * witness is ~101 bytes on the wire (32-byte key + 64-byte sig + CBOR framing);
- * we add minFeeA·101 as a floor so the tx can never go out under the true
- * minimum. The over-estimate is ≤ ~0.005 ADA and comes back as change.
- * TODO(preprod): confirm the exact witness count against a live DREP_REG/vote
- * submit before enabling dRep registration/voting on mainnet.
+ * One vkey-witness of headroom on the manual-balance path.
+ *
+ * A vkey witness is exactly 101 bytes on the wire: CBOR `[bytes(32), bytes(64)]`
+ * = 1 array header + (1+1 header + 32 key) + (1+1 header + 64 sig). That number
+ * is not an estimate; `governance.fee.test.ts` encodes one and measures it.
+ *
+ * WHY THE MARGIN IS HERE — and the reason is not the one this comment used to
+ * give. It said typhon "sizes the witness set from the inputs' credentials" and
+ * so "can under-count by one witness" on a cert that names a key tied to no
+ * input. That is measurably FALSE. Measured against typhon 2.x, deriving the
+ * witness count from the fee it reports:
+ *
+ *     no certificate,   1 input,  1 credential  -> 1 witness
+ *     DREP_REG,         1 input,  1 credential  -> 2 witnesses
+ *     DREP_REG,         2 inputs, 1 credential  -> 2 witnesses  (deduped)
+ *     DREP_REG,         2 inputs, 2 credentials -> 3 witnesses
+ *     DREP_DE_REG,      1 input,  1 credential  -> 2 witnesses
+ *
+ * typhon counts the certificate's key, and dedupes input credentials. Better
+ * than "close enough": assembling the real signed transaction — the unsigned
+ * body with a witness set of N dummy vkey witnesses spliced in — gives a size
+ * typhon's estimate matches EXACTLY (368/368 and 404/404 bytes). Zero error,
+ * not a rounding margin. `governance.fee.test.ts` pins that.
+ *
+ * So the margin buys nothing against typhon. What it does buy is headroom
+ * against the SIGNER, which is the one part of the size that this code does not
+ * compute and cannot see: a CIP-30/CIP-95 wallet decides for itself how many
+ * witnesses to attach, and a wallet that attaches one more than the transaction
+ * strictly requires makes the body 101 bytes longer than anything measured
+ * here. That failure is `FeeTooSmall` — the node refuses the submit; nothing is
+ * lost and the user can retry — but it is a failure the user cannot act on.
+ *
+ * Cost of keeping it: minFeeA·101 = 4444 lovelace (~0.0044 ADA) per governance
+ * transaction, on preprod/mainnet parameters. NOTE that this is spent, not
+ * refunded — the previous comment claimed the over-estimate "comes back as
+ * change", and on this path it cannot: change is `Σinputs − depositDelta − fee`,
+ * so every extra lovelace of fee is one lovelace less change, paid to the
+ * network. Getting that backwards is what made an over-payment look free.
+ *
+ * Applies to DREP_REG and DREP_DE_REG only — they are the two builders that go
+ * through this function because of the deposit. `buildVote` and
+ * `buildVoteDelegation` use typhon's own `prepareTransaction`, so the old
+ * comment naming "vote" here described a path this constant never touched.
+ *
+ * TODO(preprod): the remaining unknown is narrow, and it is NOT the arithmetic
+ * above. It is how many witnesses a real CIP-95 signer attaches to a DREP_REG.
+ * If a live submit shows it attaches exactly the required set, this margin can
+ * go and the fee becomes exact.
  */
 const EXTRA_WITNESS_BYTES = 101;
 
@@ -413,8 +451,9 @@ function buildCertOnlyTxManualBalance(
   // measured fee comes out 4·minFeeA (=176 lovelace) short and the node rejects
   // with FeeTooSmall. Leaving the wide placeholder in place keeps the measured
   // size equal to the built size. Two passes converge (change width is stable).
-  // Add a one-witness floor (see EXTRA_WITNESS_BYTES) to the measured fee so the
-  // cert's dRep-key witness is always paid for even if the estimator misses it.
+  // Add one witness of headroom (see EXTRA_WITNESS_BYTES). Not because the
+  // estimator misses the cert's key — measured, it does not — but because the
+  // signer's witness count is the one term this code cannot see.
   const witnessMargin = ctx.protocolParams.minFeeA.multipliedBy(EXTRA_WITNESS_BYTES);
   let fee = tx.calculateFee().plus(witnessMargin);
   changeOutput.amount = totalAda.minus(depositDelta).minus(fee);
