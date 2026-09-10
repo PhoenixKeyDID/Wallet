@@ -8,7 +8,7 @@
  *   3. Register / de-register as a dRep  (DREP_REG / DREP_DE_REG).     ← needs dRep key
  *   4. Submit a Governance Action  (proposal procedure).              ← CIP-30 ready
  *
- * ⚠️ EXPERIMENTAL / UNAUDITED. Moves value (deposits). Two-step review in the
+ * EXPERIMENTAL / UNAUDITED. Moves value (deposits). Two-step review in the
  * panel + throwaway-preprod testing before trusting it. See tx.ts header.
  *
  * KEY-CONTROL CONSTRAINT (read `hard-constraint` in the build report):

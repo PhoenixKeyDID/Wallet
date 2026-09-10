@@ -561,7 +561,7 @@ export function LocalWalletPanel() {
     <div className="space-y-4" onPointerDown={() => session.touch()}>
       {/* The risk statement sits above every entry point, not below it. */}
       <div className="rounded-brand border border-amber-brand/40 bg-bg1 p-5 space-y-2">
-        <h3 className="text-sm font-medium text-amber-brand">⚠ {t("local_risk_title")}</h3>
+        <h3 className="text-sm font-medium text-amber-brand">{t("local_risk_title")}</h3>
         <p className="text-xs text-text-dim">{t("local_risk_body")}</p>
         {!isExtensionContext() && <p className="text-xs text-text-dim">{t("local_risk_web")}</p>}
       </div>
@@ -581,7 +581,7 @@ export function LocalWalletPanel() {
               <option value={2}>{t("network_preview")}</option>
               <option value={1}>{t("network_mainnet")}</option>
             </select>
-            {network === 1 && <span className="text-amber-brand">⚠ {t("local_mainnet_warning")}</span>}
+            {network === 1 && <span className="text-amber-brand">{t("local_mainnet_warning")}</span>}
           </label>
 
           {wallets.length === 0 ? (
@@ -632,7 +632,7 @@ export function LocalWalletPanel() {
       {step === "words" && (
         <div className="rounded-brand border border-border-soft bg-bg1 p-5 space-y-4">
           <h3 className="text-sm font-medium">{t("local_words_title")}</h3>
-          <p className="text-xs text-amber-brand">⚠ {t("local_words_warning")}</p>
+          <p className="text-xs text-amber-brand">{t("local_words_warning")}</p>
           {concealed ? (
             <div className="rounded-brand border border-border-soft bg-bg2 p-4 text-center space-y-2">
               <p className="text-sm">{t("local_concealed_body")}</p>
@@ -900,7 +900,7 @@ export function LocalWalletPanel() {
             <BalanceView lovelace={lovelace} assets={assets} address={primaryAddress(account)} />
             {!balanceOk && <p className="text-xs text-text-hint">{t("local_balance_unavailable")}</p>}
             {balanceOk && balanceMayBePartial && (
-              <p className="text-xs text-amber-brand">⚠ {t("local_balance_partial")}</p>
+              <p className="text-xs text-amber-brand">{t("local_balance_partial")}</p>
             )}
           </div>
 
@@ -945,7 +945,7 @@ export function LocalWalletPanel() {
             <p className="text-xs text-text-hint">{t("local_export_note")}</p>
 
             <div className="space-y-2 border-t border-border-soft pt-3">
-              <p className="text-xs text-amber-brand">⚠ {t("local_reveal_warning")}</p>
+              <p className="text-xs text-amber-brand">{t("local_reveal_warning")}</p>
               {revealed ? (
                 <div className="space-y-2">
                   <code className="mono block break-words text-xs">{revealed}</code>

@@ -43,7 +43,7 @@ type WithdrawReview = { amount: bigint; built: BuiltTx };
  * Lace-style multi-pool delegation needs multiple stake keys, which a single
  * connected CIP-30 account cannot express for keys it doesn't hold.
  *
- * ⚠️ Beta: same unaudited caveat as `SendForm`. Uses the stake key the
+ * Beta: same unaudited caveat as `SendForm`. Uses the stake key the
  * connected wallet reports via `getRewardAddresses()[0]` — never an invented key.
  */
 export function StakingPanel({

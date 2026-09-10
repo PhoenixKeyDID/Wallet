@@ -208,7 +208,7 @@ export function HistoryPanel({
       */}
       {!port.ownedIsComplete && (
         <div className="rounded-brand border border-border-amber bg-amber-brand/10 p-4 text-sm text-amber-brand space-y-1">
-          <p className="font-semibold">⚠ {t("hist_partial_title")}</p>
+          <p className="font-semibold">{t("hist_partial_title")}</p>
           <p className="text-xs">{t("hist_partial_body")}</p>
         </div>
       )}
@@ -225,7 +225,7 @@ export function HistoryPanel({
 
       {failed && (
         <div className="rounded-brand border border-border-amber bg-amber-brand/10 p-4 text-sm text-amber-brand space-y-2">
-          <p className="font-semibold">⚠ {t("hist_failed_title")}</p>
+          <p className="font-semibold">{t("hist_failed_title")}</p>
           <p className="text-xs">{t("hist_failed_body")}</p>
           <button
             type="button"
@@ -246,7 +246,7 @@ export function HistoryPanel({
       */}
       {unreadable.length > 0 && (
         <div className="rounded-brand border border-border-amber bg-amber-brand/10 p-4 text-sm text-amber-brand space-y-2">
-          <p className="font-semibold">⚠ {t("hist_unreadable_title")}</p>
+          <p className="font-semibold">{t("hist_unreadable_title")}</p>
           <p className="text-xs">{t("hist_unreadable_body", { count: unreadable.length })}</p>
           <ul className="space-y-1">
             {unreadable.map((u) => (

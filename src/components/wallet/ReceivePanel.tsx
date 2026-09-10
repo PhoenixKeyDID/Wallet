@@ -105,7 +105,7 @@ export function ReceivePanel({
   /**
    * The addresses the connected wallet said it watches.
    *
-   * Kept, not just reduced to a verdict, because the ✓ answers a narrower
+   * Kept, not just reduced to a verdict, because the match mark answers a narrower
    * question than the one a person reading this screen is actually asking. It
    * says *this key is yours*; they read *this address is safe to use*. Those
    * come apart: the advanced panel derives any kind at any index, while a local
@@ -275,8 +275,8 @@ export function ReceivePanel({
         {advOpen && (
           <div className="space-y-3">
             <p className="text-xs text-text-hint">{t("derive_by_index_help")}</p>
-            <p className="text-xs text-amber-brand">⚠ {t("never_paste_seed")}</p>
-            <p className="text-xs text-amber-brand">⚠ {t("paste_own_xvk_only")}</p>
+            <p className="text-xs text-amber-brand">{t("never_paste_seed")}</p>
+            <p className="text-xs text-amber-brand">{t("paste_own_xvk_only")}</p>
 
             <label className="block">
               <span className="text-xs text-text-hint">{t("acct_xvk_label")}</span>
@@ -349,16 +349,16 @@ export function ReceivePanel({
       )}
       {ownership === "mismatch" && (
         <div className="rounded-brand border border-border-amber bg-amber-brand/10 p-4 text-sm text-amber-brand space-y-1">
-          <p className="font-semibold">⚠ {t("xvk_mismatch_title")}</p>
+          <p className="font-semibold">{t("xvk_mismatch_title")}</p>
           <p className="text-xs">{t("xvk_mismatch_body")}</p>
         </div>
       )}
       {ownership === "match" && (
-        <p className="text-xs text-teal-brand">✓ {t("xvk_match_note")}</p>
+        <p className="text-xs text-teal-brand">{t("xvk_match_note")}</p>
       )}
       {unwatched && (
         <div className="rounded-brand border border-border-amber bg-amber-brand/10 p-4 text-sm text-amber-brand space-y-1">
-          <p className="font-semibold">⚠ {t("addr_unwatched_title")}</p>
+          <p className="font-semibold">{t("addr_unwatched_title")}</p>
           <p className="text-xs">{t("addr_unwatched_body")}</p>
           <p className="text-xs mono break-all">
             {unwatched.map((d) => d.path).join(" · ")}

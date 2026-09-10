@@ -6,7 +6,7 @@
  * two-step safety as `SendForm` — build unsigned → review in plain language →
  * sign+submit. Never build blind.
  *
- * ⚠️ EXPERIMENTAL / UNAUDITED — see `tx.ts` header. This module moves funds.
+ * EXPERIMENTAL / UNAUDITED — see `tx.ts` header. This module moves funds.
  */
 import "../node-globals";
 import BigNumber from "bignumber.js";

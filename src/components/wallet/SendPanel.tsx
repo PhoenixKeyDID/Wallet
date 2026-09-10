@@ -40,7 +40,7 @@ import {
  * every recipient/asset/fee in plain language) → Confirm & send (extension
  * signs, we merge the witness and submit). Never build blind.
  *
- * ⚠️ Beta: not yet security-audited. On mainnet it moves real value — the
+ * Beta: not yet security-audited. On mainnet it moves real value — the
  * review step and the "I checked the addresses" tick exist because an
  * on-chain send is irreversible.
  */
