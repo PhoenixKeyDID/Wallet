@@ -55,9 +55,20 @@ export type UncertainLock = {
 
 export function UncertainSubmitNotice({
   txHash,
+  durable,
   onAcknowledge,
 }: {
   txHash: string;
+  /**
+   * Whether this hash survives closing the tab.
+   *
+   * Not a detail, and not omittable. The reader is being sent away to look the
+   * hash up somewhere else; whether they may close this page first changes what
+   * they should do in the next ten seconds. Storage can refuse — private mode,
+   * site data blocked, quota full — and when it does, the only copy of the one
+   * number that answers "did my money move" is the text on screen.
+   */
+  durable: boolean;
   onAcknowledge: () => void;
 }) {
   const { t } = useTranslation("wallet");
@@ -72,6 +83,9 @@ export function UncertainSubmitNotice({
         <code className="mono text-xs text-text-dim break-all flex-1">{txHash}</code>
         <CopyBtn value={txHash} />
       </div>
+      <p className={durable ? "text-xs text-text-hint" : "text-xs text-amber-brand"}>
+        {durable ? t("uncertain_kept_here") : t("uncertain_not_kept")}
+      </p>
       <button
         type="button"
         onClick={onAcknowledge}

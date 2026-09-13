@@ -24,11 +24,33 @@
  * reason: this runner has no DOM, so anything written as a hook could only be
  * checked by reading its source. These can be run.
  *
- * ## Keyed by wallet and network
+ * ## Keyed by the stake credential, not the change address
  *
  * One global key would let an unresolved submit on account A lock account B,
  * and — worse in the other direction — let switching accounts clear it. The
- * question "did my money move" belongs to one address on one chain.
+ * question "did my money move" belongs to one account on one chain.
+ *
+ * "One account" must not be spelled `changeAddress`, and this is the third
+ * boundary this module has had to move. A change address is chosen as *the
+ * first internal address holding no UTxO right now* — so if the uncertain
+ * transaction did land, its own change output occupies that address, and the
+ * next unlock resolves the next one. The key would rotate **on exactly the
+ * branch where the money moved**, which is the branch the warning exists for.
+ * The same rotation happens for a CIP-30 wallet, which hands over a fresh
+ * change address whenever it likes.
+ *
+ * A Shelley base address carries two credentials. The payment half rotates;
+ * the **stake half is the account** — every address this wallet derives for one
+ * account shares it, and two accounts never do. It is also readable
+ * synchronously from the hex the tabs already hold, which the reward address is
+ * not, and that matters because the lock has to be known before the first
+ * render arms a Send button.
+ *
+ * An address with no stake half (enterprise) falls back to one slot per
+ * network. That loses the separation between two such accounts, which fails
+ * *safe*: the worst it produces is account B seeing account A's warning, and
+ * the reader can dismiss it after checking. The rotation it replaces failed
+ * open, and open means sending twice.
  *
  * ## Failure
  *
@@ -41,6 +63,9 @@
  * not promise durability it does not have.
  */
 
+import "../../lib/node-globals";
+import { utils as tyUtils } from "@stricahq/typhonjs";
+
 /** The part of `Storage` this needs. Lets a test pass a plain object. */
 export type KeyValueStore = {
   getItem(key: string): string | null;
@@ -51,15 +76,43 @@ export type KeyValueStore = {
 const PREFIX = "phoenix.uncertainSubmit";
 
 /**
- * The storage key for one wallet on one chain.
+ * The slot used when an address has no stake half, or cannot be read at all.
  *
- * `changeAddress` is already this browser's own data and never leaves it. It is
- * used whole rather than truncated: two accounts of the same wallet share long
- * prefixes and suffixes, and a collision here would show account A's warning on
- * account B — a wrong fact about money, produced to save a few bytes.
+ * Shared per network on purpose — see the header. It must not be derived from
+ * anything that rotates, and "one slot" is the only such answer left once the
+ * address stops telling us which account it belongs to.
  */
-export function lockKey(network: number, changeAddress: string): string {
-  return `${PREFIX}.${network}.${changeAddress}`;
+const SHARED_SLOT = "network";
+
+/**
+ * The account this address belongs to, as a string that does not rotate.
+ *
+ * Takes the hex the tabs already hold. Never throws: a hash that cannot be
+ * parsed still has to produce *some* key, because the alternative is a wallet
+ * that cannot record a warning at all.
+ */
+export function accountKeyFrom(changeAddressHex: string): string {
+  try {
+    const addr = tyUtils.getAddressFromHex(Buffer.from(changeAddressHex, "hex"));
+    const stake = (addr as { stakeCredential?: { hash?: Buffer } }).stakeCredential;
+    const hash = stake?.hash;
+    if (!hash || hash.length === 0) return SHARED_SLOT;
+    return hash.toString("hex");
+  } catch {
+    return SHARED_SLOT;
+  }
+}
+
+/**
+ * The storage key for one account on one chain.
+ *
+ * `accountKey` is already this browser's own data and never leaves it. It is
+ * used whole rather than truncated: a collision here would show account A's
+ * warning on account B — a wrong fact about money, produced to save a few
+ * bytes.
+ */
+export function lockKey(network: number, accountKey: string): string {
+  return `${PREFIX}.${network}.${accountKey}`;
 }
 
 /** A 64-character hex transaction id, and nothing else. */
@@ -76,15 +129,15 @@ const isTxHash = (v: unknown): v is string => typeof v === "string" && /^[0-9a-f
 export function readLock(
   store: KeyValueStore | null | undefined,
   network: number,
-  changeAddress: string,
+  accountKey: string,
 ): string | null {
   if (!store) return null;
   try {
-    const raw = store.getItem(lockKey(network, changeAddress));
+    const raw = store.getItem(lockKey(network, accountKey));
     if (raw === null) return null;
     if (!isTxHash(raw)) {
       try {
-        store.removeItem(lockKey(network, changeAddress));
+        store.removeItem(lockKey(network, accountKey));
       } catch {
         // Cleaning up is a courtesy; failing to clean up is not a reason to
         // fail the read, which has already decided the answer is `null`.
@@ -106,12 +159,12 @@ export function readLock(
 export function writeLock(
   store: KeyValueStore | null | undefined,
   network: number,
-  changeAddress: string,
+  accountKey: string,
   txHash: string,
 ): boolean {
   if (!store || !isTxHash(txHash)) return false;
   try {
-    store.setItem(lockKey(network, changeAddress), txHash.toLowerCase());
+    store.setItem(lockKey(network, accountKey), txHash.toLowerCase());
     return true;
   } catch {
     return false;
@@ -128,11 +181,11 @@ export function writeLock(
 export function clearLock(
   store: KeyValueStore | null | undefined,
   network: number,
-  changeAddress: string,
+  accountKey: string,
 ): void {
   if (!store) return;
   try {
-    store.removeItem(lockKey(network, changeAddress));
+    store.removeItem(lockKey(network, accountKey));
   } catch {
     // Already unreadable; the in-memory copy is cleared by the caller either
     // way, and a stale key resurfacing is better than a crash on acknowledge.

@@ -80,6 +80,8 @@
   "local_sign_hint": "Ví này giữ khoá ngay trên thiết bị nên nó ký tại đây. Sẽ không có cửa sổ nào khác mở ra.",
   "uncertain_title": "Chưa biết giao dịch này đã gửi đi được hay chưa",
   "uncertain_body": "Ví đã ký, nhưng không có xác nhận nào báo là nó tới được mạng. Có thể nó đã lên chuỗi rồi. Sao mã bên dưới và tra nó trước khi gửi lại bất cứ thứ gì — gửi lại chính là cách cùng một số tiền đi ra hai lần.",
+  "uncertain_kept_here": "Ví đang giữ mã này trên thiết bị của bạn, nên đóng tab hay khoá ví rồi mở lại vẫn còn.",
+  "uncertain_not_kept": "Ví KHÔNG lưu được mã này — đóng tab là mất. Hãy sao nó ra chỗ khác ngay bây giờ.",
   "uncertain_checked_cta": "Tôi đã tra xong — cho tôi làm tiếp",
   "uncertain_blocked": "Có một giao dịch của ví này chưa rõ kết quả. Hãy tra mã của nó trước — thông báo ở đầu màn hình này có mã đó.",
   "recipients_title": "Người nhận",

@@ -80,6 +80,8 @@
   "local_sign_hint": "This wallet holds the key on this device, so it signs here. No other window will open.",
   "uncertain_title": "It is not known whether this transaction was sent",
   "uncertain_body": "Your wallet signed it, but no confirmation came back that it reached the network. It may already be on-chain. Copy the id below and look it up before sending anything again — sending again is how the same amount leaves twice.",
+  "uncertain_kept_here": "This wallet is keeping the id on your device, so closing the tab or locking the wallet will not lose it.",
+  "uncertain_not_kept": "This wallet could NOT store the id — closing the tab loses it. Copy it somewhere else now.",
   "uncertain_checked_cta": "I have looked it up — let me continue",
   "uncertain_blocked": "A transaction from this wallet has an unknown outcome. Look up its id above first — the notice at the top of this screen has it.",
   "recipients_title": "Recipients",

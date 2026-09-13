@@ -414,6 +414,93 @@ describe("wiring > the lock that is there now is still there", () => {
     expect(clears, "clearLock is called from more than one place").toBe(1);
   });
 
+  it("keys the lock on something that does not rotate when money moves", () => {
+    // The third boundary this lock has had. A change address is "the first
+    // internal address holding no UTxO right now", so if the uncertain
+    // transaction *did* land, its own change output takes that address and the
+    // next unlock resolves the next one. Keyed on it, the lock disappears on
+    // exactly the branch it exists for — and an unreachable indexer (the same
+    // provider as the submit door that produced the 5xx) rotates it too.
+    const { name, text } = sourceOf("WalletTabs.tsx");
+    expect(
+      /\baccountKeyFrom\s*\(/.test(text),
+      "WalletTabs does not derive an account key — the lock is keyed on a rotating value",
+    ).toBe(true);
+
+    // And the rotating value must not still be reaching the store. Naming the
+    // three call sites individually, because passing it to any one of them is
+    // enough to desynchronise write from read.
+    const rotating: string[] = [];
+    walk(parse(name, text), (n) => {
+      if (!ts.isCallExpression(n)) return;
+      const callee = n.expression.getText();
+      if (!/^(readLock|writeLock|clearLock|lockKey)$/.test(callee)) return;
+      if (n.arguments.some((a) => a.getText() === "changeAddress")) rotating.push(callee);
+    });
+    expect(rotating, "a lock call is still keyed on changeAddress").toEqual([]);
+  });
+
+  it("re-reads the lock when the account changes, and when another tab writes it", () => {
+    // Two separate paths, and the file used to *claim* both were pinned while
+    // deleting either one stayed green. Each is named here by the dependency it
+    // reacts to, so removing one cannot hide behind the other.
+    //
+    //   - identity change: the account or chain can change without unmounting,
+    //     and without this, account A's warning stays on screen for account B.
+    //   - `storage` event: localStorage is shared across tabs, React state is
+    //     not. The tab that did *not* send is the one most likely to be used for
+    //     the retry, because the one that sent is showing a warning.
+    const { name, text } = sourceOf("WalletTabs.tsx");
+    const effects: { deps: string[]; body: string }[] = [];
+    walk(parse(name, text), (n) => {
+      if (!ts.isCallExpression(n)) return;
+      if (n.expression.getText() !== "useEffect") return;
+      const deps = n.arguments[1];
+      effects.push({
+        deps: deps && ts.isArrayLiteralExpression(deps) ? deps.elements.map((e) => e.getText()) : [],
+        body: n.arguments[0]?.getText() ?? "",
+      });
+    });
+
+    const onIdentity = effects.filter(
+      (e) =>
+        e.deps.includes("accountKey") &&
+        e.deps.includes("network") &&
+        /\breadLock\s*\(/.test(e.body) &&
+        !/addEventListener/.test(e.body),
+    );
+    expect(onIdentity.length, "no effect re-reads the lock when the account or chain changes").toBe(1);
+
+    const onStorage = effects.filter((e) => /addEventListener\(\s*"storage"/.test(e.body));
+    expect(onStorage.length, "no effect listens for another tab writing the lock").toBe(1);
+    expect(
+      /\breadLock\s*\(/.test(onStorage[0]?.body ?? ""),
+      "the storage listener does not re-read the lock",
+    ).toBe(true);
+  });
+
+  it("tells the reader when the hash was NOT written down", () => {
+    // `writeLock` reports whether the value survives a reload, and that return
+    // used to be dropped on the floor. In private mode, with site data blocked,
+    // or on a full quota, the wallet went on showing a notice that implies the
+    // number can be come back to — while the only copy was the text on screen.
+    const { name, text } = sourceOf("WalletTabs.tsx");
+    let consumed = false;
+    walk(parse(name, text), (n) => {
+      if (!ts.isCallExpression(n)) return;
+      if (!/\bwriteLock\s*\(/.test(n.expression.getText() + "(")) return;
+      // Used as a value, not as a statement of its own.
+      consumed = !ts.isExpressionStatement(n.parent);
+    });
+    expect(consumed, "the writeLock result is discarded — durability is assumed, not known").toBe(
+      true,
+    );
+    expect(
+      /durable=\{/.test(text),
+      "WalletTabs never tells the notice whether the hash is durable",
+    ).toBe(true);
+  });
+
   it("keeps the hash in exactly one place — no panel holds its own copy", () => {
     // Two copies is worse than the original bug: one panel clears the lock while
     // another still believes it, and which screen you are on decides whether the
@@ -464,17 +551,37 @@ describe("wiring > the lock that is there now is still there", () => {
    *
    * So: an `if` whose condition really is `uncertainHash !== null`, whose branch
    * really leaves the function, and which really sits before the call.
+   *
+   * That was still not enough. Walking the whole subtree accepts *any* matching
+   * `if` anywhere inside the handler, and two shapes exploit it — both green,
+   * both `tsc`-clean:
+   *
+   *   - the real guard deleted, a copy left behind inside a nested function that
+   *     nothing calls;
+   *   - the guard wrapped in `if (false) { … }`. This one has a concrete path to
+   *     a double spend, because the Confirm button reads `busy` and `checked`,
+   *     never `uncertainHash` — the disabled prop is a hint, not the lock.
+   *
+   * Neither is about the `if`; both are about whether control actually reaches
+   * it. So the guard must be a **direct statement of the handler's own body**.
+   * Nothing may stand between the top of the function and the refusal — which is
+   * also how a person reading the handler would expect to find it.
    */
+  const bodyStatements = (fn: ts.Node): readonly ts.Statement[] => {
+    const body = (fn as ts.FunctionLikeDeclaration).body;
+    return body && ts.isBlock(body) ? body.statements : [];
+  };
+
   const guardsBefore = (fn: ts.Node, callStart: number): boolean => {
     let found = false;
-    walk(fn, (n) => {
-      if (found || !ts.isIfStatement(n)) return;
-      if (n.getStart() >= callStart) return; // after the spend: too late to refuse
+    for (const n of bodyStatements(fn)) {
+      if (found || !ts.isIfStatement(n)) continue;
+      if (n.getStart() >= callStart) continue; // after the spend: too late to refuse
       const c = n.expression;
-      if (!ts.isBinaryExpression(c)) return;
-      if (c.operatorToken.kind !== ts.SyntaxKind.ExclamationEqualsEqualsToken) return;
-      if (c.left.getText() !== "uncertainHash") return;
-      if (c.right.kind !== ts.SyntaxKind.NullKeyword) return;
+      if (!ts.isBinaryExpression(c)) continue;
+      if (c.operatorToken.kind !== ts.SyntaxKind.ExclamationEqualsEqualsToken) continue;
+      if (c.left.getText() !== "uncertainHash") continue;
+      if (c.right.kind !== ts.SyntaxKind.NullKeyword) continue;
       // The branch has to leave. A bare `toastError(…)` falls through to the
       // spend, and that is the shape this exists to catch.
       const leaves = (s: ts.Statement): boolean => {
@@ -483,8 +590,28 @@ describe("wiring > the lock that is there now is still there", () => {
         return false;
       };
       if (leaves(n.thenStatement)) found = true;
-    });
+    }
     return found;
+  };
+
+  /**
+   * Is this call `<something>.signAndSubmit(…)` — however it is spelled?
+   *
+   * `port["signAndSubmit"](…)` is the same call and was invisible to a sweep
+   * that only looked at property access. It is not a hypothetical shape: it is
+   * what a fifth money screen would be written as by anyone holding the method
+   * name in a variable, and it defeated the count as well as the guard check,
+   * so the floor below stayed satisfied by the four known-good sites while the
+   * fifth went unguarded.
+   */
+  const spendMethodOf = (n: ts.CallExpression): string | null => {
+    const e = n.expression;
+    if (ts.isPropertyAccessExpression(e)) return e.name.text;
+    if (ts.isElementAccessExpression(e)) {
+      const arg = e.argumentExpression;
+      return ts.isStringLiteralLike(arg) ? arg.text : null;
+    }
+    return null;
   };
 
   it("refuses inside every function that can spend, not once per file", () => {
@@ -501,10 +628,9 @@ describe("wiring > the lock that is there now is still there", () => {
       const root = parse(name, text);
       walk(root, (n) => {
         if (!ts.isCallExpression(n)) return;
-        if (!ts.isPropertyAccessExpression(n.expression)) return;
-        if (n.expression.name.text !== "signAndSubmit") return;
-        // Climb to the function this call sits in, then read that function
-        // whole: the guard has to be somewhere inside it.
+        if (spendMethodOf(n) !== "signAndSubmit") return;
+        // Climb to the function this call sits in, then read its own top-level
+        // statements: the guard has to be on the way in, not merely present.
         let fn: ts.Node | undefined = n.parent;
         while (fn && !ts.isFunctionLike(fn)) fn = fn.parent;
         if (!fn) {
@@ -527,8 +653,7 @@ describe("wiring > the lock that is there now is still there", () => {
     for (const { name, text } of panelSources()) {
       walk(parse(name, text), (n) => {
         if (!ts.isCallExpression(n)) return;
-        if (!ts.isPropertyAccessExpression(n.expression)) return;
-        if (n.expression.name.text === "signAndSubmit") sites++;
+        if (spendMethodOf(n) === "signAndSubmit") sites++;
       });
     }
     expect(sites, "no spend path found — the sweep above proved nothing").toBeGreaterThanOrEqual(4);

@@ -10,7 +10,14 @@ import { GovernancePanel } from "./GovernancePanel";
 import { ConnectPanel } from "./ConnectPanel";
 import { HistoryPanel } from "./HistoryPanel";
 import { UncertainSubmitNotice } from "./UncertainSubmitNotice";
-import { browserStore, readLock, writeLock, clearLock } from "./uncertainStore";
+import {
+  accountKeyFrom,
+  browserStore,
+  clearLock,
+  lockKey,
+  readLock,
+  writeLock,
+} from "./uncertainStore";
 
 type Tab = "send" | "receive" | "history" | "staking" | "governance" | "connect";
 
@@ -111,9 +118,22 @@ export function WalletTabs({
    * `uncertainStore` for the whole argument.
    */
   const store = browserStore();
+  // Not `changeAddress` — that rotates the moment the uncertain transaction's
+  // own change output lands on it, which is the branch the warning is for.
+  const accountKey = accountKeyFrom(changeAddress);
   const [uncertainHash, setUncertainHash] = useState<string | null>(() =>
-    readLock(store, network, changeAddress),
+    readLock(store, network, accountKey),
   );
+  /**
+   * Whether the hash on screen will still be there after a reload.
+   *
+   * `writeLock` reports this and the notice says it out loud. Dropping the
+   * boolean would leave the wallet promising a durability it does not have in
+   * the exact browsers where it does not have it — private mode, storage
+   * disabled, quota full — and the reader would close the tab believing they
+   * could come back to the number.
+   */
+  const [durable, setDurable] = useState(true);
 
   /**
    * Re-read when the wallet or chain changes under us — and ONLY then.
@@ -125,31 +145,56 @@ export function WalletTabs({
    * the initialiser. Measured: while both read on mount, deleting either one
    * left every test green, because the other still did the job — two paths
    * covering each other is the same as neither being watched. Now the
-   * initialiser owns mount and this owns changes, and breaking either is
-   * visible.
+   * initialiser owns mount and this owns changes.
+   *
+   * Splitting them is what makes each one *possible* to pin; it is not itself
+   * evidence that either is pinned. That is a separate claim, it belongs to
+   * whatever deletes this and runs the suite, and it does not belong in a
+   * comment that would go on reading true after the check was removed.
    */
   const seen = useRef<string | null>(null);
   useEffect(() => {
-    const id = `${network}:${changeAddress}`;
+    const id = `${network}:${accountKey}`;
     if (seen.current === null) {
       seen.current = id; // mount: the initialiser already read it
       return;
     }
     if (seen.current === id) return;
     seen.current = id;
-    setUncertainHash(readLock(store, network, changeAddress));
+    setUncertainHash(readLock(store, network, accountKey));
     // `store` is a handle, not a value; re-running on it would loop.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [network, changeAddress]);
+  }, [network, accountKey]);
+
+  /**
+   * The same wallet open in a second tab must not keep an armed Send button.
+   *
+   * `localStorage` is shared across tabs but React state is not, so without
+   * this the tab that did not send never learns there is an unresolved submit —
+   * and that is the tab most likely to be used for the retry, because the one
+   * that sent is showing a warning. The event also fires when the key is
+   * cleared elsewhere, so acknowledging in one tab releases both.
+   */
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== null && e.key !== lockKey(network, accountKey)) return;
+      setUncertainHash(readLock(store, network, accountKey));
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [network, accountKey]);
 
   const rememberUncertain = (txHash: string) => {
-    writeLock(store, network, changeAddress, txHash);
+    setDurable(writeLock(store, network, accountKey, txHash));
     setUncertainHash(txHash);
   };
 
   const acknowledgeUncertain = () => {
-    clearLock(store, network, changeAddress);
+    clearLock(store, network, accountKey);
     setUncertainHash(null);
+    setDurable(true);
   };
 
   const panelProps = { port, network, changeAddress };
@@ -208,6 +253,7 @@ export function WalletTabs({
       {uncertainHash !== null && (
         <UncertainSubmitNotice
           txHash={uncertainHash}
+          durable={durable}
           onAcknowledge={acknowledgeUncertain}
         />
       )}

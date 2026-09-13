@@ -37,6 +37,7 @@ const GOV = "src/components/wallet/GovernancePanel.tsx";
 const TABS = "src/components/wallet/WalletTabs.tsx";
 const PROVIDER = "src/lib/cardano/provider.ts";
 const BLOCKFROST = "src/lib/cardano/blockfrost.ts";
+const STORE = "src/components/wallet/uncertainStore.ts";
 const TESTS = [
   "src/lib/cardano/__tests__/history.test.ts",
   "src/lib/cardano/__tests__/price.test.ts",
@@ -52,6 +53,50 @@ const TESTS = [
  * measuring nothing, which is the failure mode it was written to prevent.
  */
 const MUTANTS = [
+  // ── Round three: the lock key, durability, and reachability of the refusal ──
+  {
+    name: "the lock is keyed on the change address again (rotates when money lands)",
+    file: TABS,
+    from: "  const accountKey = accountKeyFrom(changeAddress);",
+    to: "  const accountKey = changeAddress;",
+  },
+  {
+    name: "accountKeyFrom hands back the address, so the key rotates with it",
+    file: STORE,
+    from: '    return hash.toString("hex");',
+    to: "    return changeAddressHex;",
+  },
+  {
+    name: "the writeLock result is dropped — durability assumed, not known",
+    file: TABS,
+    from: "    setDurable(writeLock(store, network, accountKey, txHash));",
+    to: "    writeLock(store, network, accountKey, txHash);",
+  },
+  {
+    name: "a second tab is never told (storage listener unregistered)",
+    file: TABS,
+    from: '    window.addEventListener("storage", onStorage);',
+    to: "",
+  },
+  {
+    name: "the refusal is present but unreachable — wrapped in if (false)",
+    file: GOV,
+    from: '    if (uncertainHash !== null) return toastError(t("uncertain_blocked"));\n    setBusy(true);',
+    to: '    if (false) { if (uncertainHash !== null) return toastError(t("uncertain_blocked")); }\n    setBusy(true);',
+  },
+  {
+    name: 'spend written as port["signAndSubmit"] with the refusal gone',
+    file: GOV,
+    from:
+      '    if (uncertainHash !== null) return toastError(t("uncertain_blocked"));\n' +
+      "    setBusy(true);\n" +
+      "    try {\n" +
+      "      const hash = await port.signAndSubmit(pending.built, network);",
+    to:
+      "    setBusy(true);\n" +
+      "    try {\n" +
+      '      const hash = await port["signAndSubmit"](pending.built, network);',
+  },
   {
     name: "withdrawal ownership filter removed (a stranger's reward counts as ours)",
     file: HISTORY,
@@ -166,17 +211,26 @@ const MUTANTS = [
     to: '      {activeTab === "send" && uncertainHash !== null && (',
   },
   {
+    name: "switching account keeps the previous account's warning on screen",
+    file: TABS,
+    from:
+      "    if (seen.current === id) return;\n" +
+      "    seen.current = id;\n" +
+      "    setUncertainHash(readLock(store, network, accountKey));",
+    to: "    seen.current = id;",
+  },
+  {
     // React state dies on idle-lock, which is five minutes, which is about how
     // long looking a transaction up takes.
     name: "the lock is no longer written down (memory only again)",
     file: TABS,
-    from: "    writeLock(store, network, changeAddress, txHash);\n",
+    from: "    setDurable(writeLock(store, network, accountKey, txHash));\n",
     to: "",
   },
   {
     name: "the lock is never read back on mount",
     file: TABS,
-    from: "  const [uncertainHash, setUncertainHash] = useState<string | null>(() =>\n    readLock(store, network, changeAddress),\n  );",
+    from: "  const [uncertainHash, setUncertainHash] = useState<string | null>(() =>\n    readLock(store, network, accountKey),\n  );",
     to: "  const [uncertainHash, setUncertainHash] = useState<string | null>(null);",
   },
   {
