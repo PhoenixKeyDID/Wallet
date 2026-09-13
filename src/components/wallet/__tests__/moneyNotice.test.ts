@@ -421,23 +421,43 @@ describe("wiring > the lock that is there now is still there", () => {
     // next unlock resolves the next one. Keyed on it, the lock disappears on
     // exactly the branch it exists for — and an unreachable indexer (the same
     // provider as the submit door that produced the 5xx) rotates it too.
+    // Written against the syntax tree, not the text. A `/accountKeyFrom\(/`
+    // over the source was satisfied by a *comment* mentioning it, so the whole
+    // defect above could be put back — keyed on `changeAddress` again, with one
+    // line of prose keeping this green. Measured: 688 passed, tsc 0.
     const { name, text } = sourceOf("WalletTabs.tsx");
+    const root = parse(name, text);
+
+    let derived = false;
+    walk(root, (n) => {
+      if (!ts.isVariableDeclaration(n)) return;
+      if (n.name.getText() !== "accountKey") return;
+      const init = n.initializer;
+      derived =
+        !!init && ts.isCallExpression(init) && init.expression.getText() === "accountKeyFrom";
+    });
     expect(
-      /\baccountKeyFrom\s*\(/.test(text),
-      "WalletTabs does not derive an account key — the lock is keyed on a rotating value",
+      derived,
+      "`accountKey` is not the result of accountKeyFrom — the lock is keyed on a rotating value",
     ).toBe(true);
 
-    // And the rotating value must not still be reaching the store. Naming the
-    // three call sites individually, because passing it to any one of them is
-    // enough to desynchronise write from read.
-    const rotating: string[] = [];
-    walk(parse(name, text), (n) => {
+    // And every call into the store must key on that identifier, nothing else.
+    // Listing what IS allowed rather than what is forbidden: a check for the
+    // word `changeAddress` is walked around by one intermediate variable, and
+    // the intermediate is the shape a refactor produces by accident.
+    const KEY_ARG: Record<string, number> = { readLock: 2, writeLock: 2, clearLock: 2, lockKey: 1 };
+    const misKeyed: string[] = [];
+    walk(root, (n) => {
       if (!ts.isCallExpression(n)) return;
       const callee = n.expression.getText();
-      if (!/^(readLock|writeLock|clearLock|lockKey)$/.test(callee)) return;
-      if (n.arguments.some((a) => a.getText() === "changeAddress")) rotating.push(callee);
+      const at = KEY_ARG[callee];
+      if (at === undefined) return;
+      const arg = n.arguments[at];
+      if (!arg || !ts.isIdentifier(arg) || arg.text !== "accountKey") {
+        misKeyed.push(`${callee}(… ${arg?.getText() ?? "<missing>"} …)`);
+      }
     });
-    expect(rotating, "a lock call is still keyed on changeAddress").toEqual([]);
+    expect(misKeyed, "a lock call is keyed on something other than accountKey").toEqual([]);
   });
 
   it("re-reads the lock when the account changes, and when another tab writes it", () => {
@@ -450,15 +470,56 @@ describe("wiring > the lock that is there now is still there", () => {
     //   - `storage` event: localStorage is shared across tabs, React state is
     //     not. The tab that did *not* send is the one most likely to be used for
     //     the retry, because the one that sent is showing a warning.
+    // The measurement is "does the effect put the lock back on screen", not
+    // "does the word readLock appear". Asking the weaker question let both
+    // effects be turned into `readLock(…); // result thrown away` — green, and
+    // strictly worse than the bug it replaced, because account B's real lock is
+    // then on disk and never read up while B's Send button is armed.
     const { name, text } = sourceOf("WalletTabs.tsx");
-    const effects: { deps: string[]; body: string }[] = [];
+    const isReadLock = (e: ts.Node | undefined): boolean =>
+      !!e && ts.isCallExpression(e) && e.expression.getText() === "readLock";
+
+    const feedsTheScreen = (body: ts.Node): boolean => {
+      // A local `const next = readLock(…); … setUncertainHash(next)` is the same
+      // wiring and has a reason to exist — the storage handler has to look at
+      // the value before deciding. So resolve one level of local binding rather
+      // than demanding the call sit literally inside the setter, which would
+      // reject correct code and push the next author toward the inline form to
+      // keep a gate quiet.
+      const bound = new Set<string>();
+      walk(body, (n) => {
+        if (!ts.isVariableDeclaration(n) || !ts.isIdentifier(n.name)) return;
+        if (isReadLock(n.initializer)) bound.add(n.name.text);
+      });
+      let ok = false;
+      walk(body, (n) => {
+        if (ok || !ts.isCallExpression(n)) return;
+        if (n.expression.getText() !== "setUncertainHash") return;
+        const arg = n.arguments[0];
+        if (!arg) return;
+        ok = isReadLock(arg) || (ts.isIdentifier(arg) && bound.has(arg.text));
+      });
+      return ok;
+    };
+
+    const effects: { deps: string[]; body: ts.Node; listensToStorage: boolean }[] = [];
     walk(parse(name, text), (n) => {
       if (!ts.isCallExpression(n)) return;
       if (n.expression.getText() !== "useEffect") return;
       const deps = n.arguments[1];
+      const body = n.arguments[0];
+      if (!body) return;
+      let listens = false;
+      walk(body, (x) => {
+        if (!ts.isCallExpression(x)) return;
+        if (!/addEventListener$/.test(x.expression.getText())) return;
+        const ev = x.arguments[0];
+        if (ev && ts.isStringLiteralLike(ev) && ev.text === "storage") listens = true;
+      });
       effects.push({
         deps: deps && ts.isArrayLiteralExpression(deps) ? deps.elements.map((e) => e.getText()) : [],
-        body: n.arguments[0]?.getText() ?? "",
+        body,
+        listensToStorage: listens,
       });
     });
 
@@ -466,16 +527,48 @@ describe("wiring > the lock that is there now is still there", () => {
       (e) =>
         e.deps.includes("accountKey") &&
         e.deps.includes("network") &&
-        /\breadLock\s*\(/.test(e.body) &&
-        !/addEventListener/.test(e.body),
+        !e.listensToStorage &&
+        feedsTheScreen(e.body),
     );
     expect(onIdentity.length, "no effect re-reads the lock when the account or chain changes").toBe(1);
 
-    const onStorage = effects.filter((e) => /addEventListener\(\s*"storage"/.test(e.body));
+    const onStorage = effects.filter((e) => e.listensToStorage);
     expect(onStorage.length, "no effect listens for another tab writing the lock").toBe(1);
     expect(
-      /\breadLock\s*\(/.test(onStorage[0]?.body ?? ""),
-      "the storage listener does not re-read the lock",
+      feedsTheScreen(onStorage[0]!.body),
+      "the storage listener reads the lock but never puts it back on screen",
+    ).toBe(true);
+
+    // A `storage` event with a null key is `localStorage.clear()` — site
+    // housekeeping, an extension, a "clear browsing data" click. Read back
+    // naively it produces `null`, which this listener would then push on screen
+    // as "no unresolved submit". Only the acknowledge button is allowed to take
+    // this warning down; data going away must not be able to impersonate a
+    // person saying they checked.
+    let refusesAWholesaleClear = false;
+    walk(onStorage[0]!.body, (n) => {
+      if (refusesAWholesaleClear || !ts.isIfStatement(n)) return;
+      const leaves =
+        ts.isReturnStatement(n.thenStatement) ||
+        (ts.isBlock(n.thenStatement) && n.thenStatement.statements.some(ts.isReturnStatement));
+      if (!leaves) return;
+      let mentionsNullKey = false;
+      walk(n.expression, (x) => {
+        if (!ts.isBinaryExpression(x)) return;
+        if (x.operatorToken.kind !== ts.SyntaxKind.EqualsEqualsEqualsToken) return;
+        if (x.right.kind !== ts.SyntaxKind.NullKeyword) return;
+        if (ts.isPropertyAccessExpression(x.left) && x.left.name.text === "key") {
+          mentionsNullKey = true;
+        }
+      });
+      // Accumulate, never assign: the handler has a second early `return` that
+      // compares the key with `!== null`, and plain assignment would let
+      // whichever `if` the walk reached last decide the verdict.
+      if (mentionsNullKey) refusesAWholesaleClear = true;
+    });
+    expect(
+      refusesAWholesaleClear,
+      "clearing site data silently takes the warning down, as if the reader had checked",
     ).toBe(true);
   });
 
@@ -485,20 +578,38 @@ describe("wiring > the lock that is there now is still there", () => {
     // or on a full quota, the wallet went on showing a notice that implies the
     // number can be come back to — while the only copy was the text on screen.
     const { name, text } = sourceOf("WalletTabs.tsx");
-    let consumed = false;
-    walk(parse(name, text), (n) => {
+    const root = parse(name, text);
+
+    // EVERY call, not the last one seen. Assignment rather than accumulation
+    // meant a second, discarded `writeLock` could follow a consumed one and the
+    // gate would report the consumed one's verdict.
+    const discarded: string[] = [];
+    let writes = 0;
+    walk(root, (n) => {
       if (!ts.isCallExpression(n)) return;
-      if (!/\bwriteLock\s*\(/.test(n.expression.getText() + "(")) return;
-      // Used as a value, not as a statement of its own.
-      consumed = !ts.isExpressionStatement(n.parent);
+      if (n.expression.getText() !== "writeLock") return;
+      writes += 1;
+      if (ts.isExpressionStatement(n.parent)) discarded.push(n.getText());
     });
-    expect(consumed, "the writeLock result is discarded — durability is assumed, not known").toBe(
-      true,
-    );
+    expect(writes, "WalletTabs never writes the lock down").toBeGreaterThanOrEqual(1);
+    expect(discarded, "a writeLock result is discarded — durability assumed, not known").toEqual([]);
+
+    // And the answer has to reach the notice as a *value*. `durable={true}` and
+    // `durable={!false}` both satisfied a text match, and both make the wallet
+    // print "the id is kept here" in the browsers where nothing was kept —
+    // which is the exact sentence this whole property exists to prevent.
+    const durableAttrs: string[] = [];
+    walk(root, (n) => {
+      if (!ts.isJsxAttribute(n) || n.name.getText() !== "durable") return;
+      const v = n.initializer;
+      const inner = v && ts.isJsxExpression(v) ? v.expression : undefined;
+      durableAttrs.push(inner ? ts.SyntaxKind[inner.kind] : "<no expression>");
+    });
+    expect(durableAttrs.length, "the notice is never told whether the hash is durable").toBe(1);
     expect(
-      /durable=\{/.test(text),
-      "WalletTabs never tells the notice whether the hash is durable",
-    ).toBe(true);
+      durableAttrs[0],
+      `durable is passed as a constant (${durableAttrs[0]}), not as the answer writeLock gave`,
+    ).toBe(ts.SyntaxKind[ts.SyntaxKind.Identifier]);
   });
 
   it("keeps the hash in exactly one place — no panel holds its own copy", () => {
@@ -605,7 +716,14 @@ describe("wiring > the lock that is there now is still there", () => {
    * fifth went unguarded.
    */
   const spendMethodOf = (n: ts.CallExpression): string | null => {
-    const e = n.expression;
+    // Parentheses first. `(port.signAndSubmit)(…)` is the same call, and it was
+    // invisible to both the sweep *and* the count below — so a fifth spend
+    // screen written that way left the floor satisfied by the four known-good
+    // sites while nothing looked at the fifth. A floor only catches a door that
+    // disappears; it cannot catch a door added in a spelling the counter is
+    // blind to, which is why this has to unwrap rather than the floor rise.
+    let e: ts.Expression = n.expression;
+    while (ts.isParenthesizedExpression(e) || ts.isNonNullExpression(e)) e = e.expression;
     if (ts.isPropertyAccessExpression(e)) return e.name.text;
     if (ts.isElementAccessExpression(e)) {
       const arg = e.argumentExpression;

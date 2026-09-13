@@ -179,7 +179,13 @@ export function WalletTabs({
     if (typeof window === "undefined") return;
     const onStorage = (e: StorageEvent) => {
       if (e.key !== null && e.key !== lockKey(network, accountKey)) return;
-      setUncertainHash(readLock(store, network, accountKey));
+      const next = readLock(store, network, accountKey);
+      // `e.key === null` is a wholesale `localStorage.clear()`, which is site
+      // housekeeping — not a person saying they looked the transaction up. The
+      // only thing allowed to take this warning down is the button that says
+      // so, and "the data went away" must not be able to impersonate it.
+      if (next === null && e.key === null) return;
+      setUncertainHash(next);
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);

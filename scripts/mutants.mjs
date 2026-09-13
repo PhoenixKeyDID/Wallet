@@ -53,6 +53,47 @@ const TESTS = [
  * measuring nothing, which is the failure mode it was written to prevent.
  */
 const MUTANTS = [
+  // ── Round four: the gates themselves measured spelling, not meaning ──
+  // Each of these was GREEN when written. They are here because the previous
+  // round's checks were regexes over source text, and a regex cannot tell a
+  // guard from a comment about a guard.
+  {
+    name: "keyed on changeAddress again, with a comment keeping the gate quiet",
+    file: TABS,
+    from: "  const accountKey = accountKeyFrom(changeAddress);",
+    to: "  const accountKey = changeAddress; // was accountKeyFrom(changeAddress)",
+  },
+  {
+    name: "the account-change effect reads the lock and throws the answer away",
+    file: TABS,
+    from: "    setUncertainHash(readLock(store, network, accountKey));",
+    to: "    readLock(store, network, accountKey);",
+  },
+  {
+    name: "durability hard-coded true (says 'kept here' when nothing was kept)",
+    file: TABS,
+    from: "          durable={durable}",
+    to: "          durable={true}",
+  },
+  {
+    name: "spend written as (port.signAndSubmit)(…) with the refusal gone",
+    file: GOV,
+    from:
+      '    if (uncertainHash !== null) return toastError(t("uncertain_blocked"));\n' +
+      "    setBusy(true);\n" +
+      "    try {\n" +
+      "      const hash = await port.signAndSubmit(pending.built, network);",
+    to:
+      "    setBusy(true);\n" +
+      "    try {\n" +
+      "      const hash = await (port.signAndSubmit)(pending.built, network);",
+  },
+  {
+    name: "clearing site data takes the warning down as if the reader had checked",
+    file: TABS,
+    from: "      if (next === null && e.key === null) return;\n",
+    to: "",
+  },
   // ── Round three: the lock key, durability, and reachability of the refusal ──
   {
     name: "the lock is keyed on the change address again (rotates when money lands)",

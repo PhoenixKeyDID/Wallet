@@ -46,11 +46,24 @@
  * not, and that matters because the lock has to be known before the first
  * render arms a Send button.
  *
- * An address with no stake half (enterprise) falls back to one slot per
- * network. That loses the separation between two such accounts, which fails
- * *safe*: the worst it produces is account B seeing account A's warning, and
- * the reader can dismiss it after checking. The rotation it replaces failed
- * open, and open means sending twice.
+ * An address with no stake half falls back to one slot per network — that is
+ * enterprise and pointer addresses, a base address whose stake half is a
+ * script, and anything unparseable. Two such accounts then share a slot, and
+ * the honest description of that is **not** "fails safe", because it fails in
+ * both directions and only one of them is harmless:
+ *
+ *   - *showing*: account B sees account A's warning. Harmless — B reads it,
+ *     looks the hash up, finds it is not theirs, dismisses it.
+ *   - *clearing*: B pressing "I have checked" erases A's warning. Not
+ *     harmless, and it is the same loss this module exists to prevent.
+ *
+ * It is still the right fallback, but for a narrower reason than "safe": it is
+ * the only non-rotating answer available once the address stops carrying an
+ * account identity, and rotation loses the warning on *every* such account
+ * rather than on the rare pair that collide. Both failures need two accounts of
+ * this shape in one browser; rotation needed only one account and one
+ * successful transaction. If that ever stops being rare, the fix is a second
+ * identity source, not a cleverer key.
  *
  * ## Failure
  *
