@@ -197,18 +197,45 @@ describe("wiring > a panel cannot quietly go back to the old shape", () => {
     // copying one of them, and copying the *old* shape compiles, passes every
     // gate, and silently re-arms the form after a submit nobody can account for.
     // So: calling it as a bare statement is the thing to catch.
+    //
+    // Three shapes throw the result away, not one. `void f()` and `(f)()` read
+    // as ordinary tidying and were measured to walk straight through the first
+    // version of this, which only knew `ExpressionStatement ⊃ CallExpression ⊃
+    // Identifier`. So the test is "the call's value is discarded", and the
+    // wrappers are unwrapped before asking.
+    const unwrap = (e: ts.Expression): ts.Expression => {
+      let cur = e;
+      for (;;) {
+        if (ts.isParenthesizedExpression(cur)) cur = cur.expression;
+        else if (ts.isVoidExpression(cur)) cur = cur.expression;
+        else if (ts.isAwaitExpression(cur)) cur = cur.expression;
+        else return cur;
+      }
+    };
+    const namesIt = (e: ts.Expression): boolean => {
+      const c = unwrap(e);
+      if (!ts.isCallExpression(c)) return false;
+      const callee = unwrap(c.expression);
+      return ts.isIdentifier(callee) && callee.text === "reportSignError";
+    };
+
     const offenders: string[] = [];
     for (const { name, text } of panelSources()) {
       walk(parse(name, text), (n) => {
         if (!ts.isExpressionStatement(n)) return;
-        const e = n.expression;
-        if (
-          ts.isCallExpression(e) &&
-          ts.isIdentifier(e.expression) &&
-          e.expression.text === "reportSignError"
-        ) {
-          offenders.push(name);
-        }
+        // A comma expression discards every value but the last, so each side is
+        // its own discard. `0, f()` was the shape `tsc` happened to catch; it
+        // should not have needed `tsc` to.
+        const parts: ts.Expression[] = [];
+        const flatten = (e: ts.Expression) => {
+          const u = unwrap(e);
+          if (ts.isBinaryExpression(u) && u.operatorToken.kind === ts.SyntaxKind.CommaToken) {
+            flatten(u.left);
+            flatten(u.right);
+          } else parts.push(u);
+        };
+        flatten(n.expression);
+        if (parts.some(namesIt)) offenders.push(name);
       });
     }
     expect(offenders).toEqual([]);
