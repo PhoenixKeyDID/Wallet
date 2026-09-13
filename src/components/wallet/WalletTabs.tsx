@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { PhoenixNetwork, WalletPort } from "@/lib/cardano";
 import { SendPanel } from "./SendPanel";
@@ -10,6 +10,7 @@ import { GovernancePanel } from "./GovernancePanel";
 import { ConnectPanel } from "./ConnectPanel";
 import { HistoryPanel } from "./HistoryPanel";
 import { UncertainSubmitNotice } from "./UncertainSubmitNotice";
+import { browserStore, readLock, writeLock, clearLock } from "./uncertainStore";
 
 type Tab = "send" | "receive" | "history" | "staking" | "governance" | "connect";
 
@@ -96,19 +97,63 @@ export function WalletTabs({
       : testnetVariant;
 
   /**
-   * A submit whose reply never came, held here rather than in the panel.
+   * A submit whose reply never came — held here, and also on disk.
    *
-   * It outlives the panel on purpose. Tabs render with `&&`, so a panel that
-   * held this in its own `useState` lost the hash the moment the reader left —
-   * and the notice tells them to go look the hash up, on the History tab.
-   * Cross-panel for the same reason: an unresolved submit means this wallet's
-   * UTxO set is unknown, so every money screen is unsafe, not just the one that
-   * sent. See `UncertainSubmitNotice`.
+   * Here rather than in a panel because tabs render with `&&`: a panel holding
+   * this in its own `useState` lost the hash the moment the reader left, and
+   * the notice sends them to the History tab. Cross-panel for the same reason —
+   * an unresolved submit means this wallet's UTxO set is unknown, so every
+   * money screen is unsafe, not only the one that sent.
+   *
+   * On disk because moving it up one level moved the boundary rather than
+   * removing it. React state still dies when the session idle-locks, which is
+   * five minutes, which is the same order as the wait the notice asks for. See
+   * `uncertainStore` for the whole argument.
    */
-  const [uncertainHash, setUncertainHash] = useState<string | null>(null);
+  const store = browserStore();
+  const [uncertainHash, setUncertainHash] = useState<string | null>(() =>
+    readLock(store, network, changeAddress),
+  );
+
+  /**
+   * Re-read when the wallet or chain changes under us — and ONLY then.
+   *
+   * The identity can change without unmounting; the testnet picker above is one
+   * way. Without this, account A's warning stays on screen for account B.
+   *
+   * The `seen` ref is what makes this a second path rather than a duplicate of
+   * the initialiser. Measured: while both read on mount, deleting either one
+   * left every test green, because the other still did the job — two paths
+   * covering each other is the same as neither being watched. Now the
+   * initialiser owns mount and this owns changes, and breaking either is
+   * visible.
+   */
+  const seen = useRef<string | null>(null);
+  useEffect(() => {
+    const id = `${network}:${changeAddress}`;
+    if (seen.current === null) {
+      seen.current = id; // mount: the initialiser already read it
+      return;
+    }
+    if (seen.current === id) return;
+    seen.current = id;
+    setUncertainHash(readLock(store, network, changeAddress));
+    // `store` is a handle, not a value; re-running on it would loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [network, changeAddress]);
+
+  const rememberUncertain = (txHash: string) => {
+    writeLock(store, network, changeAddress, txHash);
+    setUncertainHash(txHash);
+  };
+
+  const acknowledgeUncertain = () => {
+    clearLock(store, network, changeAddress);
+    setUncertainHash(null);
+  };
 
   const panelProps = { port, network, changeAddress };
-  const moneyProps = { ...panelProps, uncertainHash, onUncertain: setUncertainHash };
+  const moneyProps = { ...panelProps, uncertainHash, onUncertain: rememberUncertain };
 
   return (
     <div className="space-y-4">
@@ -163,7 +208,7 @@ export function WalletTabs({
       {uncertainHash !== null && (
         <UncertainSubmitNotice
           txHash={uncertainHash}
-          onAcknowledge={() => setUncertainHash(null)}
+          onAcknowledge={acknowledgeUncertain}
         />
       )}
 

@@ -31,9 +31,19 @@ import { dirname, join } from "node:path";
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HISTORY = "src/lib/cardano/history.ts";
 const PRICE = "src/lib/cardano/price.ts";
+const SEND = "src/components/wallet/SendPanel.tsx";
+const STAKING = "src/components/wallet/StakingPanel.tsx";
+const GOV = "src/components/wallet/GovernancePanel.tsx";
+const TABS = "src/components/wallet/WalletTabs.tsx";
+const PROVIDER = "src/lib/cardano/provider.ts";
+const BLOCKFROST = "src/lib/cardano/blockfrost.ts";
 const TESTS = [
   "src/lib/cardano/__tests__/history.test.ts",
   "src/lib/cardano/__tests__/price.test.ts",
+  "src/components/wallet/__tests__/moneyNotice.test.ts",
+  "src/components/wallet/__tests__/uncertainStore.test.ts",
+  "src/lib/cardano/submitError.test.ts",
+  "src/lib/keystore/__tests__/keystore.test.ts",
 ];
 
 /**
@@ -110,7 +120,103 @@ const MUTANTS = [
     from: "    if (age >= 0 && age < TTL_MS) return cached;",
     to: "    if (age < TTL_MS) return cached;",
   },
+
+  // ── The lock on an unresolved submit ──────────────────────────────────────
+  //
+  // One transaction was signed and handed to the network with no reply. Sending
+  // again is how the same amount leaves twice, so every money screen refuses
+  // until the reader says they have checked. Each entry below is a way that
+  // refusal has actually been broken, or was found to be breakable, while the
+  // whole suite stayed green.
+
+  {
+    // The shape that survived the first attempt at a gate: the gate matched a
+    // *string* in the function text. Dropping `return` is what a linter
+    // suggests for a returned void expression, and what someone writing the
+    // `if` by hand forgets. After it, Confirm shows the warning and then signs.
+    name: "the Send refusal warns and falls through (the `return` dropped)",
+    file: SEND,
+    from: '    if (uncertainHash !== null) return toastError(t("uncertain_blocked"));',
+    to: '    if (uncertainHash !== null) toastError(t("uncertain_blocked"));',
+  },
+  {
+    name: "the delegate refusal warns and falls through",
+    file: STAKING,
+    from: '    if (uncertainHash !== null) return toastError(t("uncertain_blocked"));\n    setBusy(true);\n    try {\n      const hash = await port.signAndSubmit(poolReview.built, network);',
+    to: '    if (uncertainHash !== null) toastError(t("uncertain_blocked"));\n    setBusy(true);\n    try {\n      const hash = await port.signAndSubmit(poolReview.built, network);',
+  },
+  {
+    name: "the withdraw refusal is removed (the second door on one screen)",
+    file: STAKING,
+    from: '    if (!withdrawReview) return;\n    if (uncertainHash !== null) return toastError(t("uncertain_blocked"));',
+    to: "    if (!withdrawReview) return;",
+  },
+  {
+    name: "the governance refusal warns and falls through",
+    file: GOV,
+    from: '    if (uncertainHash !== null) return toastError(t("uncertain_blocked"));\n    setBusy(true);',
+    to: '    if (uncertainHash !== null) toastError(t("uncertain_blocked"));\n    setBusy(true);',
+  },
+  {
+    // The notice's body tells the reader to go look the hash up. Putting it
+    // back inside a tab condition means following that instruction destroys it.
+    name: "the notice goes back inside a tab condition",
+    file: TABS,
+    from: "      {uncertainHash !== null && (",
+    to: '      {activeTab === "send" && uncertainHash !== null && (',
+  },
+  {
+    // React state dies on idle-lock, which is five minutes, which is about how
+    // long looking a transaction up takes.
+    name: "the lock is no longer written down (memory only again)",
+    file: TABS,
+    from: "    writeLock(store, network, changeAddress, txHash);\n",
+    to: "",
+  },
+  {
+    name: "the lock is never read back on mount",
+    file: TABS,
+    from: "  const [uncertainHash, setUncertainHash] = useState<string | null>(() =>\n    readLock(store, network, changeAddress),\n  );",
+    to: "  const [uncertainHash, setUncertainHash] = useState<string | null>(null);",
+  },
+  {
+    // Both submit doors must report a refusal as a TYPE. A plain Error sends a
+    // definitively-rejected transaction down the "unknown" path, which locks
+    // every money screen and asks for a hash that exists nowhere.
+    name: "the Koios door reports a rejection as a plain Error again",
+    file: PROVIDER,
+    from: 'if (!res.ok) throw new SubmitRejectedError(res.status, text.slice(0, 300), "Koios /submittx");',
+    to: "if (!res.ok) throw new Error(`Koios /submittx → HTTP ${res.status}: ${text.slice(0, 300)}`);",
+  },
+  {
+    name: "the Blockfrost-shaped door reports a rejection as a plain Error again",
+    file: BLOCKFROST,
+    from: '    throw new SubmitRejectedError(res.status, text.slice(0, 300), "Chain endpoint /tx/submit");',
+    to: "    throw new Error(`Chain endpoint /tx/submit → HTTP ${res.status}: ${text.slice(0, 300)}`);",
+  },
+  {
+    name: "a 5xx counts as the node saying no (invites a second payment)",
+    file: "src/lib/cardano/submitError.ts",
+    from: "  return err instanceof SubmitRejectedError && err.status >= 400 && err.status < 500;",
+    to: "  return err instanceof SubmitRejectedError;",
+  },
 ];
+
+/**
+ * Known survivors, and why they are allowed to survive.
+ *
+ * Not skipped — they run, and the run reports them. Written down because an
+ * unstated gap is the kind that gets rediscovered as a defect:
+ *
+ *   - `SendPanel`'s `canBuild` dropping `uncertainHash === null &&`
+ *   - `GovernancePanel.review()`'s guard turned into `if (false)`
+ *
+ * Both are second doors: the spend itself is refused inside the function that
+ * calls `signAndSubmit`, and removing THAT is caught on all four paths above.
+ * Pinning these would need a gate naming one function in one file, which then
+ * goes red on any honest rename — the kind of watcher that gets deleted rather
+ * than fixed.
+ */
 
 const read = (rel) => readFileSync(join(REPO, rel), "utf8");
 const write = (rel, text) => writeFileSync(join(REPO, rel), text);

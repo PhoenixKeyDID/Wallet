@@ -34,7 +34,16 @@
  */
 export class SubmitRejectedError extends Error {
   constructor(
-    /** HTTP status from the submit endpoint. Always 4xx — see the module note. */
+    /**
+     * HTTP status from the submit endpoint — **4xx or 5xx**.
+     *
+     * It said "always 4xx", which was false and false in the direction that
+     * costs money: both throw sites pass `res.status` for every non-ok reply.
+     * A reader who believed it would take `instanceof SubmitRejectedError` as
+     * enough and drop `isDefiniteRejection`, turning a 503 — a failure on the
+     * way back, which says nothing about the way in — into "the node said no",
+     * and inviting a second payment. Call `isDefiniteRejection` first.
+     */
     readonly status: number,
     /** What the node said, already truncated by the caller. */
     readonly detail: string,

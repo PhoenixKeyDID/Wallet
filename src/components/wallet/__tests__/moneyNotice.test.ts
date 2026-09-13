@@ -127,6 +127,13 @@ describe("submit with no reply > the caller is told, not just the reader", () =>
  * scope. `noRedirect.test.ts` walks the tree the same way, and states its own
  * escape hatches; this one has none to state, which is why the list below is
  * the file's whole reach.
+ *
+ * **`extension/src/` is outside it**, and that is a stated limit rather than an
+ * oversight. The extension's approval screen imports from `@/lib/cardano` too,
+ * so the same argument would reach it — it is excluded today only because that
+ * screen returns a witness set and never submits (there is no `signAndSubmit`
+ * in it, and every method other than `signTx` is refused). The day it submits,
+ * this sweep must grow to cover it, and nothing here will say so.
  */
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -371,6 +378,42 @@ describe("wiring > the lock that is there now is still there", () => {
     expect(sites[0]?.guardedBy, "the notice sits inside a tab condition").toBeNull();
   });
 
+  it("writes the lock down, and clears it only on acknowledge", () => {
+    // React state dies on idle-lock (five minutes) and on reload. The notice
+    // asks the reader to go wait for a block, which takes about that long — so
+    // an in-memory-only lock expires while they are doing what it said. Moving
+    // the state up a level moved that boundary; it did not remove it.
+    //
+    // Three wirings, all in `WalletTabs`: read it back on mount, write it when
+    // a submit goes unresolved, and erase it when — and only when — the reader
+    // says they have checked.
+    const { name, text } = sourceOf("WalletTabs.tsx");
+    for (const fn of ["readLock", "writeLock", "clearLock"]) {
+      expect(new RegExp(`\\b${fn}\\s*\\(`).test(text), `WalletTabs never calls ${fn}`).toBe(true);
+    }
+
+    // Specifically at mount, not merely somewhere in the file. This was a real
+    // survivor: two places read the lock — the initialiser and an effect — so
+    // deleting either left the other doing the job and nothing went red. Two
+    // paths covering each other measure the same as no path being watched, so
+    // the initialiser is named here and the effect now only handles changes.
+    let mountReads = false;
+    walk(parse(name, text), (n) => {
+      if (!ts.isVariableDeclaration(n)) return;
+      if (!n.name.getText().includes("uncertainHash")) return;
+      const init = n.initializer;
+      if (init && ts.isCallExpression(init) && /\breadLock\s*\(/.test(init.getText())) {
+        mountReads = true;
+      }
+    });
+    expect(mountReads, "the lock is not read back when the tabs mount").toBe(true);
+    // `clearLock` belongs to acknowledging, nowhere else. A timeout or a later
+    // successful send would erase the answer to a question they do not answer:
+    // whether *that* transaction landed.
+    const clears = [...text.matchAll(/clearLock\s*\(/g)].length;
+    expect(clears, "clearLock is called from more than one place").toBe(1);
+  });
+
   it("keeps the hash in exactly one place — no panel holds its own copy", () => {
     // Two copies is worse than the original bug: one panel clears the lock while
     // another still believes it, and which screen you are on decides whether the
@@ -404,6 +447,46 @@ describe("wiring > the lock that is there now is still there", () => {
     expect(broken).toEqual([]);
   });
 
+  /**
+   * Does this function actually refuse, before the offset given?
+   *
+   * The first version asked `fn.getText()` for `/uncertainHash !== null/`, which
+   * measures the presence of a *string* in the source — comments included. Three
+   * mutations walked through it, all green, all `tsc`-clean:
+   *
+   *   - `if (uncertainHash !== null) toastError(…)` — the `return` dropped. This
+   *     is the one that matters: returning a `void` expression is exactly what a
+   *     linter suggests removing, and what someone writing the `if` by hand
+   *     forgets. After it, pressing Confirm while locked **shows the warning and
+   *     then signs and submits** — worse than no guard, because the screen just
+   *     said it had stopped.
+   *   - the whole guard turned into a comment mentioning it.
+   *
+   * So: an `if` whose condition really is `uncertainHash !== null`, whose branch
+   * really leaves the function, and which really sits before the call.
+   */
+  const guardsBefore = (fn: ts.Node, callStart: number): boolean => {
+    let found = false;
+    walk(fn, (n) => {
+      if (found || !ts.isIfStatement(n)) return;
+      if (n.getStart() >= callStart) return; // after the spend: too late to refuse
+      const c = n.expression;
+      if (!ts.isBinaryExpression(c)) return;
+      if (c.operatorToken.kind !== ts.SyntaxKind.ExclamationEqualsEqualsToken) return;
+      if (c.left.getText() !== "uncertainHash") return;
+      if (c.right.kind !== ts.SyntaxKind.NullKeyword) return;
+      // The branch has to leave. A bare `toastError(…)` falls through to the
+      // spend, and that is the shape this exists to catch.
+      const leaves = (s: ts.Statement): boolean => {
+        if (ts.isReturnStatement(s) || ts.isThrowStatement(s)) return true;
+        if (ts.isBlock(s)) return s.statements.length > 0 && leaves(s.statements[s.statements.length - 1]!);
+        return false;
+      };
+      if (leaves(n.thenStatement)) found = true;
+    });
+    return found;
+  };
+
   it("refuses inside every function that can spend, not once per file", () => {
     // The first version of this asked each file for *a* guard. `StakingPanel`
     // has two ways to spend; deleting the lock from one of them left the other
@@ -428,11 +511,8 @@ describe("wiring > the lock that is there now is still there", () => {
           unguarded.push(`${name}: signAndSubmit outside any function`);
           return;
         }
-        const body = fn.getText();
-        if (!/uncertainHash\s*!==\s*null/.test(body)) {
-          const label = ts.isVariableDeclaration(fn.parent) ? fn.parent.name.getText() : "(anonymous)";
-          unguarded.push(`${name}: ${label}`);
-        }
+        const label = ts.isVariableDeclaration(fn.parent) ? fn.parent.name.getText() : "(anonymous)";
+        if (!guardsBefore(fn, n.getStart())) unguarded.push(`${name}: ${label}`);
       });
     }
     expect(unguarded).toEqual([]);

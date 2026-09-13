@@ -71,6 +71,14 @@
 # a message that named the wrong one — which is the whole defect.
 /src/lib/cardano/__tests__/noRedirect.test.ts  @AladinContract @GreenSun-Tech
 
+# Names a stand-in host, so it is here for the same reason as the two above: an
+# absolute URL that a drive-by edit could point somewhere real. It also decides
+# which submit failures count as "the node refused" rather than "nobody knows" —
+# and getting that backwards is what tells a reader to look up a transaction id
+# that was never created.
+/src/lib/cardano/submitError.test.ts           @AladinContract @GreenSun-Tech
+/src/lib/cardano/submitError.ts                @AladinContract @GreenSun-Tech
+
 # The two files a stranger reads first, and the ones a search engine indexes.
 # `docs/Phoenix Wallet-Feat.md` names the Midnight redemption portal and two
 # dApp hosts; README carries the install instructions. A homoglyph swap here
