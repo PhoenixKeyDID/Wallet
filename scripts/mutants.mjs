@@ -38,6 +38,11 @@ const TABS = "src/components/wallet/WalletTabs.tsx";
 const PROVIDER = "src/lib/cardano/provider.ts";
 const BLOCKFROST = "src/lib/cardano/blockfrost.ts";
 const STORE = "src/components/wallet/uncertainStore.ts";
+// A gate is worth mutating too. "Is this guard pinned" and "is the thing that
+// checks the guard pinned" are different questions, and the second one has gone
+// unanswered here before: two table rows named after a detector were going red
+// because a *count* elsewhere fell, not because the detector did its job.
+const NOTICE_TEST = "src/components/wallet/__tests__/moneyNotice.test.ts";
 const TESTS = [
   "src/lib/cardano/__tests__/history.test.ts",
   "src/lib/cardano/__tests__/price.test.ts",
@@ -53,6 +58,60 @@ const TESTS = [
  * measuring nothing, which is the failure mode it was written to prevent.
  */
 const MUTANTS = [
+  // ── Round five: the remaining text checks, and the half of the pair that
+  // was never held to the same standard as the other half ──
+  {
+    name: "mount read replaced by a comment saying it happens",
+    file: TABS,
+    from:
+      "  const [uncertainHash, setUncertainHash] = useState<string | null>(() =>\n" +
+      "    readLock(store, network, accountKey),\n" +
+      "  );",
+    to:
+      "  const [uncertainHash, setUncertainHash] = useState<string | null>(\n" +
+      "    null /* readLock(store, network, accountKey) */,\n" +
+      "  );",
+  },
+  {
+    name: "real key rotates while a decoy declaration satisfies the gate",
+    file: TABS,
+    from: "  const accountKey = accountKeyFrom(changeAddress);",
+    to:
+      "  const accountKey = changeAddress;\n" +
+      "  const decoy = () => accountKeyFrom(changeAddress);\n" +
+      "  void decoy;",
+  },
+  {
+    name: "wholesale-clear guard inverted (one operator, unlock handed back)",
+    file: TABS,
+    from: "      if (next === null && e.key === null) {",
+    to: "      if (next !== null && e.key === null) {",
+  },
+  {
+    name: "the withdraw door stops reporting, so no lock is ever created",
+    file: STAKING,
+    from:
+      "      setWithdrawReview(null);\n" +
+      "      setChecked(false);\n" +
+      "      const outcome = reportSignError(err, t);\n" +
+      '      if (outcome.kind === "uncertain") onUncertain(outcome.txHash);',
+    to:
+      "      setWithdrawReview(null);\n" +
+      "      setChecked(false);\n" +
+      "      reportSignError(err, t);",
+  },
+  {
+    name: "durability is a constant wearing a name, not state",
+    file: TABS,
+    from: "  const [durable, setDurable] = useState(true);",
+    to: "  const durable = true;\n  const setDurable = (_v: boolean) => void _v;",
+  },
+  {
+    name: "the spend-call detector stops unwrapping parentheses",
+    file: NOTICE_TEST,
+    from: "    while (ts.isParenthesizedExpression(e) || ts.isNonNullExpression(e)) e = e.expression;",
+    to: "",
+  },
   // ── Round four: the gates themselves measured spelling, not meaning ──
   // Each of these was GREEN when written. They are here because the previous
   // round's checks were regexes over source text, and a regex cannot tell a
@@ -91,7 +150,15 @@ const MUTANTS = [
   {
     name: "clearing site data takes the warning down as if the reader had checked",
     file: TABS,
-    from: "      if (next === null && e.key === null) return;\n",
+    from:
+      "      if (next === null && e.key === null) {\n" +
+      "        // The warning stays, but it is no longer backed by anything: the copy\n" +
+      "        // this tab is showing is now the only one. Saying so is the point of\n" +
+      "        // the flag — leaving it `true` here is the same lie it exists to stop,\n" +
+      "        // arriving by a different door.\n" +
+      "        setDurable(false);\n" +
+      "        return;\n" +
+      "      }\n",
     to: "",
   },
   // ── Round three: the lock key, durability, and reachability of the refusal ──

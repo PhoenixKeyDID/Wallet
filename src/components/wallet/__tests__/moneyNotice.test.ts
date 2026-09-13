@@ -397,14 +397,20 @@ describe("wiring > the lock that is there now is still there", () => {
     // deleting either left the other doing the job and nothing went red. Two
     // paths covering each other measure the same as no path being watched, so
     // the initialiser is named here and the effect now only handles changes.
+    //
+    // Measured against the tree, not `getText()`. The text form accepted a
+    // *comment* saying `readLock(…)` while the initialiser was `null`, which is
+    // the round-two defect verbatim: reload the page and the warning is gone
+    // with the Send button armed.
     let mountReads = false;
     walk(parse(name, text), (n) => {
       if (!ts.isVariableDeclaration(n)) return;
       if (!n.name.getText().includes("uncertainHash")) return;
       const init = n.initializer;
-      if (init && ts.isCallExpression(init) && /\breadLock\s*\(/.test(init.getText())) {
-        mountReads = true;
-      }
+      if (!init || !ts.isCallExpression(init)) return;
+      walk(init, (x) => {
+        if (ts.isCallExpression(x) && x.expression.getText() === "readLock") mountReads = true;
+      });
     });
     expect(mountReads, "the lock is not read back when the tabs mount").toBe(true);
     // `clearLock` belongs to acknowledging, nowhere else. A timeout or a later
@@ -429,17 +435,32 @@ describe("wiring > the lock that is there now is still there", () => {
     const root = parse(name, text);
 
     let derived = false;
+    const shadowed: string[] = [];
     walk(root, (n) => {
       if (!ts.isVariableDeclaration(n)) return;
       if (n.name.getText() !== "accountKey") return;
       const init = n.initializer;
-      derived =
-        !!init && ts.isCallExpression(init) && init.expression.getText() === "accountKeyFrom";
+      // Accumulate, never assign. A second `accountKey` declared later in the
+      // file — in a dead function, say — used to decide the verdict for the
+      // real one, which put the whole rotation defect back with every test
+      // green. The same mistake appears twice more in this file; all three are
+      // fixed together, because fixing one and leaving its siblings is how a
+      // measured defect comes back wearing a different name.
+      if (!!init && ts.isCallExpression(init) && init.expression.getText() === "accountKeyFrom") {
+        derived = true;
+      } else {
+        shadowed.push(init?.getText() ?? "<no initializer>");
+      }
     });
     expect(
       derived,
       "`accountKey` is not the result of accountKeyFrom — the lock is keyed on a rotating value",
     ).toBe(true);
+    // And there must be exactly one of them. A decoy declaration is how the
+    // accumulating check above would be satisfied while the live one rotates.
+    expect(shadowed, "a second `accountKey` is declared and does not come from accountKeyFrom").toEqual(
+      [],
+    );
 
     // And every call into the store must key on that identifier, nothing else.
     // Listing what IS allowed rather than what is forbidden: a check for the
@@ -490,6 +511,14 @@ describe("wiring > the lock that is there now is still there", () => {
       walk(body, (n) => {
         if (!ts.isVariableDeclaration(n) || !ts.isIdentifier(n.name)) return;
         if (isReadLock(n.initializer)) bound.add(n.name.text);
+      });
+      // …and drop any of them that is written to afterwards. One extra line
+      // between the read and the setter turned a genuine wiring check into a
+      // check that a *name* travelled, and a name can carry anything.
+      walk(body, (n) => {
+        if (!ts.isBinaryExpression(n)) return;
+        if (n.operatorToken.kind !== ts.SyntaxKind.EqualsToken) return;
+        if (ts.isIdentifier(n.left)) bound.delete(n.left.text);
       });
       let ok = false;
       walk(body, (n) => {
@@ -552,15 +581,23 @@ describe("wiring > the lock that is there now is still there", () => {
         ts.isReturnStatement(n.thenStatement) ||
         (ts.isBlock(n.thenStatement) && n.thenStatement.statements.some(ts.isReturnStatement));
       if (!leaves) return;
-      let mentionsNullKey = false;
-      walk(n.expression, (x) => {
-        if (!ts.isBinaryExpression(x)) return;
-        if (x.operatorToken.kind !== ts.SyntaxKind.EqualsEqualsEqualsToken) return;
-        if (x.right.kind !== ts.SyntaxKind.NullKeyword) return;
-        if (ts.isPropertyAccessExpression(x.left) && x.left.name.text === "key") {
-          mentionsNullKey = true;
-        }
-      });
+      // Both halves, and both operators. Shape alone is not enough: flipping
+      // one `===` to `!==` leaves the same shape and hands the unlock straight
+      // back, which is the whole defect. So: `<the read> === null` AND
+      // `<the event>.key === null`, joined by `&&`.
+      const c = n.expression;
+      if (!ts.isBinaryExpression(c)) return;
+      if (c.operatorToken.kind !== ts.SyntaxKind.AmpersandAmpersandToken) return;
+      const isNullCheck = (x: ts.Expression, onKey: boolean): boolean =>
+        ts.isBinaryExpression(x) &&
+        x.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken &&
+        x.right.kind === ts.SyntaxKind.NullKeyword &&
+        (onKey
+          ? ts.isPropertyAccessExpression(x.left) && x.left.name.text === "key"
+          : ts.isIdentifier(x.left));
+      const mentionsNullKey =
+        (isNullCheck(c.left, false) && isNullCheck(c.right, true)) ||
+        (isNullCheck(c.left, true) && isNullCheck(c.right, false));
       // Accumulate, never assign: the handler has a second early `return` that
       // compares the key with `!== null`, and plain assignment would let
       // whichever `if` the walk reached last decide the verdict.
@@ -599,17 +636,40 @@ describe("wiring > the lock that is there now is still there", () => {
     // print "the id is kept here" in the browsers where nothing was kept —
     // which is the exact sentence this whole property exists to prevent.
     const durableAttrs: string[] = [];
+    let durableAttrName: string | undefined;
     walk(root, (n) => {
       if (!ts.isJsxAttribute(n) || n.name.getText() !== "durable") return;
       const v = n.initializer;
       const inner = v && ts.isJsxExpression(v) ? v.expression : undefined;
       durableAttrs.push(inner ? ts.SyntaxKind[inner.kind] : "<no expression>");
+      if (inner && ts.isIdentifier(inner)) durableAttrName = inner.text;
     });
     expect(durableAttrs.length, "the notice is never told whether the hash is durable").toBe(1);
     expect(
       durableAttrs[0],
       `durable is passed as a constant (${durableAttrs[0]}), not as the answer writeLock gave`,
     ).toBe(ts.SyntaxKind[ts.SyntaxKind.Identifier]);
+
+    // An identifier is not enough either: `const keptHere = true` is a constant
+    // wearing a name. What has to reach the notice is the value the writer set,
+    // so the name must be bound by `useState` — the only thing in this file
+    // that can still be holding what `writeLock` answered.
+    const stateNames = new Set<string>();
+    walk(root, (n) => {
+      if (!ts.isVariableDeclaration(n)) return;
+      if (!n.initializer || !ts.isCallExpression(n.initializer)) return;
+      if (!/^useState/.test(n.initializer.expression.getText())) return;
+      if (!ts.isArrayBindingPattern(n.name)) return;
+      const first = n.name.elements[0];
+      if (first && ts.isBindingElement(first) && ts.isIdentifier(first.name)) {
+        stateNames.add(first.name.text);
+      }
+    });
+    const passed = durableAttrName ?? "";
+    expect(
+      stateNames.has(passed),
+      `durable is passed as \`${passed}\`, which is not React state — a constant renamed`,
+    ).toBe(true);
   });
 
   it("keeps the hash in exactly one place — no panel holds its own copy", () => {
@@ -643,6 +703,38 @@ describe("wiring > the lock that is there now is still there", () => {
       if (setsIt && !readsIt) broken.push(`${name}: calls onUncertain, never reads uncertainHash`);
     }
     expect(broken).toEqual([]);
+  });
+
+  it("reports an unresolved submit from every function that can spend", () => {
+    // The other half of the lock, and for a long time the weaker half. The
+    // refusal was measured per FUNCTION against the syntax tree; the *report*
+    // was measured per FILE with a text match — so a screen with two ways to
+    // spend kept its gate satisfied by the other one, and the door that lost
+    // its report produced no lock at all. Nothing else creates the lock, so
+    // that is not a degraded warning: it is silence, on the screen that just
+    // sent money into an unknown.
+    //
+    // Same sweep and same unit as the refusal, deliberately. A property worth
+    // enforcing on one half of a pair is worth enforcing the same way on the
+    // other, and the two drifting apart is what produced this.
+    const silent: string[] = [];
+    for (const { name, text } of panelSources()) {
+      if (name === "WalletTabs.tsx") continue;
+      walk(parse(name, text), (n) => {
+        if (!ts.isCallExpression(n)) return;
+        if (spendMethodOf(n) !== "signAndSubmit") return;
+        let fn: ts.Node | undefined = n.parent;
+        while (fn && !ts.isFunctionLike(fn)) fn = fn.parent;
+        if (!fn) return; // the refusal gate already reports this shape
+        let reports = false;
+        walk(fn, (x) => {
+          if (ts.isCallExpression(x) && x.expression.getText() === "onUncertain") reports = true;
+        });
+        const label = ts.isVariableDeclaration(fn.parent) ? fn.parent.name.getText() : "(anonymous)";
+        if (!reports) silent.push(`${name}: ${label}`);
+      });
+    }
+    expect(silent, "a spend path can end in an unknown outcome and set no lock").toEqual([]);
   });
 
   /**
@@ -688,11 +780,19 @@ describe("wiring > the lock that is there now is still there", () => {
     for (const n of bodyStatements(fn)) {
       if (found || !ts.isIfStatement(n)) continue;
       if (n.getStart() >= callStart) continue; // after the spend: too late to refuse
+      // `if (uncertainHash !== null)` and `if (uncertainHash)` are the same
+      // refusal — the value is `string | null`, so truthiness and the explicit
+      // comparison cannot disagree. Rejecting the shorter one would fail
+      // correct code, and a gate that fails correct code gets written around
+      // rather than satisfied. Accept both; accept nothing else.
       const c = n.expression;
-      if (!ts.isBinaryExpression(c)) continue;
-      if (c.operatorToken.kind !== ts.SyntaxKind.ExclamationEqualsEqualsToken) continue;
-      if (c.left.getText() !== "uncertainHash") continue;
-      if (c.right.kind !== ts.SyntaxKind.NullKeyword) continue;
+      const explicit =
+        ts.isBinaryExpression(c) &&
+        c.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken &&
+        c.left.getText() === "uncertainHash" &&
+        c.right.kind === ts.SyntaxKind.NullKeyword;
+      const truthy = ts.isIdentifier(c) && c.text === "uncertainHash";
+      if (!explicit && !truthy) continue;
       // The branch has to leave. A bare `toastError(…)` falls through to the
       // spend, and that is the shape this exists to catch.
       const leaves = (s: ts.Statement): boolean => {
@@ -760,6 +860,34 @@ describe("wiring > the lock that is there now is still there", () => {
       });
     }
     expect(unguarded).toEqual([]);
+  });
+
+  it("recognises a spend call however it is spelled", () => {
+    // Fixtures, not the repo. Measured: deleting the paren-unwrapping from
+    // `spendMethodOf` left every test green — the two table entries named after
+    // that shape were going red for a different reason (the count floor fell
+    // from four to three), so the unwrapping itself was pinned by nothing. Two
+    // paths covering each other measure the same as neither being watched, and
+    // the only way to test a detector is to hand it the inputs it claims to
+    // detect rather than to run it over code that happens to be correct.
+    const cases: [string, string | null][] = [
+      ["port.signAndSubmit(b, n)", "signAndSubmit"],
+      ['port["signAndSubmit"](b, n)', "signAndSubmit"],
+      ["(port.signAndSubmit)(b, n)", "signAndSubmit"],
+      ["port!.signAndSubmit(b, n)", "signAndSubmit"],
+      ["((port.signAndSubmit))(b, n)", "signAndSubmit"],
+      ["port.somethingElse(b, n)", "somethingElse"],
+      ["plainFunction(b, n)", null],
+    ];
+    const seen: (string | null)[] = [];
+    for (const [src] of cases) {
+      let got: string | null = null;
+      walk(parse("fixture.ts", `const x = ${src};`), (n) => {
+        if (ts.isCallExpression(n)) got = spendMethodOf(n) ?? got;
+      });
+      seen.push(got);
+    }
+    expect(seen).toEqual(cases.map(([, want]) => want));
   });
 
   it("has a spend path at all — an empty sweep is not a pass", () => {

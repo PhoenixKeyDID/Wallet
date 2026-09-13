@@ -184,7 +184,14 @@ export function WalletTabs({
       // housekeeping — not a person saying they looked the transaction up. The
       // only thing allowed to take this warning down is the button that says
       // so, and "the data went away" must not be able to impersonate it.
-      if (next === null && e.key === null) return;
+      if (next === null && e.key === null) {
+        // The warning stays, but it is no longer backed by anything: the copy
+        // this tab is showing is now the only one. Saying so is the point of
+        // the flag — leaving it `true` here is the same lie it exists to stop,
+        // arriving by a different door.
+        setDurable(false);
+        return;
+      }
       setUncertainHash(next);
     };
     window.addEventListener("storage", onStorage);
