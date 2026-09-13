@@ -203,6 +203,12 @@ describe("wiring > a panel cannot quietly go back to the old shape", () => {
     // version of this, which only knew `ExpressionStatement ⊃ CallExpression ⊃
     // Identifier`. So the test is "the call's value is discarded", and the
     // wrappers are unwrapped before asking.
+    //
+    // Measured limit, so nobody has to rediscover it: passing the call as an
+    // argument to something else — `void (await Promise.resolve(f()))` — still
+    // gets through. That is not a shape ordinary editing produces, and chasing
+    // every wrapper has no end; the shapes worth catching are the ones a tidy-up
+    // writes by accident.
     const unwrap = (e: ts.Expression): ts.Expression => {
       let cur = e;
       for (;;) {
