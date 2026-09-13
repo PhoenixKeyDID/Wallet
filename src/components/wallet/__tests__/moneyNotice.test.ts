@@ -322,22 +322,54 @@ describe("wiring > the lock that is there now is still there", () => {
     expect(broken).toEqual([]);
   });
 
-  it("disarms the action on every panel that can spend while the lock is on", () => {
-    // One entry per panel, and the panel is named: a panel that gains a spend
-    // button later shows up here as a missing row rather than as silence.
-    const SPENDERS = ["SendPanel.tsx", "StakingPanel.tsx", "GovernancePanel.tsx"];
+  it("refuses inside every function that can spend, not once per file", () => {
+    // The first version of this asked each file for *a* guard. `StakingPanel`
+    // has two ways to spend; deleting the lock from one of them left the other
+    // one matching, and the suite stayed green on a screen that could still
+    // withdraw while locked. A lock that covers one of two doors covers
+    // neither, so the unit here is the function, found by what it calls.
+    //
+    // The disabled prop on the button stays — it is the hint. This is the
+    // refusal, and it is the half that a later edit cannot drop in silence.
     const unguarded: string[] = [];
-    for (const file of SPENDERS) {
-      const { text } = sourceOf(file);
-      // Either shape counts: disabling the control, or refusing at the top of
-      // the handler. Both stop the spend; insisting on one would be a rule about
-      // style rather than about money.
-      const guardsControl = /disabled=\{[^}]*uncertainHash[^}]*\}/.test(text);
-      const guardsHandler = /if\s*\(\s*uncertainHash\s*!==\s*null\s*\)/.test(text);
-      const guardsBuild = /uncertainHash\s*===\s*null\s*&&/.test(text);
-      if (!guardsControl && !guardsHandler && !guardsBuild) unguarded.push(file);
+    for (const { name, text } of panelSources()) {
+      const root = parse(name, text);
+      walk(root, (n) => {
+        if (!ts.isCallExpression(n)) return;
+        if (!ts.isPropertyAccessExpression(n.expression)) return;
+        if (n.expression.name.text !== "signAndSubmit") return;
+        // Climb to the function this call sits in, then read that function
+        // whole: the guard has to be somewhere inside it.
+        let fn: ts.Node | undefined = n.parent;
+        while (fn && !ts.isFunctionLike(fn)) fn = fn.parent;
+        if (!fn) {
+          unguarded.push(`${name}: signAndSubmit outside any function`);
+          return;
+        }
+        const body = fn.getText();
+        if (!/uncertainHash\s*!==\s*null/.test(body)) {
+          const label = ts.isVariableDeclaration(fn.parent) ? fn.parent.name.getText() : "(anonymous)";
+          unguarded.push(`${name}: ${label}`);
+        }
+      });
     }
     expect(unguarded).toEqual([]);
+  });
+
+  it("has a spend path at all — an empty sweep is not a pass", () => {
+    // The gate above is a `for` loop over found call sites. Zero call sites
+    // makes it vacuously green, which is exactly what a renamed port method or
+    // a narrowed sweep would produce: the measurement would stop measuring and
+    // report success. Count them instead of trusting the loop ran.
+    let sites = 0;
+    for (const { name, text } of panelSources()) {
+      walk(parse(name, text), (n) => {
+        if (!ts.isCallExpression(n)) return;
+        if (!ts.isPropertyAccessExpression(n.expression)) return;
+        if (n.expression.name.text === "signAndSubmit") sites++;
+      });
+    }
+    expect(sites, "no spend path found — the sweep above proved nothing").toBeGreaterThanOrEqual(4);
   });
 });
 

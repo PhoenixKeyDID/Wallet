@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { Buffer } from "buffer";
 import { useTranslation } from "react-i18next";
 import { utils as tyUtils, types as tyTypes } from "@stricahq/typhonjs";
-import { toastApiError, toastSuccess } from "@/lib/toast";
+import { toastApiError, toastError, toastSuccess } from "@/lib/toast";
 import { CopyBtn } from "@/components/CopyBtn";
 import {
   ConfirmGate,
@@ -188,6 +188,12 @@ export function SendPanel({
 
   const signSubmit = async () => {
     if (!built) return;
+    // The lock, at the last door rather than only on the button. Disabling a
+    // control is a hint; this is the refusal. A button is disabled by a prop
+    // that a later edit can drop, and dropping it leaves no trace — see the
+    // handler guards in the other two money panels, which exist for the same
+    // reason and are checked together.
+    if (uncertainHash !== null) return toastError(t("uncertain_blocked"));
     setBusy(true);
     try {
       const hash = await port.signAndSubmit(built, network);

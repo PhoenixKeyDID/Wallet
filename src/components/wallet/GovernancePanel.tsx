@@ -196,6 +196,10 @@ export function GovernancePanel({
 
   const confirm = async () => {
     if (!pending) return;
+    // Also guarded at `review()`, which is the door in. This is the door out,
+    // and a review assembled before the lock came on would otherwise still be
+    // signable from a screen that is already open.
+    if (uncertainHash !== null) return toastError(t("uncertain_blocked"));
     setBusy(true);
     try {
       const hash = await port.signAndSubmit(pending.built, network);

@@ -179,6 +179,10 @@ export function StakingPanel({
 
   const confirmDelegate = async () => {
     if (!poolReview) return;
+    // See `SendPanel.signSubmit`: the disabled button is the hint, this is the
+    // refusal. Both spend paths on this screen carry it, because a lock that
+    // covers one of two ways out covers neither.
+    if (uncertainHash !== null) return toastError(t("uncertain_blocked"));
     setBusy(true);
     try {
       const hash = await port.signAndSubmit(poolReview.built, network);
@@ -226,6 +230,7 @@ export function StakingPanel({
 
   const confirmWithdraw = async () => {
     if (!withdrawReview) return;
+    if (uncertainHash !== null) return toastError(t("uncertain_blocked"));
     setBusy(true);
     try {
       const hash = await port.signAndSubmit(withdrawReview.built, network);
