@@ -29,7 +29,7 @@ import {
   CHALLENGE_LEN,
 } from "@/components/wallet/ConfirmGate";
 import { reportSignError } from "@/components/wallet/signError";
-import { UncertainSubmitNotice } from "@/components/wallet/UncertainSubmitNotice";
+import type { UncertainLock } from "@/components/wallet/UncertainSubmitNotice";
 import { SignHint } from "@/components/wallet/SignHint";
 import {
   type WalletPort,
@@ -109,21 +109,18 @@ export function GovernancePanel({
   port,
   network,
   changeAddress,
+  uncertainHash,
+  onUncertain,
 }: {
   port: WalletPort;
   network: PhoenixNetwork;
   changeAddress: string;
-}) {
+} & UncertainLock) {
   const { t } = useTranslation("wallet");
   const [section, setSection] = useState<Section>("delegate");
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState<Pending | null>(null);
   const [checked, setChecked] = useState(false);
-  // A submit whose reply never came — see `UncertainSubmitNotice`. Every tab on
-  // this screen submits through the same call, so one piece of state covers all
-  // of them, and it sits above the tab strip: switching tabs is not an answer to
-  // the question it is asking.
-  const [uncertainHash, setUncertainHash] = useState<string | null>(null);
 
   // dRep key-hash (CIP-95). null = not yet probed, "" = unavailable.
   const [drepKeyHash, setDrepKeyHash] = useState<string | null>(null);
@@ -208,7 +205,7 @@ export function GovernancePanel({
     } catch (err) {
       resetReview(); // drop the built tx: it already carries a witness; a retry must rebuild
       const outcome = reportSignError(err, t);
-      if (outcome.kind === "uncertain") setUncertainHash(outcome.txHash);
+      if (outcome.kind === "uncertain") onUncertain(outcome.txHash);
     } finally {
       setBusy(false);
     }
@@ -295,12 +292,6 @@ export function GovernancePanel({
 
   return (
     <div className="space-y-3">
-      {uncertainHash && (
-        <UncertainSubmitNotice
-          txHash={uncertainHash}
-          onAcknowledge={() => setUncertainHash(null)}
-        />
-      )}
       <div className="flex flex-wrap gap-2">
         {tabs.map((tb) => (
           <button

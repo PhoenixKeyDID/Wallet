@@ -14,7 +14,7 @@ import {
   CHALLENGE_LEN,
 } from "@/components/wallet/ConfirmGate";
 import { reportSignError } from "@/components/wallet/signError";
-import { UncertainSubmitNotice } from "@/components/wallet/UncertainSubmitNotice";
+import type { UncertainLock } from "@/components/wallet/UncertainSubmitNotice";
 import { SignHint } from "@/components/wallet/SignHint";
 import {
   type WalletPort,
@@ -57,11 +57,13 @@ export function SendPanel({
   port,
   network,
   changeAddress,
+  uncertainHash,
+  onUncertain,
 }: {
   port: WalletPort;
   network: PhoenixNetwork;
   changeAddress: string;
-}) {
+} & UncertainLock) {
   const { t } = useTranslation("wallet");
   const nextId = useRef(1);
   const [recipients, setRecipients] = useState<Recipient[]>([blankRecipient(0)]);
@@ -71,10 +73,6 @@ export function SendPanel({
   const [checked, setChecked] = useState(false);
   const [busy, setBusy] = useState(false);
   const [txHash, setTxHash] = useState<string | null>(null);
-  // A submit whose reply never came. Held until the person says they checked it,
-  // because the hash is the only way to find out whether their money moved —
-  // see `UncertainSubmitNotice`.
-  const [uncertainHash, setUncertainHash] = useState<string | null>(null);
 
   const isMainnet = network === 1;
 
@@ -210,7 +208,7 @@ export function SendPanel({
       // Not a plain failure: the transaction may be on-chain. Keep the hash on
       // screen and leave the form disarmed until the person says they checked —
       // re-arming here is how the same amount leaves twice.
-      if (outcome.kind === "uncertain") setUncertainHash(outcome.txHash);
+      if (outcome.kind === "uncertain") onUncertain(outcome.txHash);
     } finally {
       setBusy(false);
     }
@@ -249,13 +247,6 @@ export function SendPanel({
             <CopyBtn value={txHash} />
           </div>
         </div>
-      )}
-
-      {uncertainHash && (
-        <UncertainSubmitNotice
-          txHash={uncertainHash}
-          onAcknowledge={() => setUncertainHash(null)}
-        />
       )}
 
       {!built ? (

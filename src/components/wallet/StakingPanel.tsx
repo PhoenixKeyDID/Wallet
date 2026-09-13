@@ -13,7 +13,7 @@ import {
   CHALLENGE_LEN,
 } from "@/components/wallet/ConfirmGate";
 import { reportSignError } from "@/components/wallet/signError";
-import { UncertainSubmitNotice } from "@/components/wallet/UncertainSubmitNotice";
+import type { UncertainLock } from "@/components/wallet/UncertainSubmitNotice";
 import { SignHint } from "@/components/wallet/SignHint";
 import {
   type WalletPort,
@@ -52,11 +52,13 @@ export function StakingPanel({
   port,
   network,
   changeAddress,
+  uncertainHash,
+  onUncertain,
 }: {
   port: WalletPort;
   network: PhoenixNetwork;
   changeAddress: string;
-}) {
+} & UncertainLock) {
   const { t } = useTranslation("wallet");
 
   const [rewardAddressHex, setRewardAddressHex] = useState<string | null>(null);
@@ -78,10 +80,6 @@ export function StakingPanel({
   const [poolReview, setPoolReview] = useState<PoolReview | null>(null);
   const [withdrawReview, setWithdrawReview] = useState<WithdrawReview | null>(null);
   const [checked, setChecked] = useState(false);
-  // A submit whose reply never came — see `UncertainSubmitNotice`. Both money
-  // paths on this screen share it: whichever one was in flight, the question is
-  // the same and so is the answer, which is to stop and look the hash up.
-  const [uncertainHash, setUncertainHash] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   // Read the wallet's own reward address + its on-chain state once on mount.
@@ -197,7 +195,7 @@ export function StakingPanel({
       setPoolReview(null);
       setChecked(false);
       const outcome = reportSignError(err, t);
-      if (outcome.kind === "uncertain") setUncertainHash(outcome.txHash);
+      if (outcome.kind === "uncertain") onUncertain(outcome.txHash);
     } finally {
       setBusy(false);
     }
@@ -239,7 +237,7 @@ export function StakingPanel({
       setWithdrawReview(null);
       setChecked(false);
       const outcome = reportSignError(err, t);
-      if (outcome.kind === "uncertain") setUncertainHash(outcome.txHash);
+      if (outcome.kind === "uncertain") onUncertain(outcome.txHash);
     } finally {
       setBusy(false);
     }
@@ -401,14 +399,6 @@ export function StakingPanel({
   // ── Main view: current delegation + search ─────────────────────────────────
   return (
     <div className="space-y-4">
-      {/* Above everything: a submit whose outcome nobody knows is the one thing
-          on this screen that has to be read before anything else is clicked. */}
-      {uncertainHash && (
-        <UncertainSubmitNotice
-          txHash={uncertainHash}
-          onAcknowledge={() => setUncertainHash(null)}
-        />
-      )}
       <div className="rounded-brand border border-border-soft bg-bg1 p-5 space-y-3">
         <p className="text-sm text-text-dim">{t("staking_intro")}</p>
         {loadingAccount ? (

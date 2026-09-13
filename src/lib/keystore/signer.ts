@@ -23,6 +23,7 @@ import { Buffer } from "buffer";
 import type { types as tyTypes } from "@stricahq/typhonjs";
 import type { BuiltTx } from "../cardano/tx";
 import { SubmitUncertainError } from "../cardano/tx";
+import { isDefiniteRejection } from "../cardano/submitError";
 import type { Account } from "./derive";
 
 export class LocalSignError extends Error {
@@ -87,10 +88,16 @@ export async function signAndSubmitLocal(
   try {
     return await submit(signed.payload);
   } catch (err) {
-    // Same reasoning as the CIP-30 path: a submit whose outcome is unknown
-    // must hand back the hash, because resending blind is how people pay
-    // twice. There is no "user declined" case here — the user already
-    // confirmed, and nothing else can decline on their behalf.
+    // A node that read the transaction and refused it is not an unknown
+    // outcome — nothing was recorded and no hash exists. Wrapping it as
+    // uncertain locked the screen and sent the reader to look up a hash that is
+    // on no explorer; the CIP-30 path already filtered its one equivalent case
+    // (`code === 1`, user declined) and this one filtered nothing.
+    if (isDefiniteRejection(err)) throw err;
+    // Everything else: a submit whose outcome is unknown must hand back the
+    // hash, because resending blind is how people pay twice. There is no "user
+    // declined" case here — the user already confirmed, and nothing else can
+    // decline on their behalf.
     throw new SubmitUncertainError(signed.hash, err);
   }
 }

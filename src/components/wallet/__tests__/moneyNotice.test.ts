@@ -110,12 +110,44 @@ describe("submit with no reply > the caller is told, not just the reader", () =>
  * disabled. Those need a DOM, and adding one is a dependency decision rather
  * than a thing to slip into a bug fix.
  */
-const PANELS = join(dirname(fileURLToPath(import.meta.url)), "..");
+/**
+ * The whole of `src/`, and recursively — not the one flat directory the panels
+ * happen to sit in today.
+ *
+ * The first version of this read `src/components/wallet` with a non-recursive
+ * `readdirSync`. A panel one directory deeper — `src/components/wallet/money/` —
+ * committed all three offences at once and the suite stayed green, `tsc` stayed
+ * green, and every `check:*` gate stayed green. A gate whose reach is "the
+ * folder I was thinking of" is a gate that a `mkdir` walks around, and nothing
+ * announces the day someone runs that `mkdir`.
+ *
+ * `src/` rather than the panel folder because the things being guarded —
+ * `reportSignError`, `BalanceView`, the `extension_popup_hint` key — are
+ * exports. Anything in `src/` can import them, so anything in `src/` is in
+ * scope. `noRedirect.test.ts` walks the tree the same way, and states its own
+ * escape hatches; this one has none to state, which is why the list below is
+ * the file's whole reach.
+ */
+const SRC = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
 function panelSources(): Array<{ name: string; text: string }> {
-  return readdirSync(PANELS)
-    .filter((f) => /\.tsx?$/.test(f) && !/\.test\./.test(f))
-    .map((f) => ({ name: f, text: readFileSync(join(PANELS, f), "utf8") }));
+  const out: Array<{ name: string; text: string }> = [];
+  const walkDir = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        // `__tests__` holds this file and its siblings: a test that *writes* the
+        // forbidden shape in order to prove the gate bites must not be read by
+        // the gate itself.
+        if (entry.name !== "__tests__" && entry.name !== "node_modules") walkDir(full);
+        continue;
+      }
+      if (!/\.tsx?$/.test(entry.name) || /\.test\./.test(entry.name)) continue;
+      out.push({ name: entry.name, text: readFileSync(full, "utf8") });
+    }
+  };
+  walkDir(SRC);
+  return out;
 }
 
 const parse = (name: string, text: string) =>
@@ -196,6 +228,116 @@ describe("wiring > a panel cannot quietly go back to the old shape", () => {
       });
     }
     expect(offenders).toEqual([]);
+  });
+});
+
+/**
+ * The lock itself, rather than the shapes that would undo it.
+ *
+ * The block above watches for a panel *going back* to the old code. It says
+ * nothing about whether the new code still does its job, and a measurement
+ * settled which of those two matters: removing the guard from `canBuild`,
+ * removing the whole notice render, removing the disable on both staking
+ * buttons — each of those left the suite fully green. Four live locks, no
+ * watcher on any of them.
+ *
+ * These read the source because the runner has no DOM. That is a real ceiling
+ * and it is stated rather than papered over: what follows proves the guard is
+ * *written*, not that React honours it at runtime. But "written" is the part
+ * that a refactor deletes, and deleting it was free until now.
+ */
+describe("wiring > the lock that is there now is still there", () => {
+  const sourceOf = (file: string) => {
+    const found = panelSources().find((s) => s.name === file);
+    if (!found) throw new Error(`${file} not found — the sweep no longer reaches it`);
+    return found;
+  };
+
+  it("renders the notice outside every tab condition, so leaving a tab cannot hide it", () => {
+    // The defect this replaces: the notice lived inside a panel, `WalletTabs`
+    // mounts panels with `activeTab === "…" && <Panel/>`, and the notice's own
+    // body sends the reader to the History tab. Going where it said to go
+    // unmounted it, dropped the only copy of the hash, and re-armed Send.
+    //
+    // So the property is positional: the element must exist in `WalletTabs.tsx`
+    // and must have no ancestor that tests `activeTab`.
+    const { name, text } = sourceOf("WalletTabs.tsx");
+    const root = parse(name, text);
+    const sites: Array<{ guardedBy: string | null }> = [];
+
+    const guardText = (n: ts.Node): string | null => {
+      for (let p: ts.Node | undefined = n.parent; p; p = p.parent) {
+        if (ts.isBinaryExpression(p) && p.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken) {
+          const left = p.left.getText();
+          if (left.includes("activeTab") || left.includes("tab ===")) return left;
+        }
+        if (ts.isConditionalExpression(p) && p.condition.getText().includes("activeTab")) {
+          return p.condition.getText();
+        }
+      }
+      return null;
+    };
+
+    walk(root, (n) => {
+      if (!ts.isJsxSelfClosingElement(n) && !ts.isJsxOpeningElement(n)) return;
+      if (n.tagName.getText() !== "UncertainSubmitNotice") return;
+      sites.push({ guardedBy: guardText(n) });
+    });
+
+    // Present at all — a deleted render is the cheapest way to lose this.
+    expect(sites.length, "UncertainSubmitNotice is not rendered by WalletTabs").toBe(1);
+    expect(sites[0]?.guardedBy, "the notice sits inside a tab condition").toBeNull();
+  });
+
+  it("keeps the hash in exactly one place — no panel holds its own copy", () => {
+    // Two copies is worse than the original bug: one panel clears the lock while
+    // another still believes it, and which screen you are on decides whether the
+    // wallet thinks its own UTxO set is known.
+    const offenders: string[] = [];
+    for (const { name, text } of panelSources()) {
+      if (name === "WalletTabs.tsx" || name === "UncertainSubmitNotice.tsx") continue;
+      walk(parse(name, text), (n) => {
+        if (!ts.isCallExpression(n)) return;
+        if (!ts.isIdentifier(n.expression) || n.expression.text !== "useState") return;
+        // `const [uncertainHash, setUncertainHash] = useState(...)`
+        const decl = n.parent;
+        if (!ts.isVariableDeclaration(decl)) return;
+        if (decl.name.getText().includes("ncertainHash")) offenders.push(name);
+      });
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("makes every money panel read the lock it can set", () => {
+    // Half the pair is the dangerous state: a panel that reports an unresolved
+    // submit but never reads `uncertainHash` stays armed while every other
+    // screen is locked — and it is armed on the screen that just sent money.
+    const broken: string[] = [];
+    for (const { name, text } of panelSources()) {
+      if (name === "WalletTabs.tsx") continue;
+      const setsIt = /\bonUncertain\s*\(/.test(text);
+      const readsIt = /\buncertainHash\b/.test(text);
+      if (setsIt && !readsIt) broken.push(`${name}: calls onUncertain, never reads uncertainHash`);
+    }
+    expect(broken).toEqual([]);
+  });
+
+  it("disarms the action on every panel that can spend while the lock is on", () => {
+    // One entry per panel, and the panel is named: a panel that gains a spend
+    // button later shows up here as a missing row rather than as silence.
+    const SPENDERS = ["SendPanel.tsx", "StakingPanel.tsx", "GovernancePanel.tsx"];
+    const unguarded: string[] = [];
+    for (const file of SPENDERS) {
+      const { text } = sourceOf(file);
+      // Either shape counts: disabling the control, or refusing at the top of
+      // the handler. Both stop the spend; insisting on one would be a rule about
+      // style rather than about money.
+      const guardsControl = /disabled=\{[^}]*uncertainHash[^}]*\}/.test(text);
+      const guardsHandler = /if\s*\(\s*uncertainHash\s*!==\s*null\s*\)/.test(text);
+      const guardsBuild = /uncertainHash\s*===\s*null\s*&&/.test(text);
+      if (!guardsControl && !guardsHandler && !guardsBuild) unguarded.push(file);
+    }
+    expect(unguarded).toEqual([]);
   });
 });
 

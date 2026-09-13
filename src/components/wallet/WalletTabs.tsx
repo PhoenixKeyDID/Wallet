@@ -9,6 +9,7 @@ import { StakingPanel } from "./StakingPanel";
 import { GovernancePanel } from "./GovernancePanel";
 import { ConnectPanel } from "./ConnectPanel";
 import { HistoryPanel } from "./HistoryPanel";
+import { UncertainSubmitNotice } from "./UncertainSubmitNotice";
 
 type Tab = "send" | "receive" | "history" | "staking" | "governance" | "connect";
 
@@ -94,7 +95,20 @@ export function WalletTabs({
       ? 1
       : testnetVariant;
 
+  /**
+   * A submit whose reply never came, held here rather than in the panel.
+   *
+   * It outlives the panel on purpose. Tabs render with `&&`, so a panel that
+   * held this in its own `useState` lost the hash the moment the reader left —
+   * and the notice tells them to go look the hash up, on the History tab.
+   * Cross-panel for the same reason: an unresolved submit means this wallet's
+   * UTxO set is unknown, so every money screen is unsafe, not just the one that
+   * sent. See `UncertainSubmitNotice`.
+   */
+  const [uncertainHash, setUncertainHash] = useState<string | null>(null);
+
   const panelProps = { port, network, changeAddress };
+  const moneyProps = { ...panelProps, uncertainHash, onUncertain: setUncertainHash };
 
   return (
     <div className="space-y-4">
@@ -141,11 +155,23 @@ export function WalletTabs({
         })}
       </div>
 
-      {activeTab === "send" && <SendPanel {...panelProps} />}
+      {/*
+        Above the tab content, and outside every `&&` below, so switching tabs
+        cannot unmount it. This is the notice's whole point: it survives the
+        trip to the History tab that its own body asks the reader to make.
+      */}
+      {uncertainHash !== null && (
+        <UncertainSubmitNotice
+          txHash={uncertainHash}
+          onAcknowledge={() => setUncertainHash(null)}
+        />
+      )}
+
+      {activeTab === "send" && <SendPanel {...moneyProps} />}
       {activeTab === "receive" && <ReceivePanel {...panelProps} />}
       {activeTab === "history" && <HistoryPanel {...panelProps} />}
-      {activeTab === "staking" && <StakingPanel {...panelProps} />}
-      {activeTab === "governance" && <GovernancePanel {...panelProps} />}
+      {activeTab === "staking" && <StakingPanel {...moneyProps} />}
+      {activeTab === "governance" && <GovernancePanel {...moneyProps} />}
       {activeTab === "connect" && <ConnectPanel network={network} changeAddress={changeAddress} />}
     </div>
   );
