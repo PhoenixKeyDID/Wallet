@@ -158,6 +158,38 @@ function walk(node: ts.Node, visit: (n: ts.Node) => void): void {
   ts.forEachChild(node, (c) => walk(c, visit));
 }
 
+describe("wiring > the sweep reaches what it claims to reach", () => {
+  // Every gate below is a loop over `panelSources()`, so the sweep's reach is
+  // the reach of all of them at once. Narrowing it back to one flat directory —
+  // which is what it used to be, and what a tidy-up would restore — leaves all
+  // of them green while a panel one folder deeper does whatever it likes.
+  // Measured: with the flat version restored, the whole suite stays green.
+  //
+  // So the reach is asserted directly, in three independent ways. Any one of
+  // them alone is satisfiable by an accident.
+  const files = panelSources();
+  const names = new Set(files.map((f) => f.name));
+
+  it("descends past the panel folder", () => {
+    // A file that is in `src/` but not in `src/components/wallet/`. If this ever
+    // moves, the replacement must also be outside that folder — the point is
+    // the depth, not the file.
+    expect(names.has("signer.ts"), "sweep does not leave src/components/wallet").toBe(true);
+    expect(names.has("provider.ts"), "sweep does not reach src/lib/cardano").toBe(true);
+  });
+
+  it("does not read the tests that deliberately write the forbidden shapes", () => {
+    expect([...names].filter((n) => /\.test\.|\.spec\./.test(n))).toEqual([]);
+  });
+
+  it("is large enough that a silent truncation would show", () => {
+    // Not a golden count — that would fail on every new file. A floor: the repo
+    // had well over a hundred source files when this was written, and a sweep
+    // that suddenly returns a handful has stopped sweeping.
+    expect(files.length).toBeGreaterThan(60);
+  });
+});
+
 describe("wiring > a panel cannot quietly go back to the old shape", () => {
   it("never throws away what reportSignError hands back", () => {
     // The defect was not in `reportSignError` — it was that three callers had
@@ -245,6 +277,23 @@ describe("wiring > a panel cannot quietly go back to the old shape", () => {
  * and it is stated rather than papered over: what follows proves the guard is
  * *written*, not that React honours it at runtime. But "written" is the part
  * that a refactor deletes, and deleting it was free until now.
+ *
+ * ## What is still unwatched, measured rather than guessed
+ *
+ * Mutation, whole suite, after these gates were in place. Two survivors, both
+ * deliberate, and naming them here is the point — an unstated gap is the kind
+ * that gets rediscovered as a defect:
+ *
+ * - Dropping `uncertainHash === null &&` out of `SendPanel`'s `canBuild`.
+ * - Turning the guard at the top of `GovernancePanel.review()` into `if (false)`.
+ *
+ * Both are *second* doors. The spend itself is refused inside the handler that
+ * calls `signAndSubmit`, and removing that refusal is caught on all four paths.
+ * These two make the button look disabled and refuse earlier, which is better
+ * for the reader and is not what stops the money. A gate naming one function in
+ * one file would pin them, and would then fail on any honest rename — the kind
+ * of watcher that gets deleted rather than fixed. So: unpinned, on purpose,
+ * written down.
  */
 describe("wiring > the lock that is there now is still there", () => {
   const sourceOf = (file: string) => {
