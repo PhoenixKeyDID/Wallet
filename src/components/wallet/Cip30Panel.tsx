@@ -251,9 +251,14 @@ export function Cip30Panel() {
         <p className="text-xs text-amber-brand">{t("balance_load_failed")}</p>
       )}
 
+      {/* CIP-30 answers 1 for mainnet and 0 for every testnet, and it cannot
+          tell preprod from preview. That is exactly enough for the question the
+          balance card asks — whether this ADA has a price — so this screen does
+          not need the disambiguation `WalletTabs` does below it. */}
       <BalanceView
         lovelace={lovelace}
         assets={assets}
+        network={conn.networkId === 1 ? 1 : 0}
         address={receiveAddress}
         showReceive={receiveAddress !== null}
       />

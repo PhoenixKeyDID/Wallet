@@ -21,7 +21,7 @@ import { Buffer } from "buffer";
 import { useTranslation } from "react-i18next";
 import BigNumber from "bignumber.js";
 import { utils as tyUtils, types as tyTypes } from "@stricahq/typhonjs";
-import { toastApiError, toastSuccess } from "@/lib/toast";
+import { toastApiError, toastError, toastSuccess } from "@/lib/toast";
 import {
   ConfirmGate,
   ChallengedValue,
@@ -29,6 +29,8 @@ import {
   CHALLENGE_LEN,
 } from "@/components/wallet/ConfirmGate";
 import { reportSignError } from "@/components/wallet/signError";
+import { UncertainSubmitNotice } from "@/components/wallet/UncertainSubmitNotice";
+import { SignHint } from "@/components/wallet/SignHint";
 import {
   type WalletPort,
   type PhoenixNetwork,
@@ -117,6 +119,11 @@ export function GovernancePanel({
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState<Pending | null>(null);
   const [checked, setChecked] = useState(false);
+  // A submit whose reply never came — see `UncertainSubmitNotice`. Every tab on
+  // this screen submits through the same call, so one piece of state covers all
+  // of them, and it sits above the tab strip: switching tabs is not an answer to
+  // the question it is asking.
+  const [uncertainHash, setUncertainHash] = useState<string | null>(null);
 
   // dRep key-hash (CIP-95). null = not yet probed, "" = unavailable.
   const [drepKeyHash, setDrepKeyHash] = useState<string | null>(null);
@@ -169,6 +176,16 @@ export function GovernancePanel({
   };
 
   const review = async (fn: () => Promise<Pending>) => {
+    // Every build on this screen comes through here, across four tabs and a
+    // dozen buttons, so this is the one place that can hold them all back while
+    // a submit is unresolved. Disabling each button individually would mean
+    // finding all of them, and the one that gets missed is the one that matters.
+    // Said out loud rather than refused in silence: a button that does nothing
+    // reads as broken, and a person who thinks the wallet is broken retries.
+    if (uncertainHash !== null) {
+      toastError(t("uncertain_blocked"));
+      return;
+    }
     setBusy(true);
     resetReview();
     try {
@@ -190,7 +207,8 @@ export function GovernancePanel({
       resetReview();
     } catch (err) {
       resetReview(); // drop the built tx: it already carries a witness; a retry must rebuild
-      reportSignError(err, t);
+      const outcome = reportSignError(err, t);
+      if (outcome.kind === "uncertain") setUncertainHash(outcome.txHash);
     } finally {
       setBusy(false);
     }
@@ -263,7 +281,7 @@ export function GovernancePanel({
             {busy ? t("submitting") : t("gov_confirm")}
           </button>
         </div>
-        <p className="text-[11px] text-text-hint text-center">{t("extension_popup_hint")}</p>
+        <SignHint port={port} />
       </div>
     );
   }
@@ -277,6 +295,12 @@ export function GovernancePanel({
 
   return (
     <div className="space-y-3">
+      {uncertainHash && (
+        <UncertainSubmitNotice
+          txHash={uncertainHash}
+          onAcknowledge={() => setUncertainHash(null)}
+        />
+      )}
       <div className="flex flex-wrap gap-2">
         {tabs.map((tb) => (
           <button

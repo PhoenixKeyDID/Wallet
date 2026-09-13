@@ -3,20 +3,34 @@
 import { useTranslation } from "react-i18next";
 import { QRCodeCanvas } from "qrcode.react";
 import { CopyBtn } from "@/components/CopyBtn";
-import { formatAda, assetLabel } from "@/lib/cardano";
+import { formatAda, assetLabel, type PhoenixNetwork } from "@/lib/cardano";
 import { FiatValue } from "./FiatValue";
 
 export type DisplayAsset = { unit: string; policyId: string; assetNameHex: string; quantity: bigint };
 
-/** Presentational balance card: ADA + native tokens, optional receive address + QR. */
+/**
+ * Presentational balance card: ADA + native tokens, optional receive address + QR.
+ *
+ * `network` is required rather than optional, and that is the point of it being
+ * here at all: the fiat line under the ADA figure converts a balance at the
+ * mainnet ADA rate, and every screen in this module was handing it testnet
+ * balances too. A preprod wallet holding 10 000 test ADA — which the faucet
+ * gives away — read as tens of millions of đồng. That is not a rounding problem
+ * or a stale rate; it is a number with no referent, printed in the reader's own
+ * currency, on the screen they opened to find out what they have. Making the
+ * prop optional would let the next call site omit it and land back on mainnet by
+ * default, which is the direction that lies.
+ */
 export function BalanceView({
   lovelace,
   assets,
+  network,
   address,
   showReceive = false,
 }: {
   lovelace: bigint;
   assets: DisplayAsset[];
+  network: PhoenixNetwork;
   address?: string | null;
   showReceive?: boolean;
 }) {
@@ -32,7 +46,7 @@ export function BalanceView({
             the wallet holds, the one below is what someone was paying for it
             at a moment. Only tokens with a known price would ever get one, and
             none do — a native token's "value" is whatever its minter says. */}
-        <FiatValue lovelace={lovelace} />
+        <FiatValue lovelace={lovelace} network={network} />
       </div>
 
       {assets.length > 0 && (

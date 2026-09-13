@@ -13,6 +13,8 @@ import {
   CHALLENGE_LEN,
 } from "@/components/wallet/ConfirmGate";
 import { reportSignError } from "@/components/wallet/signError";
+import { UncertainSubmitNotice } from "@/components/wallet/UncertainSubmitNotice";
+import { SignHint } from "@/components/wallet/SignHint";
 import {
   type WalletPort,
   type PhoenixNetwork,
@@ -76,6 +78,10 @@ export function StakingPanel({
   const [poolReview, setPoolReview] = useState<PoolReview | null>(null);
   const [withdrawReview, setWithdrawReview] = useState<WithdrawReview | null>(null);
   const [checked, setChecked] = useState(false);
+  // A submit whose reply never came — see `UncertainSubmitNotice`. Both money
+  // paths on this screen share it: whichever one was in flight, the question is
+  // the same and so is the answer, which is to stop and look the hash up.
+  const [uncertainHash, setUncertainHash] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   // Read the wallet's own reward address + its on-chain state once on mount.
@@ -190,7 +196,8 @@ export function StakingPanel({
       // extension's witness, so drop the built tx rather than retry-signing it.
       setPoolReview(null);
       setChecked(false);
-      reportSignError(err, t);
+      const outcome = reportSignError(err, t);
+      if (outcome.kind === "uncertain") setUncertainHash(outcome.txHash);
     } finally {
       setBusy(false);
     }
@@ -231,7 +238,8 @@ export function StakingPanel({
     } catch (err) {
       setWithdrawReview(null);
       setChecked(false);
-      reportSignError(err, t);
+      const outcome = reportSignError(err, t);
+      if (outcome.kind === "uncertain") setUncertainHash(outcome.txHash);
     } finally {
       setBusy(false);
     }
@@ -322,7 +330,7 @@ export function StakingPanel({
             {busy ? t("submitting") : t("confirm_delegate")}
           </button>
         </div>
-        <p className="text-[11px] text-text-hint text-center">{t("extension_popup_hint")}</p>
+        <SignHint port={port} />
       </div>
     );
   }
@@ -385,7 +393,7 @@ export function StakingPanel({
             {busy ? t("submitting") : t("confirm_withdraw")}
           </button>
         </div>
-        <p className="text-[11px] text-text-hint text-center">{t("extension_popup_hint")}</p>
+        <SignHint port={port} />
       </div>
     );
   }
@@ -393,6 +401,14 @@ export function StakingPanel({
   // ── Main view: current delegation + search ─────────────────────────────────
   return (
     <div className="space-y-4">
+      {/* Above everything: a submit whose outcome nobody knows is the one thing
+          on this screen that has to be read before anything else is clicked. */}
+      {uncertainHash && (
+        <UncertainSubmitNotice
+          txHash={uncertainHash}
+          onAcknowledge={() => setUncertainHash(null)}
+        />
+      )}
       <div className="rounded-brand border border-border-soft bg-bg1 p-5 space-y-3">
         <p className="text-sm text-text-dim">{t("staking_intro")}</p>
         {loadingAccount ? (
@@ -429,7 +445,7 @@ export function StakingPanel({
         {!loadingAccount && !loadError && accountState && accountState.rewardsAvailable > BigInt("0") && (
           <button
             type="button"
-            disabled={busy}
+            disabled={busy || uncertainHash !== null}
             onClick={reviewWithdraw}
             className="w-full p-3 rounded-brand border border-border-teal bg-teal-brand/10 hover:bg-teal-brand/20 text-sm teal-brand disabled:opacity-50"
           >
@@ -484,7 +500,7 @@ export function StakingPanel({
                   ) : (
                     <button
                       type="button"
-                      disabled={busy}
+                      disabled={busy || uncertainHash !== null}
                       onClick={() => reviewDelegate(pool)}
                       className="px-3 py-1.5 rounded-brand-sm border border-border-amber bg-amber-brand/10 hover:bg-amber-brand/20 text-xs text-amber-brand disabled:opacity-50"
                     >

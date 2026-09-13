@@ -14,6 +14,8 @@ import {
   CHALLENGE_LEN,
 } from "@/components/wallet/ConfirmGate";
 import { reportSignError } from "@/components/wallet/signError";
+import { UncertainSubmitNotice } from "@/components/wallet/UncertainSubmitNotice";
+import { SignHint } from "@/components/wallet/SignHint";
 import {
   type WalletPort,
   type PhoenixNetwork,
@@ -69,6 +71,10 @@ export function SendPanel({
   const [checked, setChecked] = useState(false);
   const [busy, setBusy] = useState(false);
   const [txHash, setTxHash] = useState<string | null>(null);
+  // A submit whose reply never came. Held until the person says they checked it,
+  // because the hash is the only way to find out whether their money moved —
+  // see `UncertainSubmitNotice`.
+  const [uncertainHash, setUncertainHash] = useState<string | null>(null);
 
   const isMainnet = network === 1;
 
@@ -200,7 +206,11 @@ export function SendPanel({
       setBuilt(null);
       setReviewOutputs(null);
       setChecked(false);
-      reportSignError(err, t);
+      const outcome = reportSignError(err, t);
+      // Not a plain failure: the transaction may be on-chain. Keep the hash on
+      // screen and leave the form disarmed until the person says they checked —
+      // re-arming here is how the same amount leaves twice.
+      if (outcome.kind === "uncertain") setUncertainHash(outcome.txHash);
     } finally {
       setBusy(false);
     }
@@ -211,7 +221,11 @@ export function SendPanel({
   const netLabel = network === 1 ? t("net_mainnet") : network === 2 ? t("net_preview") : t("net_preprod");
   const anyTokenOutput = (reviewOutputs ?? []).some((o) => o.tokens.length > 0);
 
+  // Disarmed while a submit is unresolved. The notice above says to look the
+  // hash up before sending again; leaving Review live turns that sentence into
+  // advice sitting next to a button that ignores it, and the button wins.
   const canBuild =
+    uncertainHash === null &&
     recipients.length > 0 &&
     recipients.every(
       (r) =>
@@ -235,6 +249,13 @@ export function SendPanel({
             <CopyBtn value={txHash} />
           </div>
         </div>
+      )}
+
+      {uncertainHash && (
+        <UncertainSubmitNotice
+          txHash={uncertainHash}
+          onAcknowledge={() => setUncertainHash(null)}
+        />
       )}
 
       {!built ? (
@@ -450,7 +471,7 @@ export function SendPanel({
               {busy ? t("submitting") : t("confirm_send")}
             </button>
           </div>
-          <p className="text-[11px] text-text-hint text-center">{t("extension_popup_hint")}</p>
+          <SignHint port={port} />
         </div>
       )}
     </div>

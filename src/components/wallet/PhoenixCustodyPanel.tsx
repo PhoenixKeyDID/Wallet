@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Buffer } from "buffer";
 import { useTranslation } from "react-i18next";
 import { toastApiError } from "@/lib/toast";
-import { anchorAssetNameHex } from "@/lib/cardano";
+import { anchorAssetNameHex, type PhoenixNetwork } from "@/lib/cardano";
 import { ApiError } from "@/lib/api";
 import { getAllWallets, type WalletEntry } from "@/lib/wallet";
 import { BalanceView } from "./BalanceView";
@@ -60,6 +60,20 @@ export function PhoenixCustodyPanel({ did }: Props) {
   // active/stake. The old `addresses.custody ?? addresses.fixed` fallback read
   // a field the backend never sends; only the fallback kept it working.
   const custodyAddress = phoenix?.addresses.fixed ?? null;
+  /**
+   * Which network this custody address is on, read off the address itself.
+   *
+   * Nothing else on this screen knows: the address arrives from the backend and
+   * this panel takes no network prop. The bech32 prefix is the answer and it is
+   * carried by the value itself — `addr_test1…` cannot be a mainnet address — so
+   * reading it here needs no new plumbing and cannot drift from the address it
+   * describes. The balance card needs it because a testnet balance must not be
+   * priced in real money; before this, a custody wallet on preprod had its test
+   * ADA converted at the mainnet rate.
+   *
+   * Unresolved reads as testnet, which is the side that declines to price.
+   */
+  const custodyNetwork: PhoenixNetwork = custodyAddress?.startsWith("addr1") ? 1 : 0;
   const lovelace = phoenix ? BigInt(String(phoenix.balances.lovelace ?? 0)) : BigInt("0");
   const assets = phoenix
     ? (["lamp", "carp"] as const)
@@ -127,6 +141,7 @@ export function PhoenixCustodyPanel({ did }: Props) {
           <BalanceView
             lovelace={lovelace}
             assets={assets}
+            network={custodyNetwork}
             address={custodyAddress}
             showReceive={!!custodyAddress}
           />
