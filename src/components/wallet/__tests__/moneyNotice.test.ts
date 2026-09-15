@@ -951,3 +951,52 @@ describe("balance > the four languages carry every string these screens need", (
     }
   });
 });
+
+describe("wiring > the hint half of the lock is wired too", () => {
+  /**
+   * The refusal inside `signSubmit` is the load-bearing half and is pinned
+   * above, per function. This is the other half: the expression that decides
+   * whether the Review step may run at all.
+   *
+   * It is pinned separately because it is pinned by NOTHING otherwise —
+   * measured, not assumed. Deleting `uncertainHash === null &&` from
+   * `canBuild` leaves the whole suite green AND `tsc --noEmit` clean, because
+   * the identifier still appears elsewhere in the file (the refusal reads it),
+   * so the file-level "does this panel read the lock" sweep above keeps
+   * matching. Two checks that look like they cover each other, and neither
+   * covers this.
+   *
+   * What it costs to lose: not money. The refusal still turns the send away at
+   * the last door. What it costs is the sentence — a reader under an
+   * unresolved-submit warning can fill the form, pass the confirm gate, type
+   * the challenge, and be refused only at the end. A screen that invites the
+   * whole journey and declines at the door teaches that the warning above it
+   * is decorative, and that lesson is spent on the one occurrence that matters.
+   *
+   * WHAT THIS PROVES, AND WHAT IT DOES NOT. It proves the lock participates in
+   * the gating expression. It does NOT prove the button renders disabled —
+   * that needs a DOM, which this runner does not have, and the file header
+   * says so rather than implying otherwise. The realistic failure here is a
+   * refactor dropping the conjunct, and that is what this catches.
+   */
+  it("gates the review step on the lock, not only the final refusal", () => {
+    const send = panelSources().find((f) => f.name === "SendPanel.tsx");
+    expect(send, "SendPanel.tsx not found by the sweep").toBeDefined();
+    const root = parse(send!.name, send!.text);
+
+    let gate: ts.VariableDeclaration | undefined;
+    walk(root, (n) => {
+      if (ts.isVariableDeclaration(n) && n.name.getText() === "canBuild") gate = n;
+    });
+    expect(gate, "SendPanel no longer declares `canBuild`").toBeDefined();
+
+    // The identifier has to appear inside the initialiser itself. Anywhere else
+    // in the file does not gate anything, and "anywhere else in the file" is
+    // exactly what the sweep above already accepts.
+    let reads = false;
+    walk(gate!.initializer!, (n) => {
+      if (ts.isIdentifier(n) && n.text === "uncertainHash") reads = true;
+    });
+    expect(reads, "`canBuild` no longer consults uncertainHash").toBe(true);
+  });
+});
