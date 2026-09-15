@@ -25,6 +25,7 @@ import { types as tyTypes, utils as tyUtils } from "@stricahq/typhonjs";
 type ProtocolParams = tyTypes.ProtocolParams;
 import type { PhoenixNetwork } from "./address";
 import { getChainSource } from "./chainSource";
+import { SubmitRejectedError } from "./submitError";
 import {
   bfProtocolParams,
   bfTipSlot,
@@ -559,7 +560,10 @@ export async function submitTx(network: PhoenixNetwork, signedCborHex: string): 
   });
   assertNoRedirect(res, "Koios /submittx", koiosBase(network));
   const text = (await res.text()).trim();
-  if (!res.ok) throw new Error(`Koios /submittx → HTTP ${res.status}: ${text.slice(0, 300)}`);
+  // Typed, not a bare Error: the caller has to be able to tell "the node said
+  // no" from "no answer came back", and a status code inside a string cannot
+  // carry that. See `submitError.ts`.
+  if (!res.ok) throw new SubmitRejectedError(res.status, text.slice(0, 300), "Koios /submittx");
   const hash = text.replace(/^"|"$/g, "");
   if (!/^[0-9a-f]{64}$/i.test(hash)) {
     throw new Error(`Koios /submittx returned no tx hash: ${text.slice(0, 300)}`);

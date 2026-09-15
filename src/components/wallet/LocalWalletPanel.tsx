@@ -55,6 +55,7 @@ import {
 } from "@/lib/keystore/session";
 import { fetchAddressBalance, type PhoenixNetwork } from "@/lib/cardano";
 import { BalanceView, type DisplayAsset } from "./BalanceView";
+import type { BalanceState } from "./moneyNotice";
 import { WalletTabs } from "./WalletTabs";
 
 type Step = "list" | "words" | "confirm" | "password" | "restore" | "unlock" | "open";
@@ -98,7 +99,23 @@ export function LocalWalletPanel() {
   const [assets, setAssets] = useState<DisplayAsset[]>([]);
   /** Guards the balance read against being overtaken — see `loadBalance`. */
   const balanceRun = useRef(0);
-  const [balanceOk, setBalanceOk] = useState(false);
+  /**
+   * Three states, because a boolean here answers the wrong question.
+   *
+   * `balanceOk: false` meant both "the read has not come back yet" and "the read
+   * failed", and the screen printed the failure sentence for both — so every
+   * unlock, every account switch and every refresh showed *"Balance not read —
+   * the reply never reached this page"* for the seconds the read was in flight,
+   * under a figure reading 0 ADA. On a wallet that is the worst sentence to say
+   * when it is not true; the reader is told their money is unaccounted for, and
+   * then it appears, which teaches them the warning means nothing. The next time
+   * it is real, it has already been trained away.
+   *
+   * `"loading"` rather than a nullable: a boolean plus a second boolean is the
+   * same defect with more places to disagree.
+   */
+  const [balanceState, setBalanceState] = useState<BalanceState>("loading");
+  const balanceOk = balanceState === "ok";
   // True when the last address inside the gap-limit window still holds funds,
   // which proves the window is too small to be the whole wallet. See
   // `loadBalance` — this exists so a balance that is smaller than the truth
@@ -209,7 +226,7 @@ export function LocalWalletPanel() {
       balanceRun.current += 1;
       setLovelace(BigInt("0"));
       setAssets([]);
-      setBalanceOk(false);
+      setBalanceState("loading");
       setBalanceMayBePartial(false);
       setRevealed(null);
       setStep((cur) => (cur === "open" ? "list" : cur));
@@ -410,7 +427,7 @@ export function LocalWalletPanel() {
     // "balance unavailable" line — a zero presented as measured, for an account
     // nothing has measured yet.
     balanceRun.current += 1;
-    setBalanceOk(false);
+    setBalanceState("loading");
     setBalanceMayBePartial(false);
     // Wipe the previous account's figures before showing the next one. A
     // balance read takes seconds, and leaving the old numbers up under the new
@@ -487,14 +504,14 @@ export function LocalWalletPanel() {
   const loadBalance = async (acct: Account) => {
     const run = (balanceRun.current += 1);
     const current = () => balanceRun.current === run;
-    setBalanceOk(false);
+    setBalanceState("loading");
     setBalanceMayBePartial(false);
     try {
       const bal = await fetchAddressBalance(acct.network, allAddresses(acct));
       if (!current()) return;
       setLovelace(bal.lovelace);
       setAssets(bal.assets);
-      setBalanceOk(true);
+      setBalanceState("ok");
 
       // `GAP_LIMIT` addresses are derived per chain and then the scan stops.
       // BIP-44 asks for something else: keep going until twenty *consecutive*
@@ -520,6 +537,7 @@ export function LocalWalletPanel() {
     } catch (e) {
       if (!current()) return;
       // A dead indexer must not look like an empty wallet.
+      setBalanceState("failed");
       toastApiError(e);
     }
   };
@@ -897,8 +915,22 @@ export function LocalWalletPanel() {
               <code className="mono break-all text-xs">{primaryAddress(account)}</code>
               <CopyBtn value={primaryAddress(account)} />
             </div>
-            <BalanceView lovelace={lovelace} assets={assets} address={primaryAddress(account)} />
-            {!balanceOk && <p className="text-xs text-text-hint">{t("local_balance_unavailable")}</p>}
+            <BalanceView
+              lovelace={lovelace}
+              assets={assets}
+              network={account.network}
+              address={primaryAddress(account)}
+            />
+            {/* "Still reading" and "the read failed" are different facts about
+                the reader's money, and the second one is alarming. Saying the
+                alarming one during every ordinary wait is how it stops being
+                heard. */}
+            {balanceState === "loading" && (
+              <p className="text-xs text-text-hint">{t("local_balance_loading")}</p>
+            )}
+            {balanceState === "failed" && (
+              <p className="text-xs text-text-hint">{t("local_balance_unavailable")}</p>
+            )}
             {balanceOk && balanceMayBePartial && (
               <p className="text-xs text-amber-brand">{t("local_balance_partial")}</p>
             )}

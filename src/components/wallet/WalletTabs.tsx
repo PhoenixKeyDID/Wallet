@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { PhoenixNetwork, WalletPort } from "@/lib/cardano";
 import { SendPanel } from "./SendPanel";
@@ -9,6 +9,15 @@ import { StakingPanel } from "./StakingPanel";
 import { GovernancePanel } from "./GovernancePanel";
 import { ConnectPanel } from "./ConnectPanel";
 import { HistoryPanel } from "./HistoryPanel";
+import { UncertainSubmitNotice } from "./UncertainSubmitNotice";
+import {
+  accountKeyFrom,
+  browserStore,
+  clearLock,
+  lockKey,
+  readLock,
+  writeLock,
+} from "./uncertainStore";
 
 type Tab = "send" | "receive" | "history" | "staking" | "governance" | "connect";
 
@@ -94,7 +103,115 @@ export function WalletTabs({
       ? 1
       : testnetVariant;
 
+  /**
+   * A submit whose reply never came — held here, and also on disk.
+   *
+   * Here rather than in a panel because tabs render with `&&`: a panel holding
+   * this in its own `useState` lost the hash the moment the reader left, and
+   * the notice sends them to the History tab. Cross-panel for the same reason —
+   * an unresolved submit means this wallet's UTxO set is unknown, so every
+   * money screen is unsafe, not only the one that sent.
+   *
+   * On disk because moving it up one level moved the boundary rather than
+   * removing it. React state still dies when the session idle-locks, which is
+   * five minutes, which is the same order as the wait the notice asks for. See
+   * `uncertainStore` for the whole argument.
+   */
+  const store = browserStore();
+  // Not `changeAddress` — that rotates the moment the uncertain transaction's
+  // own change output lands on it, which is the branch the warning is for.
+  const accountKey = accountKeyFrom(changeAddress);
+  const [uncertainHash, setUncertainHash] = useState<string | null>(() =>
+    readLock(store, network, accountKey),
+  );
+  /**
+   * Whether the hash on screen will still be there after a reload.
+   *
+   * `writeLock` reports this and the notice says it out loud. Dropping the
+   * boolean would leave the wallet promising a durability it does not have in
+   * the exact browsers where it does not have it — private mode, storage
+   * disabled, quota full — and the reader would close the tab believing they
+   * could come back to the number.
+   */
+  const [durable, setDurable] = useState(true);
+
+  /**
+   * Re-read when the wallet or chain changes under us — and ONLY then.
+   *
+   * The identity can change without unmounting; the testnet picker above is one
+   * way. Without this, account A's warning stays on screen for account B.
+   *
+   * The `seen` ref is what makes this a second path rather than a duplicate of
+   * the initialiser. Measured: while both read on mount, deleting either one
+   * left every test green, because the other still did the job — two paths
+   * covering each other is the same as neither being watched. Now the
+   * initialiser owns mount and this owns changes.
+   *
+   * Splitting them is what makes each one *possible* to pin; it is not itself
+   * evidence that either is pinned. That is a separate claim, it belongs to
+   * whatever deletes this and runs the suite, and it does not belong in a
+   * comment that would go on reading true after the check was removed.
+   */
+  const seen = useRef<string | null>(null);
+  useEffect(() => {
+    const id = `${network}:${accountKey}`;
+    if (seen.current === null) {
+      seen.current = id; // mount: the initialiser already read it
+      return;
+    }
+    if (seen.current === id) return;
+    seen.current = id;
+    setUncertainHash(readLock(store, network, accountKey));
+    // `store` is a handle, not a value; re-running on it would loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [network, accountKey]);
+
+  /**
+   * The same wallet open in a second tab must not keep an armed Send button.
+   *
+   * `localStorage` is shared across tabs but React state is not, so without
+   * this the tab that did not send never learns there is an unresolved submit —
+   * and that is the tab most likely to be used for the retry, because the one
+   * that sent is showing a warning. The event also fires when the key is
+   * cleared elsewhere, so acknowledging in one tab releases both.
+   */
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== null && e.key !== lockKey(network, accountKey)) return;
+      const next = readLock(store, network, accountKey);
+      // `e.key === null` is a wholesale `localStorage.clear()`, which is site
+      // housekeeping — not a person saying they looked the transaction up. The
+      // only thing allowed to take this warning down is the button that says
+      // so, and "the data went away" must not be able to impersonate it.
+      if (next === null && e.key === null) {
+        // The warning stays, but it is no longer backed by anything: the copy
+        // this tab is showing is now the only one. Saying so is the point of
+        // the flag — leaving it `true` here is the same lie it exists to stop,
+        // arriving by a different door.
+        setDurable(false);
+        return;
+      }
+      setUncertainHash(next);
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [network, accountKey]);
+
+  const rememberUncertain = (txHash: string) => {
+    setDurable(writeLock(store, network, accountKey, txHash));
+    setUncertainHash(txHash);
+  };
+
+  const acknowledgeUncertain = () => {
+    clearLock(store, network, accountKey);
+    setUncertainHash(null);
+    setDurable(true);
+  };
+
   const panelProps = { port, network, changeAddress };
+  const moneyProps = { ...panelProps, uncertainHash, onUncertain: rememberUncertain };
 
   return (
     <div className="space-y-4">
@@ -141,11 +258,24 @@ export function WalletTabs({
         })}
       </div>
 
-      {activeTab === "send" && <SendPanel {...panelProps} />}
+      {/*
+        Above the tab content, and outside every `&&` below, so switching tabs
+        cannot unmount it. This is the notice's whole point: it survives the
+        trip to the History tab that its own body asks the reader to make.
+      */}
+      {uncertainHash !== null && (
+        <UncertainSubmitNotice
+          txHash={uncertainHash}
+          durable={durable}
+          onAcknowledge={acknowledgeUncertain}
+        />
+      )}
+
+      {activeTab === "send" && <SendPanel {...moneyProps} />}
       {activeTab === "receive" && <ReceivePanel {...panelProps} />}
       {activeTab === "history" && <HistoryPanel {...panelProps} />}
-      {activeTab === "staking" && <StakingPanel {...panelProps} />}
-      {activeTab === "governance" && <GovernancePanel {...panelProps} />}
+      {activeTab === "staking" && <StakingPanel {...moneyProps} />}
+      {activeTab === "governance" && <GovernancePanel {...moneyProps} />}
       {activeTab === "connect" && <ConnectPanel network={network} changeAddress={changeAddress} />}
     </div>
   );

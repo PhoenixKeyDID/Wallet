@@ -39,6 +39,7 @@ import BigNumber from "bignumber.js";
 import { types as tyTypes, utils as tyUtils } from "@stricahq/typhonjs";
 import { ProviderUnreachableError } from "./provider";
 import type { AddressBalance } from "./provider";
+import { SubmitRejectedError } from "./submitError";
 
 type ProtocolParams = tyTypes.ProtocolParams;
 
@@ -406,7 +407,11 @@ export async function bfSubmitTx(ep: BlockfrostEndpoint, signedCborHex: string):
   assertNoRedirect(res, "/tx/submit", ep.base);
   const text = (await res.text()).trim();
   if (!res.ok) {
-    throw new Error(`Chain endpoint /tx/submit → HTTP ${res.status}: ${text.slice(0, 300)}`);
+    // Same type as the Koios path. Two submit endpoints that report a rejection
+    // in two different shapes is how a caller ends up filtering one of them —
+    // and the one it misses is the one whose users get sent to look up a hash
+    // that was never created. See `submitError.ts`.
+    throw new SubmitRejectedError(res.status, text.slice(0, 300), "Chain endpoint /tx/submit");
   }
   const hash = text.replace(/^"|"$/g, "");
   if (!/^[0-9a-f]{64}$/i.test(hash)) {

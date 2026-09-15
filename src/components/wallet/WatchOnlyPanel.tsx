@@ -13,6 +13,7 @@ import {
   type PhoenixNetwork,
 } from "@/lib/cardano";
 import { BalanceView, type DisplayAsset } from "./BalanceView";
+import type { BalanceState } from "./moneyNotice";
 import { CopyBtn } from "@/components/CopyBtn";
 
 /**
@@ -38,12 +39,23 @@ export function WatchOnlyPanel() {
   const [wallet, setWallet] = useState<WatchWallet | null>(null);
   const [lovelace, setLovelace] = useState<bigint>(BigInt("0"));
   const [assets, setAssets] = useState<DisplayAsset[]>([]);
-  const [balanceOk, setBalanceOk] = useState(false);
+  /**
+   * Three states, for the same reason `LocalWalletPanel` needs three.
+   *
+   * The address is set before the read starts, so a boolean put the screen into
+   * the failure branch — *"balance unavailable"* — for the whole time the read
+   * was in flight. Two different facts wearing one sentence: it has not come
+   * back yet, and it is not coming. Watch-only is where someone checks an
+   * address they cannot spend from, so the failure sentence is the entire
+   * answer they came for, and printing it while nothing is wrong is how it stops
+   * being read.
+   */
+  const [balanceState, setBalanceState] = useState<BalanceState>("loading");
   const [busy, setBusy] = useState(false);
 
   const loadAddress = async () => {
     setBusy(true);
-    setBalanceOk(false);
+    setBalanceState("loading");
     setWallet(null);
     let one: string;
     try {
@@ -59,8 +71,9 @@ export function WatchOnlyPanel() {
       const bal = await fetchAddressBalance(network, [one]);
       setLovelace(bal.lovelace);
       setAssets(bal.assets);
-      setBalanceOk(true);
+      setBalanceState("ok");
     } catch (err) {
+      setBalanceState("failed");
       toastApiError(err);
     } finally {
       setBusy(false);
@@ -69,7 +82,7 @@ export function WatchOnlyPanel() {
 
   const load = async () => {
     setBusy(true);
-    setBalanceOk(false);
+    setBalanceState("loading");
     setWatched(null);
     // Derivation is local and must not be blocked by a network failure, so the
     // balance fetch is caught separately — a bad xvk still surfaces its error,
@@ -91,8 +104,9 @@ export function WatchOnlyPanel() {
       );
       setLovelace(bal.lovelace);
       setAssets(bal.assets);
-      setBalanceOk(true);
+      setBalanceState("ok");
     } catch (err) {
+      setBalanceState("failed");
       toastApiError(err);
     } finally {
       setBusy(false);
@@ -194,11 +208,11 @@ export function WatchOnlyPanel() {
 
       {watched && (
         <>
-          {balanceOk ? (
-            <BalanceView lovelace={lovelace} assets={assets} />
+          {balanceState === "ok" ? (
+            <BalanceView lovelace={lovelace} assets={assets} network={network} />
           ) : (
             <div className="rounded-brand border border-border-soft bg-bg1 p-5 text-sm text-text-hint">
-              {t("balance_unavailable")}
+              {balanceState === "loading" ? t("balance_loading") : t("balance_unavailable")}
             </div>
           )}
           <div className="rounded-brand border border-border-soft bg-bg1 p-5 space-y-2">
@@ -216,11 +230,11 @@ export function WatchOnlyPanel() {
 
       {wallet && (
         <>
-          {balanceOk ? (
-            <BalanceView lovelace={lovelace} assets={assets} />
+          {balanceState === "ok" ? (
+            <BalanceView lovelace={lovelace} assets={assets} network={network} />
           ) : (
             <div className="rounded-brand border border-border-soft bg-bg1 p-5 text-sm text-text-hint">
-              {t("balance_unavailable")}
+              {balanceState === "loading" ? t("balance_loading") : t("balance_unavailable")}
             </div>
           )}
           <div className="rounded-brand border border-border-soft bg-bg1 p-5 space-y-2">

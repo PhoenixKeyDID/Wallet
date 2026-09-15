@@ -49,6 +49,7 @@ import {
 import { witnessesFor, signAndSubmitLocal, LocalSignError } from "../signer";
 import { buildMultiSend, buildSendOutputs } from "../../cardano/send";
 import { SubmitUncertainError } from "../../cardano/tx";
+import { SubmitRejectedError } from "../../cardano/submitError";
 import { baseAddress, type PhoenixNetwork } from "../../cardano/address";
 
 // ─── Golden vectors ───────────────────────────────────────────────────────────
@@ -437,6 +438,35 @@ describe("local signing", () => {
     }).catch((e) => e);
     // Same contract as the CIP-30 path: without the hash the only way to
     // resolve the doubt is to resend and risk paying twice.
+    expect(err).toBeInstanceOf(SubmitUncertainError);
+    expect((err as SubmitUncertainError).txHash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("does not call a rejection unknown — the node answering no is an answer", async () => {
+    // The direction that decides whether the uncertain notice keeps being read.
+    // A 4xx means the node read the transaction and refused it: nothing was
+    // recorded, and no hash exists on any explorer. Wrapping it as uncertain
+    // locks the screen and sends the reader to look up something that is not
+    // there — and after that, the notice means nothing to them.
+    const { account, built } = await walletWithFunds();
+    const err = await signAndSubmitLocal(built, account, NETWORK, async () => {
+      throw new SubmitRejectedError(400, "BadInputsUTxO", "Koios /submittx");
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(SubmitRejectedError);
+    expect(err).not.toBeInstanceOf(SubmitUncertainError);
+    // The node's own words reach the screen. "Something went wrong" cannot tell
+    // anyone which input was bad.
+    expect((err as Error).message).toContain("BadInputsUTxO");
+  });
+
+  it("still calls a 5xx unknown — a failure on the way back says nothing about the way in", async () => {
+    // The boundary, from the other side. `SubmitRejectedError` alone is not the
+    // test: a gateway that dies after forwarding the transaction produces one
+    // too, and that transaction may well be on-chain.
+    const { account, built } = await walletWithFunds();
+    const err = await signAndSubmitLocal(built, account, NETWORK, async () => {
+      throw new SubmitRejectedError(503, "upstream unavailable", "Koios /submittx");
+    }).catch((e) => e);
     expect(err).toBeInstanceOf(SubmitUncertainError);
     expect((err as SubmitUncertainError).txHash).toMatch(/^[0-9a-f]{64}$/);
   });

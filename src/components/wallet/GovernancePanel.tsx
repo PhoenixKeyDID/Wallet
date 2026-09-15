@@ -21,7 +21,7 @@ import { Buffer } from "buffer";
 import { useTranslation } from "react-i18next";
 import BigNumber from "bignumber.js";
 import { utils as tyUtils, types as tyTypes } from "@stricahq/typhonjs";
-import { toastApiError, toastSuccess } from "@/lib/toast";
+import { toastApiError, toastError, toastSuccess } from "@/lib/toast";
 import {
   ConfirmGate,
   ChallengedValue,
@@ -29,6 +29,8 @@ import {
   CHALLENGE_LEN,
 } from "@/components/wallet/ConfirmGate";
 import { reportSignError } from "@/components/wallet/signError";
+import type { UncertainLock } from "@/components/wallet/UncertainSubmitNotice";
+import { SignHint } from "@/components/wallet/SignHint";
 import {
   type WalletPort,
   type PhoenixNetwork,
@@ -107,11 +109,13 @@ export function GovernancePanel({
   port,
   network,
   changeAddress,
+  uncertainHash,
+  onUncertain,
 }: {
   port: WalletPort;
   network: PhoenixNetwork;
   changeAddress: string;
-}) {
+} & UncertainLock) {
   const { t } = useTranslation("wallet");
   const [section, setSection] = useState<Section>("delegate");
   const [busy, setBusy] = useState(false);
@@ -169,6 +173,16 @@ export function GovernancePanel({
   };
 
   const review = async (fn: () => Promise<Pending>) => {
+    // Every build on this screen comes through here, across four tabs and a
+    // dozen buttons, so this is the one place that can hold them all back while
+    // a submit is unresolved. Disabling each button individually would mean
+    // finding all of them, and the one that gets missed is the one that matters.
+    // Said out loud rather than refused in silence: a button that does nothing
+    // reads as broken, and a person who thinks the wallet is broken retries.
+    if (uncertainHash !== null) {
+      toastError(t("uncertain_blocked"));
+      return;
+    }
     setBusy(true);
     resetReview();
     try {
@@ -182,6 +196,10 @@ export function GovernancePanel({
 
   const confirm = async () => {
     if (!pending) return;
+    // Also guarded at `review()`, which is the door in. This is the door out,
+    // and a review assembled before the lock came on would otherwise still be
+    // signable from a screen that is already open.
+    if (uncertainHash !== null) return toastError(t("uncertain_blocked"));
     setBusy(true);
     try {
       const hash = await port.signAndSubmit(pending.built, network);
@@ -190,7 +208,8 @@ export function GovernancePanel({
       resetReview();
     } catch (err) {
       resetReview(); // drop the built tx: it already carries a witness; a retry must rebuild
-      reportSignError(err, t);
+      const outcome = reportSignError(err, t);
+      if (outcome.kind === "uncertain") onUncertain(outcome.txHash);
     } finally {
       setBusy(false);
     }
@@ -263,7 +282,7 @@ export function GovernancePanel({
             {busy ? t("submitting") : t("gov_confirm")}
           </button>
         </div>
-        <p className="text-[11px] text-text-hint text-center">{t("extension_popup_hint")}</p>
+        <SignHint port={port} />
       </div>
     );
   }

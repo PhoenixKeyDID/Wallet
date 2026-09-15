@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { Buffer } from "buffer";
 import { useTranslation } from "react-i18next";
 import { utils as tyUtils, types as tyTypes } from "@stricahq/typhonjs";
-import { toastApiError, toastSuccess } from "@/lib/toast";
+import { toastApiError, toastError, toastSuccess } from "@/lib/toast";
 import { CopyBtn } from "@/components/CopyBtn";
 import {
   ConfirmGate,
@@ -14,6 +14,8 @@ import {
   CHALLENGE_LEN,
 } from "@/components/wallet/ConfirmGate";
 import { reportSignError } from "@/components/wallet/signError";
+import type { UncertainLock } from "@/components/wallet/UncertainSubmitNotice";
+import { SignHint } from "@/components/wallet/SignHint";
 import {
   type WalletPort,
   type PhoenixNetwork,
@@ -55,11 +57,13 @@ export function SendPanel({
   port,
   network,
   changeAddress,
+  uncertainHash,
+  onUncertain,
 }: {
   port: WalletPort;
   network: PhoenixNetwork;
   changeAddress: string;
-}) {
+} & UncertainLock) {
   const { t } = useTranslation("wallet");
   const nextId = useRef(1);
   const [recipients, setRecipients] = useState<Recipient[]>([blankRecipient(0)]);
@@ -184,6 +188,12 @@ export function SendPanel({
 
   const signSubmit = async () => {
     if (!built) return;
+    // The lock, at the last door rather than only on the button. Disabling a
+    // control is a hint; this is the refusal. A button is disabled by a prop
+    // that a later edit can drop, and dropping it leaves no trace — see the
+    // handler guards in the other two money panels, which exist for the same
+    // reason and are checked together.
+    if (uncertainHash !== null) return toastError(t("uncertain_blocked"));
     setBusy(true);
     try {
       const hash = await port.signAndSubmit(built, network);
@@ -200,7 +210,11 @@ export function SendPanel({
       setBuilt(null);
       setReviewOutputs(null);
       setChecked(false);
-      reportSignError(err, t);
+      const outcome = reportSignError(err, t);
+      // Not a plain failure: the transaction may be on-chain. Keep the hash on
+      // screen and leave the form disarmed until the person says they checked —
+      // re-arming here is how the same amount leaves twice.
+      if (outcome.kind === "uncertain") onUncertain(outcome.txHash);
     } finally {
       setBusy(false);
     }
@@ -211,7 +225,11 @@ export function SendPanel({
   const netLabel = network === 1 ? t("net_mainnet") : network === 2 ? t("net_preview") : t("net_preprod");
   const anyTokenOutput = (reviewOutputs ?? []).some((o) => o.tokens.length > 0);
 
+  // Disarmed while a submit is unresolved. The notice above says to look the
+  // hash up before sending again; leaving Review live turns that sentence into
+  // advice sitting next to a button that ignores it, and the button wins.
   const canBuild =
+    uncertainHash === null &&
     recipients.length > 0 &&
     recipients.every(
       (r) =>
@@ -450,7 +468,7 @@ export function SendPanel({
               {busy ? t("submitting") : t("confirm_send")}
             </button>
           </div>
-          <p className="text-[11px] text-text-hint text-center">{t("extension_popup_hint")}</p>
+          <SignHint port={port} />
         </div>
       )}
     </div>

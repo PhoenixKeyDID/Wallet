@@ -10,6 +10,8 @@ import {
   type AdaPrice,
   type FiatCurrency,
 } from "@/lib/cardano/price";
+import type { PhoenixNetwork } from "@/lib/cardano";
+import { hasFiatPrice } from "./moneyNotice";
 
 const STORE_KEY = "phoenix.fiatCurrency";
 /** The one value that means "do not contact the price service at all". */
@@ -79,14 +81,38 @@ function initialChoice(): Choice {
  *    the wallet holds; this is what someone was paying for it at a moment,
  *    which is why the moment is printed next to it.
  * 3. **It never asks when switched off.** See `initialChoice`.
+ * 4. **It never prices a testnet balance.** There is no exchange rate for test
+ *    ADA — the faucet hands it out — so applying the mainnet rate to it produces
+ *    a figure that is not merely imprecise but has no referent at all. A preprod
+ *    wallet with 10 000 test ADA read as tens of millions of đồng, in the
+ *    reader's own currency, on the screen they opened to find out what they
+ *    have. So on preprod and preview the line is replaced by a sentence saying
+ *    the balance is not real money, which is the fact the reader needs there
+ *    anyway; and nothing is asked of the price service, so the third-party
+ *    request does not happen either.
  */
-export function FiatValue({ lovelace }: { lovelace: bigint }) {
+export function FiatValue({
+  lovelace,
+  network,
+}: {
+  lovelace: bigint;
+  network: PhoenixNetwork;
+}) {
   const { t, i18n } = useTranslation("wallet");
+  const isMainnet = hasFiatPrice(network);
   const [choice, setChoice] = useState<Choice>(initialChoice);
   const [price, setPrice] = useState<AdaPrice | null>(null);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
+    if (!isMainnet) {
+      // Not merely hidden: drop any rate this component is holding, so switching
+      // a screen from mainnet to preprod cannot leave a mainnet figure behind
+      // for a render, and no request goes out on a testnet at all.
+      setPrice(null);
+      setFailed(false);
+      return;
+    }
     if (choice === OFF) {
       setPrice(null);
       setFailed(false);
@@ -120,7 +146,7 @@ export function FiatValue({ lovelace }: { lovelace: bigint }) {
     // stale conversion, and this component's own contract is that it never shows
     // one. The sixty-second cache in `price.ts` keeps that from meaning a
     // request per refresh.
-  }, [choice, lovelace]);
+  }, [choice, lovelace, isMainnet]);
 
   const choose = (next: Choice) => {
     setChoice(next);
@@ -136,6 +162,13 @@ export function FiatValue({ lovelace }: { lovelace: bigint }) {
   // turning the line on is one choice rather than a hunt through four codes.
   const preferred = preferredCurrency(i18n.language);
   const ordered = [preferred, ...FIAT_CURRENCIES.filter((c) => c !== preferred)];
+
+  // No currency picker on a testnet — offering one implies there is something
+  // to convert. The sentence that replaces it is the one a person on preprod
+  // needs anyway, and it is why the picker is gone.
+  if (!isMainnet) {
+    return <p className="text-xs text-text-hint">{t("fiat_testnet_note")}</p>;
+  }
 
   return (
     <div className="flex flex-wrap items-baseline gap-2 text-xs">

@@ -13,6 +13,8 @@ import {
   CHALLENGE_LEN,
 } from "@/components/wallet/ConfirmGate";
 import { reportSignError } from "@/components/wallet/signError";
+import type { UncertainLock } from "@/components/wallet/UncertainSubmitNotice";
+import { SignHint } from "@/components/wallet/SignHint";
 import {
   type WalletPort,
   type PhoenixNetwork,
@@ -50,11 +52,13 @@ export function StakingPanel({
   port,
   network,
   changeAddress,
+  uncertainHash,
+  onUncertain,
 }: {
   port: WalletPort;
   network: PhoenixNetwork;
   changeAddress: string;
-}) {
+} & UncertainLock) {
   const { t } = useTranslation("wallet");
 
   const [rewardAddressHex, setRewardAddressHex] = useState<string | null>(null);
@@ -175,6 +179,10 @@ export function StakingPanel({
 
   const confirmDelegate = async () => {
     if (!poolReview) return;
+    // See `SendPanel.signSubmit`: the disabled button is the hint, this is the
+    // refusal. Both spend paths on this screen carry it, because a lock that
+    // covers one of two ways out covers neither.
+    if (uncertainHash !== null) return toastError(t("uncertain_blocked"));
     setBusy(true);
     try {
       const hash = await port.signAndSubmit(poolReview.built, network);
@@ -190,7 +198,8 @@ export function StakingPanel({
       // extension's witness, so drop the built tx rather than retry-signing it.
       setPoolReview(null);
       setChecked(false);
-      reportSignError(err, t);
+      const outcome = reportSignError(err, t);
+      if (outcome.kind === "uncertain") onUncertain(outcome.txHash);
     } finally {
       setBusy(false);
     }
@@ -221,6 +230,7 @@ export function StakingPanel({
 
   const confirmWithdraw = async () => {
     if (!withdrawReview) return;
+    if (uncertainHash !== null) return toastError(t("uncertain_blocked"));
     setBusy(true);
     try {
       const hash = await port.signAndSubmit(withdrawReview.built, network);
@@ -231,7 +241,8 @@ export function StakingPanel({
     } catch (err) {
       setWithdrawReview(null);
       setChecked(false);
-      reportSignError(err, t);
+      const outcome = reportSignError(err, t);
+      if (outcome.kind === "uncertain") onUncertain(outcome.txHash);
     } finally {
       setBusy(false);
     }
@@ -322,7 +333,7 @@ export function StakingPanel({
             {busy ? t("submitting") : t("confirm_delegate")}
           </button>
         </div>
-        <p className="text-[11px] text-text-hint text-center">{t("extension_popup_hint")}</p>
+        <SignHint port={port} />
       </div>
     );
   }
@@ -385,7 +396,7 @@ export function StakingPanel({
             {busy ? t("submitting") : t("confirm_withdraw")}
           </button>
         </div>
-        <p className="text-[11px] text-text-hint text-center">{t("extension_popup_hint")}</p>
+        <SignHint port={port} />
       </div>
     );
   }
@@ -429,7 +440,7 @@ export function StakingPanel({
         {!loadingAccount && !loadError && accountState && accountState.rewardsAvailable > BigInt("0") && (
           <button
             type="button"
-            disabled={busy}
+            disabled={busy || uncertainHash !== null}
             onClick={reviewWithdraw}
             className="w-full p-3 rounded-brand border border-border-teal bg-teal-brand/10 hover:bg-teal-brand/20 text-sm teal-brand disabled:opacity-50"
           >
@@ -484,7 +495,7 @@ export function StakingPanel({
                   ) : (
                     <button
                       type="button"
-                      disabled={busy}
+                      disabled={busy || uncertainHash !== null}
                       onClick={() => reviewDelegate(pool)}
                       className="px-3 py-1.5 rounded-brand-sm border border-border-amber bg-amber-brand/10 hover:bg-amber-brand/20 text-xs text-amber-brand disabled:opacity-50"
                     >
