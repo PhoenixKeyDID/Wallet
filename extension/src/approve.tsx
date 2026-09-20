@@ -469,7 +469,7 @@ function Approve() {
                 <li key={n.unit || "ada"}>
                   {n.unit === ""
                     ? `${formatAda(n.amount < BigInt(0) ? -n.amount : n.amount)} ADA`
-                    : `${(n.amount < BigInt(0) ? -n.amount : n.amount).toString()} ${assetLabel(n.assetNameHex)}`}
+                    : `${(n.amount < BigInt(0) ? -n.amount : n.amount).toString()} ${assetLabel(n.policyId, n.assetNameHex)}`}
                   {n.amount < BigInt(0) && ` ${t("cip30_incoming")}`}
                 </li>
               ))}

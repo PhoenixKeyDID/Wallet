@@ -309,7 +309,7 @@ export function SendPanel({
                         <option value="">{t("choose_asset")}</option>
                         {heldAssets.map((a) => (
                           <option key={a.unit} value={a.unit}>
-                            {assetLabel(a.assetNameHex)} ({a.quantity.toString()})
+                            {assetLabel(a.policyId, a.assetNameHex)} ({a.quantity.toString()})
                           </option>
                         ))}
                       </select>
@@ -407,7 +407,13 @@ export function SendPanel({
                 )}
                 {o.tokens.map((tk, tIdx) => (
                   <div key={tIdx} className="flex justify-between">
-                    <span className="text-text-hint">{assetLabel(tk.assetNameHex)}</span>
+                    {/* The last screen before the key signs. A name alone does
+                        not identify what is leaving: the picker above can hold
+                        two rows reading the same word, and the one that got
+                        chosen is decided by the policy id, not by the name. */}
+                    <span className="text-text-hint break-all">
+                      {assetLabel(tk.policyId, tk.assetNameHex)}
+                    </span>
                     <span className="mono font-semibold">{tk.amount.toString()}</span>
                   </div>
                 ))}

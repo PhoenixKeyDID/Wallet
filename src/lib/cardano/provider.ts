@@ -456,14 +456,52 @@ export function formatAda(lovelace: bigint): string {
   return `${neg ? "-" : ""}${whole.toString()}${frac ? "." + frac : ""}`;
 }
 
-/** Convenience: assetNameHex → utf8 label if printable, else the hex. */
-export function assetLabel(assetNameHex: string): string {
+/**
+ * The decoded asset name ON ITS OWN — printable utf8 if it decodes to that,
+ * otherwise the hex.
+ *
+ * Not safe to show by itself, and the name of this function says so on
+ * purpose. Whoever mints a token chooses this string and nothing stops two
+ * mints choosing the same one: three distinct assets display `tLAMP` on
+ * preprod today, and a token called `ADA` costs a minting fee. Only the
+ * (policy id, asset name) pair identifies an asset. Use this function only
+ * where the policy id is rendered beside it; everywhere else use
+ * `assetLabel`, whose signature will not let the policy id be dropped.
+ *
+ * A name that is blank once trimmed falls back to hex. It would otherwise
+ * render as an empty cell — HTML collapses runs of spaces — which reads as
+ * a token with no name rather than as a token whose name is a lie.
+ */
+export function assetNameOnly(assetNameHex: string): string {
   try {
     const txt = Buffer.from(assetNameHex, "hex").toString("utf8");
-    return /^[\x20-\x7e]+$/.test(txt) ? txt : assetNameHex;
+    if (!/^[\x20-\x7e]+$/.test(txt) || txt.trim() === "") return assetNameHex;
+    return txt;
   } catch {
     return assetNameHex;
   }
+}
+
+/** The leading and trailing fragments of a policy id, as every screen shows it. */
+export function policyIdShort(policyId: string): string {
+  return `${policyId.slice(0, 8)}…${policyId.slice(-4)}`;
+}
+
+/**
+ * An asset named for a place where one line is all there is — a `<option>`, a
+ * summary row, the list a dApp's transaction is described in.
+ *
+ * The policy id is a PARAMETER rather than something the caller remembers to
+ * render next to the result, and that is the entire point of the two-argument
+ * shape: leaving it out is a compile error instead of a review item. Four
+ * screens in this module each had to remember independently and three of them
+ * did not — including the two on the spending path, where the person is being
+ * asked to approve the movement. A gate that greps for a policy id beside a
+ * name can be satisfied by the next screen spelling it differently; a required
+ * argument cannot.
+ */
+export function assetLabel(policyId: string, assetNameHex: string): string {
+  return `${assetNameOnly(assetNameHex)} · ${policyIdShort(policyId)}`;
 }
 
 /**

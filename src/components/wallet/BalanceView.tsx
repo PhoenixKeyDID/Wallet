@@ -3,7 +3,7 @@
 import { useTranslation } from "react-i18next";
 import { QRCodeCanvas } from "qrcode.react";
 import { CopyBtn } from "@/components/CopyBtn";
-import { formatAda, assetLabel, type PhoenixNetwork } from "@/lib/cardano";
+import { formatAda, assetNameOnly, policyIdShort, type PhoenixNetwork } from "@/lib/cardano";
 import { FiatValue } from "./FiatValue";
 
 export type DisplayAsset = { unit: string; policyId: string; assetNameHex: string; quantity: bigint };
@@ -62,10 +62,10 @@ export function BalanceView({
                     tooltip — a tooltip does not exist on a phone. */}
                 <span className="max-w-[60%] min-w-0">
                   <span className="mono block truncate" title={a.unit}>
-                    {assetLabel(a.assetNameHex)}
+                    {assetNameOnly(a.assetNameHex)}
                   </span>
                   <span className="mono block text-[10px] text-text-hint truncate">
-                    {a.policyId.slice(0, 8)}…{a.policyId.slice(-4)}
+                    {policyIdShort(a.policyId)}
                   </span>
                 </span>
                 <span className="mono text-text-dim">{a.quantity.toString()}</span>
