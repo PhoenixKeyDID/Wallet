@@ -492,16 +492,30 @@ export function policyIdShort(policyId: string): string {
  * summary row, the list a dApp's transaction is described in.
  *
  * The policy id is a PARAMETER rather than something the caller remembers to
- * render next to the result, and that is the entire point of the two-argument
- * shape: leaving it out is a compile error instead of a review item. Four
- * screens in this module each had to remember independently and three of them
- * did not — including the two on the spending path, where the person is being
- * asked to approve the movement. A gate that greps for a policy id beside a
- * name can be satisfied by the next screen spelling it differently; a required
- * argument cannot.
+ * render next to the result, and that is the entire point: leaving it out is a
+ * compile error instead of a review item. Four screens in this module each had
+ * to remember independently and three of them did not — including the two on
+ * the spending path, where the person is being asked to approve the movement.
+ * A gate that greps for a policy id beside a name can be satisfied by the next
+ * screen spelling it differently; a required parameter cannot.
+ *
+ * ## Why one object rather than two positional arguments
+ *
+ * Both values are hex strings, so to the compiler they are the same type. The
+ * two-argument form made *omitting* the policy id a compile error but left
+ * *swapping* the two a clean build: measured on this branch, changing one call
+ * site to `assetLabel(a.assetNameHex, a.policyId)` passed `tsc --noEmit` and
+ * all 700 tests. That reintroduces the defect this function exists to close —
+ * the screen shows a string that is not the asset's name, beside a fragment
+ * that is not its policy id, and nothing anywhere objects.
+ *
+ * Named fields make the compiler able to tell them apart, which is what the
+ * argument for a required parameter was relying on in the first place. The gate
+ * is only as good as the type system's ability to distinguish the things being
+ * passed, and two `string`s cannot be distinguished.
  */
-export function assetLabel(policyId: string, assetNameHex: string): string {
-  return `${assetNameOnly(assetNameHex)} · ${policyIdShort(policyId)}`;
+export function assetLabel(asset: { policyId: string; assetNameHex: string }): string {
+  return `${assetNameOnly(asset.assetNameHex)} · ${policyIdShort(asset.policyId)}`;
 }
 
 /**

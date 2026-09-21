@@ -309,7 +309,7 @@ export function SendPanel({
                         <option value="">{t("choose_asset")}</option>
                         {heldAssets.map((a) => (
                           <option key={a.unit} value={a.unit}>
-                            {assetLabel(a.policyId, a.assetNameHex)} ({a.quantity.toString()})
+                            {assetLabel(a)} ({a.quantity.toString()})
                           </option>
                         ))}
                       </select>
@@ -412,7 +412,7 @@ export function SendPanel({
                         two rows reading the same word, and the one that got
                         chosen is decided by the policy id, not by the name. */}
                     <span className="text-text-hint break-all">
-                      {assetLabel(tk.policyId, tk.assetNameHex)}
+                      {assetLabel(tk)}
                     </span>
                     <span className="mono font-semibold">{tk.amount.toString()}</span>
                   </div>

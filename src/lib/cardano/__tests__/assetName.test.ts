@@ -23,8 +23,8 @@ const TLAMP_NAME = hex("tLAMP");
 
 describe("một tên token không phải một định danh", () => {
   it("hai policy id khác nhau mang CÙNG tên thì đọc ra hai chuỗi khác nhau", () => {
-    const a = assetLabel(LAMP_REAL, TLAMP_NAME);
-    const b = assetLabel(LAMP_LOOKALIKE, TLAMP_NAME);
+    const a = assetLabel({ policyId: LAMP_REAL, assetNameHex: TLAMP_NAME });
+    const b = assetLabel({ policyId: LAMP_LOOKALIKE, assetNameHex: TLAMP_NAME });
 
     expect(assetNameOnly(TLAMP_NAME)).toBe("tLAMP");
     expect(a).not.toBe(b);
@@ -34,8 +34,8 @@ describe("một tên token không phải một định danh", () => {
     // Đổi thứ tự gọi không được đổi kết quả: nhãn là hàm của cặp, không phải
     // của ngữ cảnh gọi. Một bản hiện thực đánh số "token #1 / #2" sẽ trượt ca
     // này, và nó trượt đúng chỗ nguy — hai màn hình khác nhau đánh số khác nhau.
-    const first = assetLabel(LAMP_LOOKALIKE, TLAMP_NAME);
-    const again = assetLabel(LAMP_LOOKALIKE, TLAMP_NAME);
+    const first = assetLabel({ policyId: LAMP_LOOKALIKE, assetNameHex: TLAMP_NAME });
+    const again = assetLabel({ policyId: LAMP_LOOKALIKE, assetNameHex: TLAMP_NAME });
     expect(again).toBe(first);
     expect(first).toContain(policyIdShort(LAMP_LOOKALIKE));
     expect(first).not.toContain(policyIdShort(LAMP_REAL));
@@ -44,7 +44,7 @@ describe("một tên token không phải một định danh", () => {
   it("một token tự đặt tên `ADA` vẫn phân biệt được với ADA thật", () => {
     // ADA thật không có policy id và không đi qua hàm này. Điều cần ghim là
     // token giả không bao giờ in ra một chuỗi trơ đọc y như đơn vị của mạng.
-    const fake = assetLabel(LAMP_LOOKALIKE, hex("ADA"));
+    const fake = assetLabel({ policyId: LAMP_LOOKALIKE, assetNameHex: hex("ADA") });
     expect(fake).not.toBe("ADA");
     expect(fake.startsWith("ADA ")).toBe(true);
     expect(fake).toContain(policyIdShort(LAMP_LOOKALIKE));
@@ -77,24 +77,41 @@ describe("tên không hiện được thì phải lộ ra, không được biế
     // Chỗ chặn ca này là policy id đứng cạnh, nên ca này ghim rằng tên KHÔNG
     // bị đụng vào, để người đọc sau không tưởng là đã có phép làm sạch.
     expect(assetNameOnly(hex("LAMP "))).toBe("LAMP ");
-    expect(assetLabel(LAMP_REAL, hex("LAMP "))).not.toBe(assetLabel(LAMP_LOOKALIKE, hex("LAMP ")));
+    expect(assetLabel({ policyId: LAMP_REAL, assetNameHex: hex("LAMP ") })).not.toBe(
+      assetLabel({ policyId: LAMP_LOOKALIKE, assetNameHex: hex("LAMP ") }),
+    );
   });
 });
 
 describe("policy id không bỏ được ở chỗ chỉ có một dòng", () => {
-  it("`assetLabel` nhận policy id làm THAM SỐ, không nhận nó làm tuỳ chọn", () => {
-    // Đây là cổng thật của phát hiện này, và nó nằm ở trình biên dịch chứ
-    // không ở một phép khớp chuỗi: một màn hình mới bỏ policy id là lỗi dịch,
-    // không phải một mục trong danh sách soát. Ca này canh đúng một chuyện —
-    // arity không tụt về 1. Cho `policyId?: string` thì `.length` thành 1 và
-    // mọi lời gọi cũ dịch lại được, tức cổng mở ra trong im lặng.
-    expect(assetLabel.length).toBe(2);
+  it("nhãn mang CẢ tên lẫn policy id, không mang mỗi một nửa", () => {
+    // Cổng thật của phát hiện này nằm ở trình biên dịch: `assetLabel` nhận một
+    // đối tượng có HAI trường bắt buộc, nên một màn hình mới bỏ policy id là
+    // lỗi dịch chứ không phải một mục trong danh sách soát.
+    //
+    // Bản trước dùng hai tham số vị trí và ghim `assetLabel.length === 2`. Phép
+    // đo đó đúng với thứ nó đo, nhưng thứ nó đo không đủ: cả hai tham số đều là
+    // `string`, nên trình biên dịch không phân biệt được chúng. ĐO ĐƯỢC trên
+    // chính nhánh này — đổi một chỗ gọi thành `assetLabel(a.assetNameHex,
+    // a.policyId)` thì `tsc --noEmit` SẠCH và 700/700 test XANH. Tức cổng chặn
+    // được việc BỎ QUÊN nhưng không chặn được việc ĐẢO, và cái sau cho ra đúng
+    // thứ hàm này sinh ra để ngăn: một chuỗi không phải tên tài sản, đứng cạnh
+    // một mảnh không phải policy id của nó.
+    //
+    // Trường có tên thì trình biên dịch phân biệt được, nên cả hai lối đều là
+    // lỗi dịch. Ca dưới đây ghim phần mà kiểu không nói hộ: nhãn thật sự chứa
+    // cả hai nửa, chứ không phải chỉ một nửa được nối thêm dấu chấm.
+    const label = assetLabel({ policyId: LAMP_REAL, assetNameHex: TLAMP_NAME });
+    expect(label).toContain(assetNameOnly(TLAMP_NAME));
+    expect(label).toContain(policyIdShort(LAMP_REAL));
   });
 
   it("nửa tên trơ có tên hàm nói rõ nó là nửa tên trơ", () => {
     // `assetNameOnly` được phép trả về tên trần, nhưng chỉ ở nơi policy id đã
     // hiện ở dòng bên cạnh. Ghim rằng hai hàm KHÔNG trả cùng một thứ, để một
     // lần "dọn trùng lặp" sau này không gộp chúng lại làm một.
-    expect(assetNameOnly(TLAMP_NAME)).not.toBe(assetLabel(LAMP_REAL, TLAMP_NAME));
+    expect(assetNameOnly(TLAMP_NAME)).not.toBe(
+      assetLabel({ policyId: LAMP_REAL, assetNameHex: TLAMP_NAME }),
+    );
   });
 });
