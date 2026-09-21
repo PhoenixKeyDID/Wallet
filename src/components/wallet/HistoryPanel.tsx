@@ -7,7 +7,13 @@ import { useTranslation } from "react-i18next";
 import { utils as tyUtils } from "@stricahq/typhonjs";
 import { toastApiError } from "@/lib/toast";
 import { CopyBtn } from "@/components/CopyBtn";
-import { formatAda, assetLabel, type PhoenixNetwork, type WalletPort } from "@/lib/cardano";
+import {
+  formatAda,
+  assetNameOnly,
+  policyIdShort,
+  type PhoenixNetwork,
+  type WalletPort,
+} from "@/lib/cardano";
 import { rewardAddressFromHex } from "@/lib/cardano/staking";
 import {
   fetchHistory,
@@ -315,10 +321,10 @@ export function HistoryPanel({
                             always next to it rather than behind a hover. */}
                         <span className="min-w-0">
                           <span className="mono block truncate" title={tk.unit}>
-                            {assetLabel(tk.assetNameHex)}
+                            {assetNameOnly(tk.assetNameHex)}
                           </span>
                           <span className="mono block text-[10px] text-text-hint truncate">
-                            {tk.policyId.slice(0, 8)}…{tk.policyId.slice(-4)}
+                            {policyIdShort(tk.policyId)}
                           </span>
                         </span>
                         <span
