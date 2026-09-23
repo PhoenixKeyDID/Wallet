@@ -177,13 +177,42 @@ const KNOWN_BODY_KEYS = new Set([
   8, // validity_interval_start
   9, // mint
   11, // script_data_hash
-  13, // collateral inputs
   14, // required_signers
   15, // network_id
-  16, // collateral_return
-  17, // total_collateral
   18, // reference_inputs
 ]);
+
+/**
+ * Collateral (13 inputs, 16 return, 17 total) is deliberately NOT on the list
+ * above, and the reason is that it is a second way for the transaction to spend.
+ *
+ * When a script in the transaction fails, the ledger ignores the inputs and
+ * outputs entirely and takes the collateral inputs instead, handing back only
+ * the collateral return — to whatever address the transaction names. None of
+ * that appears in `net` or `toOthers`, which are computed from fields 0 and 1.
+ * So a page can put a large UTxO of this wallet into field 13, point the return
+ * at itself, attach a script built to fail, and the screen truthfully reports
+ * the ordinary path: *"leaves the wallet: 0.2 ADA"*. The ledger spends the rest.
+ *
+ * The signature comes for free. A witness authorises a key, not an input; once
+ * the transaction also spends an ordinary input at the same address, the key
+ * that signs it covers the collateral too. The check on required signers does
+ * not help, because nothing here is an extra signer.
+ *
+ * Describing collateral instead of refusing it would need to know which
+ * collateral inputs are this wallet's, and that set is open — a UTxO the wallet
+ * holds but has not scanned would be counted as someone else's and vanish from
+ * the total. Refusing needs no attribution at all. It also costs nothing honest
+ * today: this wallet answers `getCollateral` with a refusal and does not sign
+ * smart-contract transactions, and a transaction running a script is invalid on
+ * chain without collateral. When smart-contract signing is built, this is the
+ * place that has to learn to describe the failure path first.
+ */
+const WHY_REFUSED: Record<number, string> = {
+  13: "this transaction puts up collateral — if its script fails, those funds are spent instead of what is shown, and this wallet does not sign smart-contract transactions",
+  16: "this transaction names where collateral goes if its script fails — this wallet does not sign smart-contract transactions",
+  17: "this transaction declares collateral — this wallet does not sign smart-contract transactions",
+};
 
 /**
  * Describe a signed-or-unsigned transaction from the wallet's point of view.
@@ -211,7 +240,7 @@ export function summariseTx(
 
   for (const key of b.keys()) {
     if (!KNOWN_BODY_KEYS.has(Number(key)))
-      bad(`this transaction uses a feature this wallet cannot describe (field ${String(key)})`);
+      bad(WHY_REFUSED[Number(key)] ?? `this transaction uses a feature this wallet cannot describe (field ${String(key)})`);
   }
 
   const own = new Set<string>();

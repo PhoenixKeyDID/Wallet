@@ -215,6 +215,65 @@ describe("summariseTx — what it refuses", () => {
     expect(() => summariseTx(cbor, own.addresses, own.inputs)).toThrow(/cannot describe/);
   });
 
+  // Collateral is a second spend path: if a script fails, the ledger takes the
+  // collateral inputs and pays out only the collateral return, and neither
+  // appears in `net` or `toOthers`. The attack: the page puts a large UTxO of
+  // this wallet into field 13 and aims the return at itself, while the ordinary
+  // path moves a trivial amount — so the screen shows a small, true number.
+  describe("collateral — a second spend path the summary cannot show", () => {
+    const BIG_OWN = `${"44".repeat(32)}`; // another UTxO of this wallet, 1000 ADA
+    const ordinary: [number, unknown][] = [
+      [0, [[Buffer.from(TXID, "hex"), 0]]],
+      [1, [outputTo(PAYEE, 200_000), outputTo(MY_CHANGE, 9_600_000)]],
+      [2, 200_000],
+    ];
+    const collateralFromWallet: [number, unknown] = [13, [[Buffer.from(BIG_OWN, "hex"), 0]]];
+    const returnToPage: [number, unknown] = [16, outputTo(PAYEE, 1_000_000)];
+    const totalCollateral: [number, unknown] = [17, 999_000_000];
+    const ownWithBig = new Map([
+      ...own.inputs,
+      [`${BIG_OWN}#0`, { lovelace: BigInt(1_000_000_000), assets: new Map<string, bigint>() }],
+    ]);
+
+    // Control: the ordinary path alone is describable, and reports a small
+    // cost. Without this, a refusal below could be about the shape of the
+    // fixture rather than about collateral.
+    it("describes the same transaction once collateral is removed", () => {
+      const s = summariseTx(encodeBody(ordinary), own.addresses, ownWithBig);
+      expect(s.net).toEqual([{ unit: "", policyId: "", assetNameHex: "", amount: BigInt(200_000 + 200_000) }]);
+    });
+
+    it("refuses the attack: this wallet's UTxO as collateral, return aimed at the page", () => {
+      const cbor = encodeBody([...ordinary, collateralFromWallet, returnToPage, totalCollateral]);
+      expect(() => summariseTx(cbor, own.addresses, ownWithBig)).toThrow(/collateral/);
+    });
+
+    // Attribution is not what the refusal rests on. A UTxO the wallet holds but
+    // has not scanned looks like someone else's; the refusal must not depend on
+    // recognising it.
+    it("refuses collateral even when the wallet does not recognise the input", () => {
+      const cbor = encodeBody([...ordinary, collateralFromWallet]);
+      expect(() => summariseTx(cbor, own.addresses, own.inputs)).toThrow(/collateral/);
+    });
+
+    it("refuses a collateral return on its own", () => {
+      const cbor = encodeBody([...ordinary, returnToPage]);
+      expect(() => summariseTx(cbor, own.addresses, own.inputs)).toThrow(/collateral/);
+    });
+
+    it("refuses a declared collateral total on its own", () => {
+      const cbor = encodeBody([...ordinary, totalCollateral]);
+      expect(() => summariseTx(cbor, own.addresses, own.inputs)).toThrow(/collateral/);
+    });
+
+    // A field that is simply unknown keeps the generic wording, so the specific
+    // message above is not a blanket rename of every refusal.
+    it("keeps the generic wording for fields that are not collateral", () => {
+      const cbor = encodeBody([...ordinary, [19, new Map()]]);
+      expect(() => summariseTx(cbor, own.addresses, own.inputs)).toThrow(/field 19/);
+    });
+  });
+
   it("refuses an output carrying an inline datum", () => {
     const withDatum = new Map<number, unknown>([
       [0, tyUtils.getAddressFromString(PAYEE).getBytes()],
