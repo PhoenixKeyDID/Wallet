@@ -38,6 +38,11 @@ const TABS = "src/components/wallet/WalletTabs.tsx";
 const PROVIDER = "src/lib/cardano/provider.ts";
 const BLOCKFROST = "src/lib/cardano/blockfrost.ts";
 const TX_SUMMARY = "src/lib/cardano/txSummary.ts";
+// The two screens where a token name is the last thing read before signing.
+// Their helpers were pinned long before the screens were: reverting a screen
+// to the bare name left every helper test green until these were rendered.
+const REVIEW_OUTPUT = "src/components/wallet/ReviewOutput.tsx";
+const TX_SUMMARY_VIEW = "extension/src/TxSummaryView.tsx";
 const STORE = "src/components/wallet/uncertainStore.ts";
 // A gate is worth mutating too. "Is this guard pinned" and "is the thing that
 // checks the guard pinned" are different questions, and the second one has gone
@@ -52,6 +57,8 @@ const TESTS = [
   "src/lib/cardano/submitError.test.ts",
   "src/lib/keystore/__tests__/keystore.test.ts",
   "src/lib/cardano/__tests__/txSummary.test.ts",
+  "src/components/wallet/__tests__/ReviewOutput.test.tsx",
+  "extension/src/__tests__/TxSummaryView.test.tsx",
 ];
 
 /**
@@ -381,6 +388,24 @@ const MUTANTS = [
     file: TX_SUMMARY,
     from: "  11, // script_data_hash\n",
     to: "  11, // script_data_hash\n  17,\n",
+  },
+  {
+    name: "Send review prints the bare token name again (policy id dropped on the last screen)",
+    file: REVIEW_OUTPUT,
+    from: "{assetLabel(tk)}",
+    to: '{assetLabel(tk).split(" · ")[0]}',
+  },
+  {
+    name: "Send review truncates the recipient address",
+    file: REVIEW_OUTPUT,
+    from: "<ChallengedValue value={address}",
+    to: '<ChallengedValue value={address.slice(0, 16) + "…"}',
+  },
+  {
+    name: "approval window prints the bare token name again (the website chose that name)",
+    file: TX_SUMMARY_VIEW,
+    from: "${assetLabel(n)}",
+    to: '${assetLabel(n).split(" · ")[0]}',
   },
 ];
 
