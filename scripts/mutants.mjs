@@ -37,6 +37,7 @@ const GOV = "src/components/wallet/GovernancePanel.tsx";
 const TABS = "src/components/wallet/WalletTabs.tsx";
 const PROVIDER = "src/lib/cardano/provider.ts";
 const BLOCKFROST = "src/lib/cardano/blockfrost.ts";
+const TX_SUMMARY = "src/lib/cardano/txSummary.ts";
 const STORE = "src/components/wallet/uncertainStore.ts";
 // A gate is worth mutating too. "Is this guard pinned" and "is the thing that
 // checks the guard pinned" are different questions, and the second one has gone
@@ -50,6 +51,7 @@ const TESTS = [
   "src/components/wallet/__tests__/uncertainStore.test.ts",
   "src/lib/cardano/submitError.test.ts",
   "src/lib/keystore/__tests__/keystore.test.ts",
+  "src/lib/cardano/__tests__/txSummary.test.ts",
 ];
 
 /**
@@ -361,6 +363,24 @@ const MUTANTS = [
     file: "src/lib/cardano/submitError.ts",
     from: "  return err instanceof SubmitRejectedError && err.status >= 400 && err.status < 500;",
     to: "  return err instanceof SubmitRejectedError;",
+  },
+  {
+    name: "collateral inputs (field 13) allowed again — a second spend path the approval screen cannot show",
+    file: TX_SUMMARY,
+    from: "  11, // script_data_hash\n",
+    to: "  11, // script_data_hash\n  13,\n",
+  },
+  {
+    name: "collateral return (field 16) allowed again — a second spend path the approval screen cannot show",
+    file: TX_SUMMARY,
+    from: "  11, // script_data_hash\n",
+    to: "  11, // script_data_hash\n  16,\n",
+  },
+  {
+    name: "collateral total (field 17) allowed again — a second spend path the approval screen cannot show",
+    file: TX_SUMMARY,
+    from: "  11, // script_data_hash\n",
+    to: "  11, // script_data_hash\n  17,\n",
   },
 ];
 
