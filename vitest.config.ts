@@ -18,17 +18,19 @@ export default defineConfig({
     // This weakens nothing: a KDF that took 30s would still fail here.
     testTimeout: 30_000,
 
-    // The cardano core is pure TypeScript — no DOM needed.
+    // The cardano core is pure TypeScript — no DOM needed, so `node` stays the
+    // default. A test that renders a screen opts in per file with
+    // `// @vitest-environment happy-dom` on its first line, which keeps the
+    // DOM out of every test that has no business touching one.
     environment: "node",
     // `extension/` is included because the rules deciding which websites this
     // wallet answers live there, in `rpc/protocol.ts`. Leaving them out of the
     // test run would mean the one part of the extension that *can* be tested
     // was the part nothing tested.
     //
-    // `?(x)` matters even though no `.tsx` test exists yet: without it, the
-    // first component test anyone adds is collected by nobody and reported by
-    // nothing, which is worse than a missing test because the repo counts it as
-    // coverage. Both halves of this line were arrived at separately and both
+    // `?(x)` is what collects the `.tsx` screen tests: without it, a component
+    // test is collected by nobody and reported by nothing, which is worse than
+    // a missing test because the repo counts it as coverage. Both halves of this line were arrived at separately and both
     // are kept — the directory and the extension.
     //
     // `scripts/` for the same reason one level further out: the checks in there

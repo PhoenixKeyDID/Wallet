@@ -39,7 +39,7 @@ import { vaultStore, type StoredWallet } from "../../src/lib/keystore/storage";
 import { DEFAULT_LOCK_TIMEOUT_MS } from "../../src/lib/keystore/session";
 import { summariseTx, UndescribableTxError, type TxSummary } from "../../src/lib/cardano/txSummary";
 import { signForeignTx } from "../../src/lib/keystore/signForeign";
-import { assetLabel, formatAda } from "../../src/lib/cardano/provider";
+import { TxSummaryView } from "./TxSummaryView";
 import {
   displayOrigin,
   refused,
@@ -460,56 +460,7 @@ function Approve() {
           </div>
         )}
 
-        {summary && (
-          <div className="approve-summary">
-            <p className="approve-heading">{t("cip30_leaves_wallet")}</p>
-            <ul>
-              {summary.net.length === 0 && <li>{t("cip30_nothing_leaves")}</li>}
-              {summary.net.map((n) => (
-                <li key={n.unit || "ada"}>
-                  {n.unit === ""
-                    ? `${formatAda(n.amount < BigInt(0) ? -n.amount : n.amount)} ADA`
-                    : `${(n.amount < BigInt(0) ? -n.amount : n.amount).toString()} ${assetLabel(n)}`}
-                  {n.amount < BigInt(0) && ` ${t("cip30_incoming")}`}
-                </li>
-              ))}
-            </ul>
-            <p className="approve-note">
-              {t("cip30_fee")}: {formatAda(summary.fee)} ADA
-            </p>
-            {summary.withdrawalLovelace > BigInt(0) && (
-              <p className="approve-note">
-                {t("cip30_withdrawal")}: {formatAda(summary.withdrawalLovelace)} ADA
-              </p>
-            )}
-            {summary.ownInputs < summary.totalInputs && (
-              <p className="approve-error">
-                {t("cip30_unknown_inputs", {
-                  known: summary.ownInputs,
-                  total: summary.totalInputs,
-                })}
-              </p>
-            )}
-            {summary.toOthers.length > 0 && (
-              <>
-                <p className="approve-heading">{t("cip30_paying")}</p>
-                <ul>
-                  {summary.toOthers.map((r, i) => (
-                    <li key={i} className="approve-payout">
-                      {/* Amount first: an address with no number beside it is a
-                          line people skim past, and the number is the decision. */}
-                      <b>{formatAda(r.lovelace)} ADA</b>
-                      <span className="mono approve-addr">{r.address}</span>
-                    </li>
-                  ))}
-                </ul>
-              </>
-            )}
-            {(summary.certificates > 0 || summary.withdrawals > 0 || summary.mints > 0) && (
-              <p className="approve-error">{t("cip30_extra_actions")}</p>
-            )}
-          </div>
-        )}
+        {summary && <TxSummaryView summary={summary} />}
 
         <div className="approve-actions">
           <button onClick={() => answer({ ok: false, error: declined(t("cip30_declined")) })}>

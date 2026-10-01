@@ -9,10 +9,10 @@ import { toastApiError, toastError, toastSuccess } from "@/lib/toast";
 import { CopyBtn } from "@/components/CopyBtn";
 import {
   ConfirmGate,
-  ChallengedValue,
   tailChallenge,
   CHALLENGE_LEN,
 } from "@/components/wallet/ConfirmGate";
+import { ReviewOutput } from "@/components/wallet/ReviewOutput";
 import { reportSignError } from "@/components/wallet/signError";
 import type { UncertainLock } from "@/components/wallet/UncertainSubmitNotice";
 import { SignHint } from "@/components/wallet/SignHint";
@@ -380,44 +380,7 @@ export function SendPanel({
           </div>
           <div className="rounded-brand-sm bg-bg0 p-3 text-sm space-y-3">
             {(reviewOutputs ?? []).map((o, idx) => (
-              <div key={idx} className="space-y-1 border-b border-border-soft pb-2 last:border-b-0 last:pb-0">
-                <div className="space-y-1">
-                  <span className="text-text-hint text-xs">
-                    {t("send_to")} #{idx + 1}
-                  </span>
-                  {/* Full address, wrapped — a truncated address makes the verify
-                      checkbox meaningless against address-poisoning. EVERY
-                      recipient has its challenged tail marked, because every one
-                      must be retyped. Marking it here rather than printing it
-                      beside the input means the eye must cross the real address
-                      to find it (Wallet#7). */}
-                  <div className="flex items-start gap-2">
-                    <ChallengedValue
-                      value={o.address.getBech32()}
-                      className="mono text-xs break-all flex-1"
-                    />
-                    <CopyBtn value={o.address.getBech32()} />
-                  </div>
-                </div>
-                {o.lovelace > BigInt("0") && (
-                  <div className="flex justify-between">
-                    <span className="text-text-hint">ADA</span>
-                    <span className="mono font-semibold">{formatAda(o.lovelace)} ADA</span>
-                  </div>
-                )}
-                {o.tokens.map((tk, tIdx) => (
-                  <div key={tIdx} className="flex justify-between">
-                    {/* The last screen before the key signs. A name alone does
-                        not identify what is leaving: the picker above can hold
-                        two rows reading the same word, and the one that got
-                        chosen is decided by the policy id, not by the name. */}
-                    <span className="text-text-hint break-all">
-                      {assetLabel(tk)}
-                    </span>
-                    <span className="mono font-semibold">{tk.amount.toString()}</span>
-                  </div>
-                ))}
-              </div>
+              <ReviewOutput key={idx} output={o} index={idx} />
             ))}
             <div className="flex justify-between border-t border-border-soft pt-2">
               <span className="text-text-hint">{t("total_ada")}</span>
