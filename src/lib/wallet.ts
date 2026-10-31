@@ -42,7 +42,7 @@ export type AllWalletsResponse = {
   wallets: WalletEntry[];
   /**
    * MAGIC is a Vault accounting balance, not a wallet balance. Values are
-   * **nanoMAGIC** (10⁹ = 1 MAGIC), as strings for the same overflow reason.
+   * **nanogic** (10⁹ nanogic = 1 MAGIC), as strings for the same overflow reason.
    * Vault reads are not wired yet — the backend returns 0 with
    * `source: "vault"`, and the spec says to render "—" rather than a 0 that
    * reads as "you have none".
