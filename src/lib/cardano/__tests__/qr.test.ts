@@ -73,8 +73,9 @@ describe("air-gap QR framing", () => {
 
   it("forces an unsigned-tx id to be frameId(payload) (integrity binding)", () => {
     const payload = randomBytesDet(200);
-    // A free-label id is rejected for the spend path.
-    expect(() => encodeFrames(payload, "unsigned-tx", "abc123")).toThrow(/integrity tag/);
+    // A well-formed id that is not frameId(payload) is rejected for the spend path.
+    expect(ID_A).not.toBe(frameId(payload));
+    expect(() => encodeFrames(payload, "unsigned-tx", ID_A)).toThrow(/integrity tag/);
     // The correct id is accepted.
     expect(encodeFrames(payload, "unsigned-tx", frameId(payload))).toHaveLength(1);
   });
