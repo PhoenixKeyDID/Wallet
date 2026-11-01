@@ -108,5 +108,13 @@ jobs:
       # being left behind. A figure a reader catches as stale costs more than a
       # missing one: it teaches them not to trust the rest of the page, which is
       # where this wallet explains what it does NOT protect them from.
+      # The popup's stylesheet is typed by hand (the extension has no Tailwind
+      # build), and a hand-typed copy only ever falls behind: components gain
+      # classes, the copy does not. 90 of 160 were missing once, and the tab row
+      # overflowed the popup because of it. Reads the classes the popup's own
+      # import graph renders and fails on any without a rule.
+      - name: Every class the popup renders has a rule in popup.css
+        run: bun run check:popup-css
+
       - name: README's mechanical claims are still true
         run: bun run check:readme

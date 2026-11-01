@@ -213,8 +213,8 @@
   "connect_embedded_soon": "即将推出",
   "connect_embedded_note": "应用内置 dApp 浏览器正在开发中。目前请使用上方的“打开”按钮在新标签页中访问 dApp。",
   "connect_embedded_open": "打开（暂不可用）",
-  "network_preprod": "Preprod 测试网",
-  "network_preview": "Preview 测试网",
+  "network_preprod": "Preprod — 测试网络，代币没有价值",
+  "network_preview": "Preview — 测试网络，代币没有价值",
   "tab_send": "发送",
   "tab_receive": "接收",
   "tab_history": "历史",
@@ -398,5 +398,11 @@
   "hist_shown_recent": "正在显示最近 {{count}} 笔交易。",
   "hist_show_more": "查看更多",
   "local_account_empty_note": "账户 {{n}} 是空的。全新账户本来就是这样——你的其他账户没有任何变动，也没有任何资金被转走。",
-  "local_account_back_zero": "回到账户 0"
+  "local_account_back_zero": "回到账户 0",
+  "network_testnet_badge": "测试网络（{{name}}）— 这里的代币没有真实价值",
+  "local_risk_ext": "你的密钥用密码加密后保存在本设备。此测试版尚未经过审计：只放你能承受损失的金额。",
+  "local_intro_ext": "在此创建钱包，由你选择的密码保护。助记词为标准 BIP-39，也可在 Lace、Eternl 或 Yoroi 中打开。",
+  "popup_title": "Phoenix Wallet",
+  "popup_tagline": "开源 (Apache-2.0) · 密钥由你掌管",
+  "popup_footer": "测试版，未经审计。请先在测试网络上试用，再投入真实资金。"
 }

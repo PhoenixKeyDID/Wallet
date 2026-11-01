@@ -229,7 +229,7 @@ session at all — they never touch the Phoenix backend.
 
 ```bash
 bun install
-bun run test          # 715 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
+bun run test          # 751 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
 bun run typecheck
 bun run check:locales # 4 languages × 2 namespaces must stay in step
 bun run check:i18n-keys # every key the code asks for has a string — locale parity cannot see a key missing from all four
@@ -240,6 +240,7 @@ bun run check:node-globals # the Node-globals shim is imported before @stricahq
 bun run check:keystore-boundary # only the key-holding screens and the bundle smoke check may import the keystore
 bun run check:bundle  # the browser build runs with no Node globals (see below)
 bun run check:package # the built extension is loadable and claims no reach it does not use
+bun run check:popup-css # every class the popup renders has a rule in the hand-typed popup.css
 bun run check:readme  # the two claims above that go stale on their own
 ```
 

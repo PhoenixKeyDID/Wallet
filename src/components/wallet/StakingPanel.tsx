@@ -431,7 +431,7 @@ export function StakingPanel({
             </div>
             <div className="flex justify-between border-t border-border-soft pt-2">
               <span className="text-text-hint">{t("rewards_available_label")}</span>
-              <span className="font-semibold teal-brand">
+              <span className="font-semibold text-teal-brand">
                 {formatAda(accountState?.rewardsAvailable ?? BigInt("0"))} ADA
               </span>
             </div>
@@ -442,7 +442,7 @@ export function StakingPanel({
             type="button"
             disabled={busy || uncertainHash !== null}
             onClick={reviewWithdraw}
-            className="w-full p-3 rounded-brand border border-border-teal bg-teal-brand/10 hover:bg-teal-brand/20 text-sm teal-brand disabled:opacity-50"
+            className="w-full p-3 rounded-brand border border-border-teal bg-teal-brand/10 hover:bg-teal-brand/20 text-sm text-teal-brand disabled:opacity-50"
           >
             {busy ? t("building") : t("withdraw_rewards")}
           </button>
@@ -491,7 +491,7 @@ export function StakingPanel({
                     {pool.name || shortPoolId(pool.poolId)}
                   </span>
                   {isCurrent ? (
-                    <span className="text-xs teal-brand">{t("currently_delegated_badge")}</span>
+                    <span className="text-xs text-teal-brand">{t("currently_delegated_badge")}</span>
                   ) : (
                     <button
                       type="button"

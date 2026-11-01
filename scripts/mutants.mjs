@@ -44,6 +44,22 @@ const TX_SUMMARY = "src/lib/cardano/txSummary.ts";
 const REVIEW_OUTPUT = "src/components/wallet/ReviewOutput.tsx";
 const TX_SUMMARY_VIEW = "extension/src/TxSummaryView.tsx";
 const STORE = "src/components/wallet/uncertainStore.ts";
+// Round six: the store-readiness work. A phrase on the clipboard, the web
+// page's sentences inside the extension, and the stylesheet gate.
+const SEED_STEP = "src/components/wallet/SeedPhraseStep.tsx";
+const PANEL = "src/components/wallet/LocalWalletPanel.tsx";
+const TESTNET_BADGE = "src/components/wallet/TestnetBadge.tsx";
+const CSS_GATE = "scripts/check-popup-css.mjs";
+const LOCALES_GATE = "scripts/check-locales.mjs";
+const BALANCE = "src/components/wallet/BalanceView.tsx";
+const POPUP_CSS = "extension/src/popup.css";
+const COPY_BTN = "src/components/CopyBtn.tsx";
+const WALLET_HUB = "src/components/wallet/WalletHub.tsx";
+// The copy-button guard's own lists, which a mutant edits the way an author
+// would to make a new component look declared.
+const COPY_GUARD_TEST = "src/components/wallet/__tests__/SeedPhraseStep.test.tsx";
+const COPYABLE_ANCHOR = '    "src/components/wallet/WatchOnlyPanel.tsx#WatchOnlyPanel: watched",';
+const FORWARDS_ANCHOR = '    "src/components/wallet/WalletTabs.tsx#WalletTabs: port",\n  ];';
 // A gate is worth mutating too. "Is this guard pinned" and "is the thing that
 // checks the guard pinned" are different questions, and the second one has gone
 // unanswered here before: two table rows named after a detector were going red
@@ -59,6 +75,10 @@ const TESTS = [
   "src/lib/cardano/__tests__/txSummary.test.ts",
   "src/components/wallet/__tests__/ReviewOutput.test.tsx",
   "extension/src/__tests__/TxSummaryView.test.tsx",
+  "src/components/wallet/__tests__/SeedPhraseStep.test.tsx",
+  "src/components/wallet/__tests__/LocalWalletPanel.context.test.tsx",
+  "scripts/__tests__/checkPopupCss.test.ts",
+  "scripts/__tests__/checkLocales.test.ts",
 ];
 
 /**
@@ -67,6 +87,93 @@ const TESTS = [
  * measuring nothing, which is the failure mode it was written to prevent.
  */
 const MUTANTS = [
+  // ── Round six: a recovery phrase must not reach the clipboard; the popup must
+  // not say the web page's sentences; the stylesheet gate must actually gate ──
+  {
+    name: "a copy button for the recovery phrase is back on the words screen",
+    file: SEED_STEP,
+    from: "        <button className={primaryCls} onClick={onNext}>",
+    to:
+      "        <button aria-label=\"Copy\" onClick={() => void navigator.clipboard.writeText(phrase)}>⧉</button>\n" +
+      "        <button className={primaryCls} onClick={onNext}>",
+  },
+  {
+    name: "the panel hands the phrase to a copy button outside the words screen",
+    file: PANEL,
+    from: '      {step === "words" && (\n        <SeedPhraseStep',
+    to:
+      '      {step === "words" && <CopyBtn value={phrase} />}\n' +
+      '      {step === "words" && (\n        <SeedPhraseStep',
+  },
+  {
+    // The name a deny-list of `phrase|mnemonic|words` never matches.
+    name: "the reveal screen for an existing wallet gets a copy button for the phrase",
+    file: PANEL,
+    from: '                  <code className="mono block break-words text-xs">{revealed}</code>',
+    to:
+      '                  <code className="mono block break-words text-xs">{revealed}</code>\n' +
+      "                  <CopyBtn value={revealed} />",
+  },
+  {
+    name: "css gate: a spread onto a DOM element is no longer counted as unreadable",
+    file: CSS_GATE,
+    from: "    } else if (ts.isJsxSpreadAttribute(n) && /^[a-z]/.test(n.parent.parent.tagName.getText(sf))) {",
+    to: "    } else if (false) {",
+  },
+  {
+    name: "css gate: a spread onto a component is counted too, so the ceiling is blown by props",
+    file: CSS_GATE,
+    from: "    } else if (ts.isJsxSpreadAttribute(n) && /^[a-z]/.test(n.parent.parent.tagName.getText(sf))) {",
+    to: "    } else if (ts.isJsxSpreadAttribute(n)) {",
+  },
+  {
+    name: "the extension shows the web page's long risk paragraph again",
+    file: PANEL,
+    from: "      {isExtensionContext() ? (",
+    to: "      {false ? (",
+  },
+  {
+    name: "the extension shows the web intro ('no extension needed') again",
+    file: PANEL,
+    from: 't(isExtensionContext() ? "local_intro_ext" : "local_intro")',
+    to: 't("local_intro")',
+  },
+  {
+    name: "the test-network reminder is shown on mainnet too",
+    file: TESTNET_BADGE,
+    from: "  if (network === 1) return null;\n",
+    to: "",
+  },
+  {
+    name: "popup.css loses a rule the tab row needs (overflow-x-auto) — the gate must go red",
+    file: POPUP_CSS,
+    from: ".overflow-x-auto { overflow-x: auto; }\n",
+    to: "",
+  },
+  {
+    name: "css gate: a used class with no rule is no longer reported",
+    file: CSS_GATE,
+    from: "    missing.push({ token, file });",
+    to: "    void file;",
+  },
+  {
+    name: "css gate: every `variant:` token is exempt, not just breakpoints",
+    file: CSS_GATE,
+    from: "const BREAKPOINT_VARIANT = /^(sm|md|lg|xl|2xl):/;",
+    to: "const BREAKPOINT_VARIANT = /^[a-z0-9-]+:/;",
+  },
+  {
+    name: "css gate: stops following imports, so only the entry file is read",
+    file: CSS_GATE,
+    from: "      else if (p) queue.push(p);",
+    to: "      else if (p) void p;",
+  },
+  {
+    name: "css gate: a class list kept in a constant is no longer read",
+    file: CSS_GATE,
+    from: "          pieces.push(...via);",
+    to: "          void via;",
+  },
   // ── Round five: the remaining text checks, and the half of the pair that
   // was never held to the same standard as the other half ──
   {
@@ -407,6 +514,292 @@ const MUTANTS = [
     from: "${assetLabel(n)}",
     to: '${assetLabel(n).split(" · ")[0]}',
   },
+  {
+    name: "a component that forwards its prop to a copy button is handed the revealed phrase",
+    file: PANEL,
+    from: "address={primaryAddress(account)}",
+    to: 'address={revealed ?? ""}',
+  },
+  {
+    name: "a second file writes the clipboard itself, the legacy way",
+    file: SEND,
+    from: "<CopyBtn value={txHash} />",
+    to: "<CopyBtn value={txHash} />{void document.execCommand}",
+  },
+  {
+    name: "a copy button reached under another name, out of sight of the value list",
+    file: BALANCE,
+    from: "<CopyBtn value={address} />",
+    to: '{[CopyBtn].map((C) => <C key="c" value={address} />)}',
+  },
+  {
+    // A text-level comment stripper reads `image/*` as a comment opening and
+    // swallows everything up to the next `*/`.
+    name: "a copy button for the phrase sits between `image/*` and a JSX comment",
+    file: PANEL,
+    from: '                  <code className="mono block break-words text-xs">{revealed}</code>',
+    to:
+      '                  <code className="mono block break-words text-xs">{revealed}</code>\n' +
+      '                  <input type="file" accept="image/*" hidden />\n' +
+      "                  <CopyBtn value={revealed} />\n" +
+      "                  {/* end */}",
+  },
+  {
+    // `[^>]*` stops at the `>` of `=>`, before the prop that matters.
+    name: "a forwarder is handed the phrase after a prop that contains an arrow",
+    file: PANEL,
+    from: "              network={account.network}\n              address={primaryAddress(account)}",
+    to: '              network={account.network}\n              key={[0].map((x) => x).join()}\n              address={revealed ?? ""}',
+  },
+  {
+    name: "a forwarder imported under another name",
+    file: PANEL,
+    from: 'import { BalanceView, type DisplayAsset } from "./BalanceView";',
+    to: 'import { BalanceView as Balance, type DisplayAsset } from "./BalanceView";\nconst BalanceView = Balance;',
+  },
+  {
+    // `PhoenixCustodyPanel` copies a value derived from its `did` prop; nothing
+    // declared it as forwarding, so what a caller handed it was never read.
+    name: "a component that copies something derived from its prop is handed something off the list",
+    file: WALLET_HUB,
+    from: "<PhoenixCustodyPanel did={did} />",
+    to: '<PhoenixCustodyPanel did={sessionStorage.getItem("phrase") ?? ""} />',
+  },
+  {
+    name: "a second component in a file already on the list forwards its prop to a copy button",
+    file: BALANCE,
+    from: "export function BalanceView({",
+    to:
+      "export function AddressLine({ address }: { address: string }) {\n" +
+      "  return <CopyBtn value={address} />;\n" +
+      "}\n\n" +
+      "export function BalanceView({",
+  },
+  {
+    name: "the copy button's file exports a helper that copies whatever it is given",
+    file: COPY_BTN,
+    from: "export function CopyBtn({",
+    to:
+      "export async function copyText(v: string) {\n" +
+      "  await navigator.clipboard.writeText(v);\n" +
+      "}\n\n" +
+      "export function CopyBtn({",
+  },
+  // The five below each take more than one edit: the component, and the line in
+  // the test's lists an author would add so the component looks declared.
+  {
+    name: "a copy button behind memo(forwardRef(…)), declared only as copyable",
+    edits: [
+      {
+        file: BALANCE,
+        from: "export function BalanceView({",
+        to:
+          "export const AddressChip = memo(forwardRef<HTMLSpanElement, { address: string }>(({ address }, ref) => (\n" +
+          "  <span ref={ref}><CopyBtn value={address} /></span>\n" +
+          ")));\n\n" +
+          "export function BalanceView({",
+      },
+      { file: BALANCE, from: 'import { FiatValue } from "./FiatValue";', to: 'import { FiatValue } from "./FiatValue";\nimport { forwardRef, memo } from "react";' },
+      { file: COPY_GUARD_TEST, from: COPYABLE_ANCHOR, to: `${COPYABLE_ANCHOR}\n    "${BALANCE}#AddressChip: address",` },
+    ],
+  },
+  {
+    name: "a copy button in a class component, declared only as copyable",
+    edits: [
+      {
+        file: BALANCE,
+        from: "export function BalanceView({",
+        to:
+          "export class TxRow extends Component<{ txHash: string }> {\n" +
+          "  render() {\n" +
+          "    return <CopyBtn value={this.props.txHash} />;\n" +
+          "  }\n" +
+          "}\n\n" +
+          "export function BalanceView({",
+      },
+      { file: BALANCE, from: 'import { FiatValue } from "./FiatValue";', to: 'import { FiatValue } from "./FiatValue";\nimport { Component } from "react";' },
+      { file: COPY_GUARD_TEST, from: COPYABLE_ANCHOR, to: `${COPYABLE_ANCHOR}\n    "${BALANCE}#TxRow: this.props.txHash",` },
+    ],
+  },
+  {
+    name: "a declared forwarder is handed the phrase as its children",
+    edits: [
+      {
+        file: BALANCE,
+        from: "export function BalanceView({",
+        to:
+          "export function CopyChip({ children }: { children: string }) {\n" +
+          "  return <CopyBtn value={children} />;\n" +
+          "}\n\n" +
+          "export function BalanceView({",
+      },
+      {
+        file: PANEL,
+        from: 'import { BalanceView, type DisplayAsset } from "./BalanceView";',
+        to: 'import { BalanceView, CopyChip, type DisplayAsset } from "./BalanceView";',
+      },
+      {
+        file: PANEL,
+        from: '                  <code className="mono block break-words text-xs">{revealed}</code>',
+        to:
+          '                  <code className="mono block break-words text-xs">{revealed}</code>\n' +
+          '                  <CopyChip>{revealed ?? ""}</CopyChip>',
+      },
+      { file: COPY_GUARD_TEST, from: COPYABLE_ANCHOR, to: `${COPYABLE_ANCHOR}\n    "${BALANCE}#CopyChip: children",` },
+      { file: COPY_GUARD_TEST, from: FORWARDS_ANCHOR, to: `    "${BALANCE}#CopyChip: children",\n${FORWARDS_ANCHOR}` },
+    ],
+  },
+  {
+    name: "a copy button fed by a for…of over a prop, declared only as copyable",
+    edits: [
+      {
+        file: BALANCE,
+        from: "export function BalanceView({",
+        to:
+          "export function TxList({ txs }: { txs: string[] }) {\n" +
+          "  const rows = [];\n" +
+          "  for (const txHash of txs) rows.push(<CopyBtn key={txHash} value={txHash} />);\n" +
+          "  return <>{rows}</>;\n" +
+          "}\n\n" +
+          "export function BalanceView({",
+      },
+      { file: COPY_GUARD_TEST, from: COPYABLE_ANCHOR, to: `${COPYABLE_ANCHOR}\n    "${BALANCE}#TxList: txHash",` },
+    ],
+  },
+  {
+    name: "a local function named t reaches the clipboard by a string",
+    file: BALANCE,
+    from: "export function BalanceView({",
+    to:
+      "const t = (k: string) => (navigator as unknown as Record<string, Clipboard>)[k];\n" +
+      "export const copyAny = (v: string) => t(\"clipboard\").writeText(v);\n\n" +
+      "export function BalanceView({",
+  },
+  // A component of its own inside the panel: `port` is an allowed value there,
+  // and the phrase arrives as the inner function's parameter of that name.
+  ...[
+    ["an arrow component", "  const Chip = ({ port }: { port: string }) => <CopyBtn value={port} />;", '<Chip port={revealed ?? ""} />'],
+    ["a helper function", "  function chip(port: string) {\n    return <CopyBtn value={port} />;\n  }", '{chip(revealed ?? "")}'],
+    ["a useCallback", "  const chip = useCallback((port: string) => <CopyBtn value={port} />, []);", '{chip(revealed ?? "")}'],
+  ].map(([what, decl, use]) => ({
+    name: `${what} inside the panel hands the phrase to a copy button as port`,
+    edits: [
+      {
+        file: PANEL,
+        from: "  const [revealed, setRevealed] = useState<string | null>(null);",
+        to: `  const [revealed, setRevealed] = useState<string | null>(null);\n${decl}`,
+      },
+      {
+        file: PANEL,
+        from: '                  <code className="mono block break-words text-xs">{revealed}</code>',
+        to: `                  <code className="mono block break-words text-xs">{revealed}</code>\n                  ${use}`,
+      },
+    ],
+  })),
+  // A component that copies something from its props by a road the guard has
+  // to follow, declared only as copyable: it must show up as a forwarder.
+  ...[
+    [
+      "set by a setter handed by reference",
+      '  const [shown, setShown] = useState("");\n  useEffect(() => {\n    void Promise.resolve(secret).then(setShown);\n  }, [secret]);\n  return <CopyBtn value={shown} />;',
+      "shown",
+    ],
+    [
+      "set by a setter handed to another element",
+      '  const [shown, setShown] = useState("");\n  return (\n    <>\n      <Echo value={secret} onDone={setShown} />\n      <CopyBtn value={shown} />\n    </>\n  );',
+      "shown",
+    ],
+    [
+      "set by a setter kept where the test cannot follow it",
+      '  const [shown, setShown] = useState("");\n  (window as unknown as Record<string, unknown>).later = { setShown, secret };\n  return <CopyBtn value={shown} />;',
+      "shown",
+    ],
+    ["assigned by a for…of with no declaration", '  let shown = "";\n  for (shown of [secret]) break;\n  return <CopyBtn value={shown} />;', "shown"],
+    ["built with +=", '  let shown = "";\n  shown += secret;\n  return <CopyBtn value={shown} />;', "shown"],
+    ["destructured by assignment", '  let shown = "";\n  [shown] = [secret];\n  return <CopyBtn value={shown} />;', "shown"],
+    ["the parameter of Array.from's callback", "  return <>{Array.from([secret], (s) => <CopyBtn key={s} value={s} />)}</>;", "s"],
+    [
+      "set by a setter wrapped in an arrow on another element",
+      '  const [shown, setShown] = useState("");\n  return (\n    <>\n      <Echo value={secret} onDone={(v: string) => setShown(v)} />\n      <CopyBtn value={shown} />\n    </>\n  );',
+      "shown",
+    ],
+    [
+      "set by a named handler handed to another element",
+      '  const [shown, setShown] = useState("");\n  const keep = (v: string) => setShown(v);\n  return (\n    <>\n      <Echo value={secret} onDone={keep} />\n      <CopyBtn value={shown} />\n    </>\n  );',
+      "shown",
+    ],
+    [
+      "set by a handler kept where the test cannot follow it",
+      '  const [shown, setShown] = useState("");\n  (window as unknown as Record<string, unknown>).later = { secret, keep: (v: string) => setShown(v) };\n  return <CopyBtn value={shown} />;',
+      "shown",
+    ],
+    ["returned by a nested function", "  function current() {\n    return secret;\n  }\n  return <CopyBtn value={current()} />;", "current()"],
+    ["kept by push", "  const kept: string[] = [];\n  kept.push(secret);\n  return <CopyBtn value={kept[0]} />;", "kept[0]"],
+    ["kept by Object.assign", '  const box = { v: "" };\n  Object.assign(box, { v: secret });\n  return <CopyBtn value={box.v} />;', "box.v"],
+    [
+      "kept by Map.set",
+      "  const m = new Map<string, string>();\n  m.set('k', secret);\n  return <CopyBtn value={m.get('k') ?? ''} />;",
+      "m.get('k') ?? ''",
+    ],
+  ].map(([what, body, value]) => ({
+    name: `a copy button fed from a prop ${what}, declared only as copyable`,
+    edits: [
+      {
+        file: BALANCE,
+        from: "export function BalanceView({",
+        to: `export function Shown({ secret }: { secret: string }) {\n${body}\n}\n\nexport function BalanceView({`,
+      },
+      {
+        file: BALANCE,
+        from: 'import { FiatValue } from "./FiatValue";',
+        to: 'import { FiatValue } from "./FiatValue";\nimport { useEffect, useState } from "react";',
+      },
+      { file: COPY_GUARD_TEST, from: COPYABLE_ANCHOR, to: `${COPYABLE_ANCHOR}\n    "${BALANCE}#Shown: ${value}",` },
+    ],
+  })),
+  // In a file with no copy button yet, so nothing else it already holds goes
+  // missing when the import is not followed.
+  {
+    name: "a copy button imported as CopyBtn.js and fed from a prop, declared only as copyable",
+    edits: [
+      {
+        file: TESTNET_BADGE,
+        from: 'import type { PhoenixNetwork } from "@/lib/cardano";',
+        to:
+          'import type { PhoenixNetwork } from "@/lib/cardano";\n' +
+          'import { CopyBtn } from "@/components/CopyBtn.js";\n\n' +
+          "export function Shown({ secret }: { secret: string }) {\n" +
+          "  return <CopyBtn value={secret} />;\n" +
+          "}",
+      },
+      { file: COPY_GUARD_TEST, from: COPYABLE_ANCHOR, to: `${COPYABLE_ANCHOR}\n    "${TESTNET_BADGE}#Shown: secret",` },
+    ],
+  },
+  // Needs no line in the list at all: the button arrives under a name the
+  // value list never reads, from a path no import spells out.
+  {
+    name: "a copy button loaded by import() from a path built at run time",
+    edits: [
+      {
+        file: TESTNET_BADGE,
+        from: 'import type { PhoenixNetwork } from "@/lib/cardano";',
+        to:
+          'import type { PhoenixNetwork } from "@/lib/cardano";\n' +
+          'import { lazy } from "react";\n\n' +
+          'const part = "CopyBtn";\n' +
+          "const Lazy = lazy(() => import(`../${part}.tsx`).then((m) => ({ default: m[part] })));\n\n" +
+          "export function Shown({ secret }: { secret: string }) {\n" +
+          "  return <Lazy value={secret} />;\n" +
+          "}",
+      },
+    ],
+  },
+  {
+    name: "a locale file that parses to null passes as a namespace with no keys",
+    file: LOCALES_GATE,
+    from: 'if (json === null || typeof json !== "object" || Array.isArray(json)) {',
+    to: "if (false) {",
+  },
 ];
 
 /**
@@ -431,8 +824,9 @@ const write = (rel, text) => writeFileSync(join(REPO, rel), text);
 const runTests = () =>
   spawnSync("npx", ["vitest", "run", ...TESTS], { cwd: REPO, encoding: "utf8" }).status ?? 1;
 
+const editsOf = (m) => m.edits ?? [m];
 const originals = new Map();
-for (const m of MUTANTS) if (!originals.has(m.file)) originals.set(m.file, read(m.file));
+for (const m of MUTANTS) for (const e of editsOf(m)) if (!originals.has(e.file)) originals.set(e.file, read(e.file));
 const restoreAll = () => {
   for (const [rel, text] of originals) write(rel, text);
 };
@@ -456,16 +850,26 @@ try {
   }
 
   for (const m of MUTANTS) {
-    const src = originals.get(m.file);
-    const hits = src.split(m.from).length - 1;
-    if (hits !== 1) {
-      console.error(`  ANCHOR  ← ${m.name}\n          (matched ${hits}× in ${m.file}; expected 1)`);
+    // Edits apply in order, each to the file as the previous ones left it.
+    const next = new Map();
+    let miss;
+    for (const e of editsOf(m)) {
+      const src = next.get(e.file) ?? originals.get(e.file);
+      const hits = src.split(e.from).length - 1;
+      if (hits !== 1) {
+        miss = `matched ${hits}× in ${e.file}; expected 1`;
+        break;
+      }
+      next.set(e.file, src.replace(e.from, e.to));
+    }
+    if (miss) {
+      console.error(`  ANCHOR  ← ${m.name}\n          (${miss})`);
       unanchored += 1;
       continue;
     }
-    write(m.file, src.replace(m.from, m.to));
+    for (const [rel, text] of next) write(rel, text);
     const caught = runTests() !== 0;
-    write(m.file, src);
+    for (const rel of next.keys()) write(rel, originals.get(rel));
     console.log(`  ${caught ? "RED   " : "GREEN "}  ← ${m.name}`);
     if (!caught) survived += 1;
   }

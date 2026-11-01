@@ -213,8 +213,8 @@
   "connect_embedded_soon": "Sắp ra mắt",
   "connect_embedded_note": "Trình duyệt dApp tích hợp trong app đang được xây dựng. Hiện tại, hãy dùng nút Mở ở trên để vào dApp ở tab mới.",
   "connect_embedded_open": "Mở (chưa khả dụng)",
-  "network_preprod": "Preprod",
-  "network_preview": "Preview",
+  "network_preprod": "Mạng thử Preprod — ADA không có giá trị",
+  "network_preview": "Mạng thử Preview — ADA không có giá trị",
   "tab_send": "Gửi",
   "tab_receive": "Nhận",
   "tab_history": "Lịch sử",
@@ -398,5 +398,11 @@
   "hist_shown_recent": "Đang hiện {{count}} giao dịch gần nhất.",
   "hist_show_more": "Xem thêm",
   "local_account_empty_note": "Tài khoản {{n}} đang trống. Một tài khoản mới tinh trông đúng như vậy — các tài khoản khác của bạn không bị đụng tới, không có gì bị chuyển đi.",
-  "local_account_back_zero": "Quay lại Tài khoản 0"
+  "local_account_back_zero": "Quay lại Tài khoản 0",
+  "network_testnet_badge": "Mạng thử {{name}} — ADA ở đây không có giá trị thật",
+  "local_risk_ext": "Khoá của bạn được cất trên máy này, mã hoá bằng mật khẩu của bạn. Bản thử nghiệm này chưa qua kiểm toán: chỉ giữ số tiền bạn chấp nhận mất.",
+  "local_intro_ext": "Tạo ví ngay tại đây, được bảo vệ bằng mật khẩu bạn chọn. Cụm từ khôi phục theo chuẩn BIP-39 nên cũng mở được trong Lace, Eternl hoặc Yoroi.",
+  "popup_title": "Phoenix Wallet",
+  "popup_tagline": "Mã nguồn mở (Apache-2.0) · bạn tự giữ khoá",
+  "popup_footer": "Bản thử nghiệm, chưa kiểm toán. Hãy thử trên mạng thử trước khi dùng tiền thật."
 }

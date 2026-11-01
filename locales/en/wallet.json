@@ -213,8 +213,8 @@
   "connect_embedded_soon": "Coming soon",
   "connect_embedded_note": "An in-app dApp browser is being built. For now, use the Open button above to visit dApps in a new tab.",
   "connect_embedded_open": "Open (not available yet)",
-  "network_preprod": "Preprod",
-  "network_preview": "Preview",
+  "network_preprod": "Preprod — test network, coins have no value",
+  "network_preview": "Preview — test network, coins have no value",
   "tab_send": "Send",
   "tab_receive": "Receive",
   "tab_history": "History",
@@ -398,5 +398,11 @@
   "hist_shown_recent": "Showing the {{count}} most recent transactions.",
   "hist_show_more": "Show more",
   "local_account_empty_note": "Account {{n}} is empty. A brand-new account looks exactly like this — your other accounts are untouched, and nothing was moved.",
-  "local_account_back_zero": "Back to Account 0"
+  "local_account_back_zero": "Back to Account 0",
+  "network_testnet_badge": "Test network ({{name}}) — coins here have no real value",
+  "local_risk_ext": "Your key is stored on this device, encrypted with your password. This beta is unaudited: keep only amounts you can afford to lose.",
+  "local_intro_ext": "Create a wallet here, protected by a password you choose. The recovery phrase is standard BIP-39, so it also opens in Lace, Eternl or Yoroi.",
+  "popup_title": "Phoenix Wallet",
+  "popup_tagline": "Open source (Apache-2.0) · you hold the keys",
+  "popup_footer": "Beta, unaudited. Try it on a test network before trusting it with real funds."
 }

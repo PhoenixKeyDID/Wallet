@@ -19,12 +19,13 @@
  */
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { I18nextProvider } from "react-i18next";
+import { I18nextProvider, useTranslation } from "react-i18next";
 import { i18n } from "./i18n";
 import { LocalWalletPanel } from "../../src/components/wallet/LocalWalletPanel";
 import "./popup.css";
 
 function App() {
+  const { t } = useTranslation("wallet");
   return (
     <div className="popup">
       <header className="popup-head">
@@ -32,17 +33,15 @@ function App() {
           🔑
         </span>
         <div>
-          <h1>Phoenix Wallet</h1>
-          <p>Apache-2.0 · self-custody</p>
+          <h1>{t("popup_title")}</h1>
+          <p>{t("popup_tagline")}</p>
         </div>
       </header>
       <main>
         <LocalWalletPanel />
       </main>
       <footer>
-        <p>
-          Beta, unaudited. Test on preprod before trusting it with real funds.
-        </p>
+        <p>{t("popup_footer")}</p>
       </footer>
     </div>
   );
