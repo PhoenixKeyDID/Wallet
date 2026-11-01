@@ -675,6 +675,83 @@ const MUTANTS = [
       "export const copyAny = (v: string) => t(\"clipboard\").writeText(v);\n\n" +
       "export function BalanceView({",
   },
+  // A component of its own inside the panel: `port` is an allowed value there,
+  // and the phrase arrives as the inner function's parameter of that name.
+  ...[
+    ["an arrow component", "  const Chip = ({ port }: { port: string }) => <CopyBtn value={port} />;", '<Chip port={revealed ?? ""} />'],
+    ["a helper function", "  function chip(port: string) {\n    return <CopyBtn value={port} />;\n  }", '{chip(revealed ?? "")}'],
+    ["a useCallback", "  const chip = useCallback((port: string) => <CopyBtn value={port} />, []);", '{chip(revealed ?? "")}'],
+  ].map(([what, decl, use]) => ({
+    name: `${what} inside the panel hands the phrase to a copy button as port`,
+    edits: [
+      {
+        file: PANEL,
+        from: "  const [revealed, setRevealed] = useState<string | null>(null);",
+        to: `  const [revealed, setRevealed] = useState<string | null>(null);\n${decl}`,
+      },
+      {
+        file: PANEL,
+        from: '                  <code className="mono block break-words text-xs">{revealed}</code>',
+        to: `                  <code className="mono block break-words text-xs">{revealed}</code>\n                  ${use}`,
+      },
+    ],
+  })),
+  // A component that copies something from its props by a road the guard has
+  // to follow, declared only as copyable: it must show up as a forwarder.
+  ...[
+    [
+      "set by a setter handed by reference",
+      '  const [shown, setShown] = useState("");\n  useEffect(() => {\n    void Promise.resolve(secret).then(setShown);\n  }, [secret]);\n  return <CopyBtn value={shown} />;',
+      "shown",
+    ],
+    [
+      "set by a setter handed to another element",
+      '  const [shown, setShown] = useState("");\n  return (\n    <>\n      <Echo value={secret} onDone={setShown} />\n      <CopyBtn value={shown} />\n    </>\n  );',
+      "shown",
+    ],
+    [
+      "set by a setter kept where the test cannot follow it",
+      '  const [shown, setShown] = useState("");\n  (window as unknown as Record<string, unknown>).later = { setShown, secret };\n  return <CopyBtn value={shown} />;',
+      "shown",
+    ],
+    ["assigned by a for…of with no declaration", '  let shown = "";\n  for (shown of [secret]) break;\n  return <CopyBtn value={shown} />;', "shown"],
+    ["built with +=", '  let shown = "";\n  shown += secret;\n  return <CopyBtn value={shown} />;', "shown"],
+    ["destructured by assignment", '  let shown = "";\n  [shown] = [secret];\n  return <CopyBtn value={shown} />;', "shown"],
+    ["the parameter of Array.from's callback", "  return <>{Array.from([secret], (s) => <CopyBtn key={s} value={s} />)}</>;", "s"],
+  ].map(([what, body, value]) => ({
+    name: `a copy button fed from a prop ${what}, declared only as copyable`,
+    edits: [
+      {
+        file: BALANCE,
+        from: "export function BalanceView({",
+        to: `export function Shown({ secret }: { secret: string }) {\n${body}\n}\n\nexport function BalanceView({`,
+      },
+      {
+        file: BALANCE,
+        from: 'import { FiatValue } from "./FiatValue";',
+        to: 'import { FiatValue } from "./FiatValue";\nimport { useEffect, useState } from "react";',
+      },
+      { file: COPY_GUARD_TEST, from: COPYABLE_ANCHOR, to: `${COPYABLE_ANCHOR}\n    "${BALANCE}#Shown: ${value}",` },
+    ],
+  })),
+  // In a file with no copy button yet, so nothing else it already holds goes
+  // missing when the import is not followed.
+  {
+    name: "a copy button imported as CopyBtn.js and fed from a prop, declared only as copyable",
+    edits: [
+      {
+        file: TESTNET_BADGE,
+        from: 'import type { PhoenixNetwork } from "@/lib/cardano";',
+        to:
+          'import type { PhoenixNetwork } from "@/lib/cardano";\n' +
+          'import { CopyBtn } from "@/components/CopyBtn.js";\n\n' +
+          "export function Shown({ secret }: { secret: string }) {\n" +
+          "  return <CopyBtn value={secret} />;\n" +
+          "}",
+      },
+      { file: COPY_GUARD_TEST, from: COPYABLE_ANCHOR, to: `${COPYABLE_ANCHOR}\n    "${TESTNET_BADGE}#Shown: secret",` },
+    ],
+  },
   {
     name: "a locale file that parses to null passes as a namespace with no keys",
     file: LOCALES_GATE,

@@ -231,14 +231,19 @@ describe("recovery phrase screen", () => {
     return { name: "<module>" };
   };
 
+  /** Taint of state whose setter is handed somewhere the test cannot follow. */
+  const UNSEEN = "<unseen>";
   /**
    * For one component: every name in its body that holds something from its
-   * props, mapped to the props it came from. A destructured prop, a variable
-   * computed from one (`const sessionDid = did?.trim()`), a callback parameter
-   * of a method called on one (`rows.map((r) => …)`), the variable of a
-   * `for…of` / `for…in` over one, and state a `useState` setter is handed one.
-   * `*` is the whole props object. Over-counts on shadowing, which can only add
-   * a forwarder.
+   * props, mapped to the props it came from. A destructured prop, a name
+   * assigned from one by any assignment (`const sessionDid = did?.trim()`,
+   * `s += did`, `[s] = [did]`), the parameters of a function handed to a call
+   * that is also handed one (`rows.map((r) => …)`, `Array.from(xs, cb)`), the
+   * variable of a `for…of` / `for…in` over one, and state whose setter is
+   * called with one, passed by reference to such a call, or handed as a JSX
+   * prop (then it holds what that element is handed). A setter of a component
+   * with props handed anywhere else marks its state `UNSEEN`. `*` is the whole
+   * props object. Over-counts on shadowing, which can only add a forwarder.
    */
   const fromProps = (fn: NonNullable<Owner["fn"]>) => {
     const taint = new Map<string, Set<string>>();
@@ -298,38 +303,97 @@ describe("recovery phrase screen", () => {
       ts.forEachChild(n, findSetters);
     };
     if (fn.body) findSetters(fn.body);
+    /** What a call hands a function given to it: the object it is called on and its other arguments. */
+    const handedBy = (call: ts.CallExpression, skip: ts.Node) => {
+      const t = new Set<string>();
+      if (ts.isPropertyAccessExpression(call.expression)) for (const p of of(call.expression.expression)) t.add(p);
+      for (const a of call.arguments) if (a !== skip) for (const p of of(a)) t.add(p);
+      return t;
+    };
+    /** The left of any assignment: a name, a member of one, or a pattern of them. */
+    const assign = (e: ts.Expression, t: Set<string>): boolean => {
+      if (ts.isParenthesizedExpression(e) || ts.isNonNullExpression(e) || ts.isAsExpression(e)) return assign(e.expression, t);
+      if (ts.isIdentifier(e)) return add(e.text, t);
+      if (ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) return assign(e.expression, t);
+      if (ts.isSpreadElement(e)) return assign(e.expression, t);
+      if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.EqualsToken) return assign(e.left, t);
+      let changed = false;
+      if (ts.isArrayLiteralExpression(e)) for (const el of e.elements) changed = assign(el, t) || changed;
+      if (ts.isObjectLiteralExpression(e))
+        for (const p of e.properties) {
+          if (ts.isPropertyAssignment(p)) changed = assign(p.initializer, t) || changed;
+          else if (ts.isShorthandPropertyAssignment(p)) changed = add(p.name.text, t) || changed;
+          else if (ts.isSpreadAssignment(p)) changed = assign(p.expression, t) || changed;
+        }
+      return changed;
+    };
+    // A setter handed anywhere but a call that hands it values of its own is
+    // called with something the test cannot see: its state holds `UNSEEN`.
     for (let changed = true; changed; ) {
       changed = false;
       const go = (n: ts.Node) => {
-        if ((ts.isForOfStatement(n) || ts.isForInStatement(n)) && ts.isVariableDeclarationList(n.initializer)) {
+        if (ts.isForOfStatement(n) || ts.isForInStatement(n)) {
           const t = of(n.expression);
-          if (t.size) for (const d of n.initializer.declarations) changed = bind(d.name, t) || changed;
+          if (t.size)
+            if (ts.isVariableDeclarationList(n.initializer))
+              for (const d of n.initializer.declarations) changed = bind(d.name, t) || changed;
+            else changed = assign(n.initializer, t) || changed;
         } else if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && setters.has(n.expression.text) && n.arguments[0]) {
           const t = of(n.arguments[0]);
           if (t.size) changed = bind(setters.get(n.expression.text)!, t) || changed;
+        } else if (ts.isIdentifier(n) && setters.has(n.text) && !(ts.isBindingElement(n.parent) && n.parent.name === n)) {
+          const call = n.parent;
+          if (ts.isCallExpression(call) && call.expression !== n && call.arguments.includes(n as ts.Expression)) {
+            // `.then(setShown)`: handed what the call is handed.
+            const t = handedBy(call, n);
+            if (t.size) changed = bind(setters.get(n.text)!, t) || changed;
+          } else if (!(ts.isCallExpression(call) && call.expression === n) && fn.parameters.length) {
+            // Without props there is nothing of the caller's it could be handed.
+            // `<Field onChange={setShown} … />`: handed what that element is.
+            const el = ts.isJsxExpression(call) && ts.isJsxAttribute(call.parent) ? call.parent.parent.parent : undefined;
+            const t = el ? of(ts.isJsxOpeningElement(el) ? el.parent : el) : new Set([UNSEEN]);
+            if (t.size) changed = bind(setters.get(n.text)!, t) || changed;
+          }
         }
         if (ts.isVariableDeclaration(n) && n.initializer) {
           const t = of(n.initializer);
           if (t.size) changed = bind(n.name, t) || changed;
         } else if (
           ts.isBinaryExpression(n) &&
-          n.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-          ts.isIdentifier(n.left)
+          n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+          n.operatorToken.kind <= ts.SyntaxKind.LastAssignment
         ) {
+          // `=`, `+=`, `??=`, and a pattern on the left: `[txHash] = pair`.
           const t = of(n.right);
-          if (t.size) changed = add(n.left.text, t) || changed;
-        } else if ((ts.isArrowFunction(n) || ts.isFunctionExpression(n)) && n !== fn) {
-          const call = n.parent;
-          if (ts.isCallExpression(call) && ts.isPropertyAccessExpression(call.expression)) {
-            const t = of(call.expression.expression);
-            if (t.size) for (const p of n.parameters) changed = bind(p.name, t) || changed;
-          }
+          if (t.size) changed = assign(n.left, t) || changed;
+        } else if (ts.isFunctionLike(n) && n !== fn && ts.isCallExpression(n.parent) && n.parent.arguments.includes(n as ts.Expression)) {
+          // A function handed to any call — `rows.map(cb)`, `Array.from(rows, cb)` —
+          // is taken to be called with what that call is handed.
+          const t = handedBy(n.parent, n);
+          if (t.size) for (const p of n.parameters) changed = bind(p.name, t) || changed;
         }
         ts.forEachChild(n, go);
       };
       if (fn.body) go(fn.body);
     }
     return of;
+  };
+
+  /**
+   * Calls that run a function handed to them on the spot, with values from what
+   * they are called on: the function's parameters are those values. Any other
+   * function with parameters inside a component — a component or helper of its
+   * own, `useCallback`'s — is called from somewhere the test does not follow.
+   */
+  const RUNS_CALLBACK = /^(map|flatMap|forEach|filter|find|findLast|some|every|reduce|reduceRight|then|catch)$/;
+  const runsCallback = (f: ts.Node) => {
+    const call = f.parent;
+    if (!ts.isCallExpression(call) || !call.arguments.includes(f as ts.Expression)) return false;
+    const c = call.expression;
+    return (
+      (ts.isPropertyAccessExpression(c) && RUNS_CALLBACK.test(c.name.text)) ||
+      (ts.isPropertyAccessExpression(c) && c.getText() === "Array.from")
+    );
   };
 
   /**
@@ -349,7 +413,11 @@ describe("recovery phrase screen", () => {
         ? posix.join(posix.dirname(from), spec)
         : undefined;
     if (base === undefined) return undefined;
-    return [base, ...EXTS.map((e) => base + e), ...EXTS.map((e) => `${base}/index${e}`)].find((c) => files.has(c));
+    // `./CopyBtn.js` names `./CopyBtn.tsx` to the compiler and the bundler.
+    const stem = base.replace(/\.[cm]?jsx?$/, "");
+    return [base, ...EXTS.map((e) => base + e), ...EXTS.map((e) => stem + e), ...EXTS.map((e) => `${base}/index${e}`)].find((c) =>
+      files.has(c),
+    );
   };
 
   /**
@@ -386,7 +454,7 @@ describe("recovery phrase screen", () => {
     const watched = new Map<string, Set<string>>([[`${COPY_BTN_FILE}#CopyBtn`, new Set(["value"])]]);
     let seen: string[] = [];
     let forwards: Set<string>;
-    const tainters = new Map<NonNullable<Owner["fn"]>, (e: ts.Node) => Set<string>>();
+    const tainters = new Map<NonNullable<Owner["fn"]>, ReturnType<typeof fromProps>>();
     for (let grew = true; grew; ) {
       grew = false;
       seen = [];
@@ -406,6 +474,13 @@ describe("recovery phrase screen", () => {
             seen.push(`${key}: <${tag}> sits where the test cannot read its props`);
             return;
           }
+          // A component or helper declared inside this one: its parameters are
+          // whatever its own callers hand it, which this test does not follow.
+          for (let s: ts.Node = n.parent; s !== o.fn; s = s.parent)
+            if (ts.isFunctionLike(s) && s.parameters.length && !runsCallback(s)) {
+              seen.push(`${key}: <${tag}> sits in a function inside it the test cannot see the callers of`);
+              return;
+            }
           const handed: ts.Node[] = [];
           const fnBody = o.fn;
           /**
@@ -466,9 +541,14 @@ describe("recovery phrase screen", () => {
               handed.push(ts.isJsxExpression(c) && c.expression ? c.expression : c);
             }
           if (!tainters.has(o.fn)) tainters.set(o.fn, fromProps(o.fn));
+          const taintOf = tainters.get(o.fn)!;
           for (const e of handed) {
             seen.push(`${key}: ${e.getText(sf)}`);
-            for (const p of tainters.get(o.fn)!(e)) {
+            for (const p of taintOf(e)) {
+              if (p === UNSEEN) {
+                seen.push(`${key}: ${e.getText(sf)} holds state set by a setter handed where the test cannot see what with`);
+                continue;
+              }
               forwards.add(`${key}: ${p}`);
               const ow = watched.get(key) ?? new Set<string>();
               if (!ow.has(p)) {
@@ -556,6 +636,15 @@ describe("recovery phrase screen", () => {
               p.arguments[0] === n &&
               (p.expression.kind === ts.SyntaxKind.ImportKeyword ||
                 (ts.isIdentifier(p.expression) && p.expression.text === "require"))));
+        // A source file of this repo the test cannot find from the import is a
+        // file whose components it cannot tell apart, the copy button included.
+        if (
+          loads &&
+          (n.text.startsWith(".") || n.text.startsWith("@/")) &&
+          !/\.(css|json|svg|png|jpe?g|webp|gif|html|wasm)(\?.*)?$/.test(n.text) &&
+          !resolveModule(files, rel, n.text)
+        )
+          offences.push(`${rel}:${at(sf, n)}: loads ${n.text}, which the test cannot find`);
         if (loads && watchedModule.test(n.text)) {
           const plain =
             ts.isImportDeclaration(p) &&
