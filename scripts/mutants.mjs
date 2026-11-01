@@ -890,6 +890,21 @@ const MUTANTS = [
       "  return (\n    <>\n      {secret}\n      <CopyBtn value={document.body.textContent ?? ''} />\n    </>\n  );",
       "document.body.textContent ?? ''",
     ],
+    [
+      "rebuilt by a call each letter decides, handed nothing tainted",
+      '  const A = "abcdefghijklmnopqrstuvwxyz ";\n  let out = "";\n  for (let i = 0; i < 64; i++) {\n    const k: number[] = [];\n    while (k.length < A.length && A[k.length] !== secret[i]) k.push(0);\n    out += A.charAt(k.length);\n  }\n  return <CopyBtn value={out} />;',
+      "out",
+    ],
+    [
+      "kept in sessionStorage under another name",
+      "  const s = window.sessionStorage;\n  s.setItem('k', secret);\n  return <CopyBtn value={window.sessionStorage.getItem('k') ?? ''} />;",
+      "window.sessionStorage.getItem('k') ?? ''",
+    ],
+    [
+      "kept on a global function through Reflect",
+      "  Reflect.set(parseInt, 'leak', secret);\n  return <CopyBtn value={String(Reflect.get(parseInt, 'leak'))} />;",
+      "String(Reflect.get(parseInt, 'leak'))",
+    ],
   ].map(([what, body, value]) => ({
     name: `a copy button fed from a prop ${what}, declared only as copyable`,
     edits: [
@@ -906,6 +921,36 @@ const MUTANTS = [
       { file: COPY_GUARD_TEST, from: COPYABLE_ANCHOR, to: `${COPYABLE_ANCHOR}\n    "${BALANCE}#Shown: ${value}",` },
     ],
   })),
+  // A parameter the component defaults or writes holds its own functions, not
+  // the caller's: picking one by the phrase rebuilds the phrase.
+  ...[
+    ["a second parameter with a default", "{ secret }: { secret: string }, table: Record<string, () => void> = {}"],
+    [
+      "a prop with a default",
+      "{ secret, table = {} }: { secret: string; table?: Record<string, () => void> }",
+    ],
+  ].map(([what, params]) => ({
+    name: `a copy button fed from a prop rebuilt by picking which function in ${what} to call, declared only as copyable`,
+    edits: [
+      {
+        file: BALANCE,
+        from: "export function BalanceView({",
+        to: `export function Shown(${params}) {\n  let out = "";\n  for (const ch of "abcdefghijklmnopqrstuvwxyz ") table[ch] = () => {\n    out += ch;\n  };\n  for (const c of secret) table[c]?.();\n  return <CopyBtn value={out} />;\n}\n\nexport function BalanceView({`,
+      },
+      { file: COPY_GUARD_TEST, from: COPYABLE_ANCHOR, to: `${COPYABLE_ANCHOR}\n    "${BALANCE}#Shown: out",` },
+    ],
+  })),
+  {
+    name: "a copy button reading back the page through a module-level alias of document, declared only as copyable",
+    edits: [
+      {
+        file: BALANCE,
+        from: "export function BalanceView({",
+        to: "const doc = globalThis.document;\n\nexport function Shown({ secret }: { secret: string }) {\n  return (\n    <>\n      <span>{secret}</span>\n      <CopyBtn value={doc.body.textContent ?? ''} />\n    </>\n  );\n}\n\nexport function BalanceView({",
+      },
+      { file: COPY_GUARD_TEST, from: COPYABLE_ANCHOR, to: `${COPYABLE_ANCHOR}\n    "${BALANCE}#Shown: doc.body.textContent ?? ''",` },
+    ],
+  },
   // In a file with no copy button yet, so nothing else it already holds goes
   // missing when the import is not followed.
   {

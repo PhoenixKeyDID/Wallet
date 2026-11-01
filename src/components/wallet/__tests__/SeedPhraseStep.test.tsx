@@ -410,20 +410,107 @@ describe("recovery phrase screen", () => {
      * anything kept in any store. A module's own `const LINKS = { … }` reads
      * back only what was kept in a store, not what the component shows.
      */
-    const page = (id: ts.Identifier) => {
+    const page = (id: ts.Identifier, seen = new Set<ts.Symbol>()): boolean => {
       if (!store(id)) return false;
       let s = checker!.getSymbolAtLocation(id)!;
       if (s.flags & ts.SymbolFlags.Alias) s = checker!.getAliasedSymbol(s);
-      return (s.declarations ?? []).every((d) => d.getSourceFile().hasNoDefaultLib);
+      if ((s.declarations ?? []).every((d) => d.getSourceFile().hasNoDefaultLib)) return true;
+      // `const doc = globalThis.document` at module level: the page under another name.
+      if (seen.has(s)) return false;
+      seen.add(s);
+      return sources(s).some((x) => roots(x).ids.some((r) => page(r, seen)));
     };
-    /** A name bound by `fn`'s own parameters — a prop, or what the caller handed in. */
-    const given = (id: ts.Identifier) =>
-      (checker!.getSymbolAtLocation(id)?.declarations ?? []).some((d) => {
-        for (let p: ts.Node | undefined = d; p && p !== fn; p = p.parent) if (ts.isParameter(p) && p.parent === fn) return true;
+    /** Every value a name is given: its initializer and the right of each `name = …` in its file. */
+    const assignsIn = new Map<ts.SourceFile, ts.BinaryExpression[]>();
+    const sourcesOf = new Map<ts.Symbol, ts.Expression[]>();
+    const sources = (s: ts.Symbol): ts.Expression[] => {
+      let r = sourcesOf.get(s);
+      if (r) return r;
+      r = [];
+      sourcesOf.set(s, r);
+      for (const d of s.declarations ?? []) {
+        let v: ts.Node = d;
+        while (ts.isBindingElement(v) || ts.isObjectBindingPattern(v) || ts.isArrayBindingPattern(v)) v = v.parent;
+        if (ts.isVariableDeclaration(v) && v.initializer) r.push(v.initializer);
+        const file = d.getSourceFile();
+        let all = assignsIn.get(file);
+        if (!all) {
+          const found: ts.BinaryExpression[] = [];
+          const scan = (n: ts.Node) => {
+            if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(bare(n.left))) found.push(n);
+            ts.forEachChild(n, scan);
+          };
+          scan(file);
+          assignsIn.set(file, (all = found));
+        }
+        for (const a of all) if (checker!.getSymbolAtLocation(bare(a.left)) === s) r.push(a.right);
+      }
+      return r;
+    };
+    /**
+     * What a write in `fn` may reach: the root of an assignment's left, of
+     * `++`/`--` and `delete`, of an argument, and of the object a call with
+     * arguments is made on (`table.set(c, f)`, `Object.assign(table, …)`).
+     */
+    let touched: Set<ts.Symbol> | undefined;
+    const touches = () => {
+      if (touched) return touched;
+      const t = (touched = new Set<ts.Symbol>());
+      const touch = (e: ts.Expression) => {
+        for (const id of roots(e).ids) {
+          const s = checker!.getSymbolAtLocation(id);
+          if (s) t.add(s);
+        }
+      };
+      const K = ts.SyntaxKind;
+      const go = (n: ts.Node) => {
+        if (ts.isBinaryExpression(n) && n.operatorToken.kind >= K.FirstAssignment && n.operatorToken.kind <= K.LastAssignment) touch(n.left);
+        else if ((ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) && (n.operator === K.PlusPlusToken || n.operator === K.MinusMinusToken))
+          touch(n.operand);
+        else if (ts.isDeleteExpression(n)) touch(n.expression);
+        else if (ts.isCallExpression(n) || ts.isNewExpression(n)) {
+          for (const a of n.arguments ?? []) touch(a);
+          const c = bare(n.expression);
+          if ((ts.isPropertyAccessExpression(c) || ts.isElementAccessExpression(c)) && n.arguments?.length) touch(c.expression);
+        }
+        ts.forEachChild(n, go);
+      };
+      if (fn.body) go(fn.body);
+      return t;
+    };
+    /**
+     * A name bound by `fn`'s own parameters — a prop, or what the caller handed
+     * in — that `fn` neither defaults nor writes: a parameter given a default
+     * (`table = {}`) or written (`table[ch] = () => …`) may hold the
+     * component's own functions.
+     */
+    const given = (id: ts.Identifier) => {
+      const s = checker!.getSymbolAtLocation(id);
+      if (!s || touches().has(s)) return false;
+      return (s.declarations ?? []).some((d) => {
+        for (let p: ts.Node | undefined = d; p && p !== fn; p = p.parent) {
+          if ((ts.isBindingElement(p) || ts.isParameter(p)) && p.initializer) return false;
+          if (ts.isParameter(p) && p.parent === fn) return true;
+        }
         return false;
       });
+    };
+    /**
+     * A store, or a name given one (`const s = window.sessionStorage`): writing
+     * into it keeps the value for any other code. `lang` counts the language's
+     * own names, which keep what is set on them but not what a call is handed.
+     */
+    const holder = (id: ts.Identifier, lang: boolean, seen = new Set<ts.Symbol>()): boolean => {
+      if (store(id) || (lang && language(id))) return true;
+      const s = checker!.getSymbolAtLocation(id);
+      if (!s || seen.has(s)) return false;
+      seen.add(s);
+      return sources(s).some((x) => roots(x).ids.some((r) => holder(r, lang, seen)));
+    };
     /** Whether what `e` evaluates to may be a store, so that writing into it keeps the value for any other code. */
-    const held = (e: ts.Expression) => roots(e).ids.some((id) => store(id) || language(id));
+    const held = (e: ts.Expression) => roots(e).ids.some((id) => holder(id, true));
+    /** A call made through one of the language's names: `Reflect.set(…)`, `Object.defineProperty(…)`. */
+    const byLanguage = (call: ts.CallExpression | ts.NewExpression) => roots(bare(call.expression)).ids.some(language);
     const poisoned = new Set<string>();
     const poison = (t: Iterable<string>) => {
       const before = poisoned.size;
@@ -471,6 +558,13 @@ describe("recovery phrase screen", () => {
           for (const p of tainted(n.text) ?? []) out.add(p);
           if (!shadow.has(n.text) && (store(n) || language(n))) for (const p of taint.get(WORLD) ?? []) out.add(p);
           if (!shadow.has(n.text) && page(n)) for (const p of taint.get(DOM) ?? []) out.add(p);
+          // `parseInt.leak`, `Reflect.get(parseInt, "leak")`: a function outside the
+          // component is an object too, and what was set on it reads back.
+          const up = n.parent;
+          const member = (ts.isPropertyAccessExpression(up) || ts.isElementAccessExpression(up)) && up.expression === n;
+          const asked = ts.isCallExpression(up) && up.arguments.includes(n) && byLanguage(up);
+          if (!shadow.has(n.text) && outside(n) && !store(n) && ((member && !(ts.isCallExpression(up.parent) && up.parent.expression === up)) || asked))
+            for (const p of taint.get(WORLD) ?? []) out.add(p);
         }
         ts.forEachChild(n, (c) => go(c, shadow));
       };
@@ -607,7 +701,8 @@ describe("recovery phrase screen", () => {
       const e = bare(x);
       // `sessionStorage.k = secret`, `document.title = secret`, `Math.k = secret`:
       // kept where any other global name may read it.
-      const world = (o: ts.Expression, k: Set<string>) => held(o) && k.size > 0 && add(WORLD, k);
+      // `parseInt.leak = secret` too: a function outside the component is an object.
+      const world = (o: ts.Expression, k: Set<string>) => (held(o) || roots(o).ids.some(outside)) && k.size > 0 && add(WORLD, k);
       if (ts.isIdentifier(e)) return [world(e, t), add(e.text, t)].some(Boolean);
       if (ts.isPropertyAccessExpression(e)) return [world(e.expression, t), into(e.expression, t, true)].some(Boolean);
       // `keys[secret] = true`: the key is kept as much as the value is.
@@ -822,7 +917,9 @@ describe("recovery phrase screen", () => {
           if (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee)) handed.push(callee.expression);
           const t = new Set<string>();
           for (const a of handed) for (const p of of(a)) t.add(p);
-          if (t.size) for (const p of decides(n)) t.add(p);
+          // `while (A[k.length] !== secret[i]) k.push(0)`: a call the secret decides
+          // writes what decided it, whatever it is handed.
+          for (const p of decides(n)) t.add(p);
           if (t.size)
             for (const a of handed) {
               changed = into(a, t, false) || changed;
@@ -830,7 +927,10 @@ describe("recovery phrase screen", () => {
               // module-level `cache`: kept where any other global name may read it.
               // `Reflect.set(Math, "k", secret)` too; but `Math.max(a, b)` keeps
               // nothing in `Math`, so a language name counts only as an argument.
-              const kept = n.arguments?.includes(a as ts.Expression) ? held(a) : roots(a).ids.some(store);
+              // `Reflect.set(parseInt, "leak", secret)`: any outside name handed to one.
+              const kept = n.arguments?.includes(a as ts.Expression)
+                ? held(a) || (byLanguage(n) && roots(a).ids.some(outside))
+                : roots(a).ids.some((id) => holder(id, false));
               if (kept) changed = add(WORLD, t) || changed;
             }
           // `table[c]?.()`, `if (c === "a") addA()`: which function runs is a
