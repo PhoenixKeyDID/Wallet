@@ -718,6 +718,29 @@ const MUTANTS = [
     ["built with +=", '  let shown = "";\n  shown += secret;\n  return <CopyBtn value={shown} />;', "shown"],
     ["destructured by assignment", '  let shown = "";\n  [shown] = [secret];\n  return <CopyBtn value={shown} />;', "shown"],
     ["the parameter of Array.from's callback", "  return <>{Array.from([secret], (s) => <CopyBtn key={s} value={s} />)}</>;", "s"],
+    [
+      "set by a setter wrapped in an arrow on another element",
+      '  const [shown, setShown] = useState("");\n  return (\n    <>\n      <Echo value={secret} onDone={(v: string) => setShown(v)} />\n      <CopyBtn value={shown} />\n    </>\n  );',
+      "shown",
+    ],
+    [
+      "set by a named handler handed to another element",
+      '  const [shown, setShown] = useState("");\n  const keep = (v: string) => setShown(v);\n  return (\n    <>\n      <Echo value={secret} onDone={keep} />\n      <CopyBtn value={shown} />\n    </>\n  );',
+      "shown",
+    ],
+    [
+      "set by a handler kept where the test cannot follow it",
+      '  const [shown, setShown] = useState("");\n  (window as unknown as Record<string, unknown>).later = { secret, keep: (v: string) => setShown(v) };\n  return <CopyBtn value={shown} />;',
+      "shown",
+    ],
+    ["returned by a nested function", "  function current() {\n    return secret;\n  }\n  return <CopyBtn value={current()} />;", "current()"],
+    ["kept by push", "  const kept: string[] = [];\n  kept.push(secret);\n  return <CopyBtn value={kept[0]} />;", "kept[0]"],
+    ["kept by Object.assign", '  const box = { v: "" };\n  Object.assign(box, { v: secret });\n  return <CopyBtn value={box.v} />;', "box.v"],
+    [
+      "kept by Map.set",
+      "  const m = new Map<string, string>();\n  m.set('k', secret);\n  return <CopyBtn value={m.get('k') ?? ''} />;",
+      "m.get('k') ?? ''",
+    ],
   ].map(([what, body, value]) => ({
     name: `a copy button fed from a prop ${what}, declared only as copyable`,
     edits: [
@@ -750,6 +773,25 @@ const MUTANTS = [
           "}",
       },
       { file: COPY_GUARD_TEST, from: COPYABLE_ANCHOR, to: `${COPYABLE_ANCHOR}\n    "${TESTNET_BADGE}#Shown: secret",` },
+    ],
+  },
+  // Needs no line in the list at all: the button arrives under a name the
+  // value list never reads, from a path no import spells out.
+  {
+    name: "a copy button loaded by import() from a path built at run time",
+    edits: [
+      {
+        file: TESTNET_BADGE,
+        from: 'import type { PhoenixNetwork } from "@/lib/cardano";',
+        to:
+          'import type { PhoenixNetwork } from "@/lib/cardano";\n' +
+          'import { lazy } from "react";\n\n' +
+          'const part = "CopyBtn";\n' +
+          "const Lazy = lazy(() => import(`../${part}.tsx`).then((m) => ({ default: m[part] })));\n\n" +
+          "export function Shown({ secret }: { secret: string }) {\n" +
+          "  return <Lazy value={secret} />;\n" +
+          "}",
+      },
     ],
   },
   {

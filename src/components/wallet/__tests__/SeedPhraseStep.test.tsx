@@ -127,6 +127,9 @@ describe("recovery phrase screen", () => {
     "src/components/wallet/UncertainSubmitNotice.tsx#UncertainSubmitNotice: txHash",
     "src/components/wallet/WalletHub.tsx#WalletHub: did",
     "src/components/wallet/WalletTabs.tsx#WalletTabs: uncertainHash",
+    // Also set by `rememberUncertain`, handed to the money panels as
+    // `onUncertain`: they call it with the hash of a submit whose reply never came.
+    "src/components/wallet/WalletTabs.tsx#WalletTabs: uncertainHash holds a value handed in where the test cannot see what with",
     "src/components/wallet/WatchOnlyPanel.tsx#WatchOnlyPanel: a.address",
     "src/components/wallet/WatchOnlyPanel.tsx#WatchOnlyPanel: wallet.stakeAddress",
     "src/components/wallet/WatchOnlyPanel.tsx#WatchOnlyPanel: watched",
@@ -231,19 +234,22 @@ describe("recovery phrase screen", () => {
     return { name: "<module>" };
   };
 
-  /** Taint of state whose setter is handed somewhere the test cannot follow. */
+  /** Taint of a value handed in from somewhere the test cannot follow. */
   const UNSEEN = "<unseen>";
   /**
    * For one component: every name in its body that holds something from its
    * props, mapped to the props it came from. A destructured prop, a name
    * assigned from one by any assignment (`const sessionDid = did?.trim()`,
-   * `s += did`, `[s] = [did]`), the parameters of a function handed to a call
-   * that is also handed one (`rows.map((r) => …)`, `Array.from(xs, cb)`), the
-   * variable of a `for…of` / `for…in` over one, and state whose setter is
-   * called with one, passed by reference to such a call, or handed as a JSX
-   * prop (then it holds what that element is handed). A setter of a component
-   * with props handed anywhere else marks its state `UNSEEN`. `*` is the whole
-   * props object. Over-counts on shadowing, which can only add a forwarder.
+   * `s += did`, `[s] = [did]`), a name a call handed one may keep it in
+   * (`kept.push(did)`, `Object.assign(box, { did })`), a nested `function`
+   * returning one, the parameters of a nested function called with one (handed
+   * to a call that is handed one, `rows.map((r) => …)`; a prop or child of an
+   * element handed one; or called by name with one), the variable of a
+   * `for…of` / `for…in` over one, and state whose setter is called with one,
+   * passed by reference to such a call, or handed as a JSX prop (then it holds
+   * what that element is handed). In a component with props, a setter or the
+   * parameters of a nested function that go anywhere else are `UNSEEN`. `*` is
+   * the whole props object. A function's own parameters shadow outer names.
    */
   const fromProps = (fn: NonNullable<Owner["fn"]>) => {
     const taint = new Map<string, Set<string>>();
@@ -270,20 +276,31 @@ describe("recovery phrase screen", () => {
       return changed;
     };
     for (const p of fn.parameters) bind(p.name, new Set(["*"]));
+    /** Every name a binding pattern declares. */
+    const names = (b: ts.BindingName): string[] =>
+      ts.isIdentifier(b) ? [b.text] : b.elements.flatMap((el) => (ts.isOmittedExpression(el) ? [] : names(el.name)));
+    // Inside a function, its own parameters are not the names outside it of the
+    // same spelling: `(a) => a.toFixed()` holds nothing until it is called.
     const of = (e: ts.Node): Set<string> => {
       const out = new Set<string>();
-      const go = (n: ts.Node) => {
-        if (ts.isPropertyAccessExpression(n) && ts.isIdentifier(n.expression) && taint.get(n.expression.text)?.has("*")) {
+      const go = (n: ts.Node, shadow: ReadonlySet<string>) => {
+        if (ts.isFunctionLike(n) && n !== fn && n.parameters.length) {
+          const inner = new Set(shadow);
+          for (const p of n.parameters) for (const x of names(p.name)) inner.add(x);
+          shadow = inner;
+        }
+        const tainted = (x: string) => (shadow.has(x) ? undefined : taint.get(x));
+        if (ts.isPropertyAccessExpression(n) && ts.isIdentifier(n.expression) && tainted(n.expression.text)?.has("*")) {
           out.add(n.name.text);
-          for (const p of taint.get(n.expression.text)!) if (p !== "*") out.add(p);
+          for (const p of tainted(n.expression.text)!) if (p !== "*") out.add(p);
           return;
         }
-        if (ts.isPropertyAccessExpression(n)) return go(n.expression);
-        if (ts.isPropertyAssignment(n)) return go(n.initializer);
-        if (ts.isIdentifier(n)) for (const p of taint.get(n.text) ?? []) out.add(p);
-        ts.forEachChild(n, go);
+        if (ts.isPropertyAccessExpression(n)) return go(n.expression, shadow);
+        if (ts.isPropertyAssignment(n)) return go(n.initializer, shadow);
+        if (ts.isIdentifier(n)) for (const p of tainted(n.text) ?? []) out.add(p);
+        ts.forEachChild(n, (c) => go(c, shadow));
       };
-      go(e);
+      go(e, new Set());
       return out;
     };
     // `const [shown, setShown] = useState(…)`: what the setter is handed is shown.
@@ -327,6 +344,67 @@ describe("recovery phrase screen", () => {
         }
       return changed;
     };
+    /** Names declared in the component — not `Object`, `JSON`, `console` or an import. */
+    const locals = new Set<string>();
+    const declared = (m: ts.Node) => {
+      if (ts.isVariableDeclaration(m) || ts.isParameter(m)) for (const x of names(m.name)) locals.add(x);
+      ts.forEachChild(m, declared);
+    };
+    declared(fn);
+    /** The name a member chain starts from: `box` for `box.inner[0]`. */
+    const rootName = (e: ts.Expression): string =>
+      ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e) || ts.isParenthesizedExpression(e) || ts.isNonNullExpression(e)
+        ? rootName(e.expression)
+        : ts.isIdentifier(e)
+          ? e.text
+          : "";
+    /** `{…}` as a JSX prop or child: what the element it sits in is handed. */
+    const inElement = (x: ts.JsxExpression) => {
+      const el = ts.isJsxAttribute(x.parent) ? x.parent.parent.parent : x.parent;
+      return of(ts.isJsxOpeningElement(el) ? el.parent : el);
+    };
+    const unseen = () => new Set(fn.parameters.length ? [UNSEEN] : []);
+    /** What one use of a function, the function itself or a name for it, calls it with. */
+    const callsWith = (use: ts.Node): Set<string> => {
+      const p = use.parent;
+      if (ts.isCallExpression(p) && p.expression === use) {
+        const t = new Set<string>();
+        for (const a of p.arguments) for (const x of of(a)) t.add(x);
+        return t;
+      }
+      if (ts.isCallExpression(p) && p.arguments.includes(use as ts.Expression)) {
+        // `useCallback(f, deps)` hands `f` back to be called by whoever gets the name.
+        if (/(^|\.)useCallback$/.test(p.expression.getText()) && ts.isVariableDeclaration(p.parent)) return byName(p.parent);
+        return handedBy(p, use);
+      }
+      if (ts.isJsxExpression(p)) return inElement(p);
+      if (ts.isParenthesizedExpression(p)) return callsWith(p);
+      return unseen();
+    };
+    /** Every use of the name a function is bound to; none at all leaves it uncalled. */
+    const byName = (d: ts.VariableDeclaration | ts.FunctionDeclaration): Set<string> => {
+      if (!d.name || !ts.isIdentifier(d.name)) return unseen();
+      const name = d.name.text;
+      const t = new Set<string>();
+      const look = (m: ts.Node) => {
+        if (ts.isIdentifier(m) && m.text === name && m !== d.name) for (const x of callsWith(m)) t.add(x);
+        ts.forEachChild(m, look);
+      };
+      if (fn.body) look(fn.body);
+      return t;
+    };
+    /**
+     * What a function declared inside the component is called with, from where
+     * it goes: a call it is handed to (`rows.map(cb)`), the element it is a prop
+     * or child of (`onDone={(v) => setShown(v)}` gets what that element gets),
+     * or every use of the name it is bound to. Anywhere else, a component with
+     * props could be handing it anything: `UNSEEN`.
+     */
+    const calledWith = (f: ts.SignatureDeclaration): Set<string> => {
+      if (ts.isFunctionDeclaration(f)) return byName(f);
+      if (ts.isVariableDeclaration(f.parent) && f.parent.initializer === f) return byName(f.parent);
+      return callsWith(f);
+    };
     // A setter handed anywhere but a call that hands it values of its own is
     // called with something the test cannot see: its state holds `UNSEEN`.
     for (let changed = true; changed; ) {
@@ -366,11 +444,23 @@ describe("recovery phrase screen", () => {
           // `=`, `+=`, `??=`, and a pattern on the left: `[txHash] = pair`.
           const t = of(n.right);
           if (t.size) changed = assign(n.left, t) || changed;
-        } else if (ts.isFunctionLike(n) && n !== fn && ts.isCallExpression(n.parent) && n.parent.arguments.includes(n as ts.Expression)) {
-          // A function handed to any call — `rows.map(cb)`, `Array.from(rows, cb)` —
-          // is taken to be called with what that call is handed.
-          const t = handedBy(n.parent, n);
+        } else if (ts.isFunctionLike(n) && n !== fn && n.parameters.length) {
+          const t = calledWith(n);
           if (t.size) for (const p of n.parameters) changed = bind(p.name, t) || changed;
+        }
+        // `function current() { return secret; }`: the name holds what it returns.
+        if (ts.isFunctionDeclaration(n) && n !== fn && n.name && n.body) {
+          const t = of(n);
+          if (t.size) changed = add(n.name.text, t) || changed;
+        }
+        // `kept.push(secret)`, `map.set(k, secret)`, `Object.assign(box, { secret })`:
+        // a method handed something may keep it in the local it is called on.
+        if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression)) {
+          const c = n.expression;
+          const [target, ...rest] = c.getText() === "Object.assign" ? n.arguments : [c.expression, ...n.arguments];
+          const t = new Set<string>();
+          for (const a of rest) for (const p of of(a)) t.add(p);
+          if (t.size && target && locals.has(rootName(target))) changed = assign(target, t) || changed;
         }
         ts.forEachChild(n, go);
       };
@@ -546,7 +636,7 @@ describe("recovery phrase screen", () => {
             seen.push(`${key}: ${e.getText(sf)}`);
             for (const p of taintOf(e)) {
               if (p === UNSEEN) {
-                seen.push(`${key}: ${e.getText(sf)} holds state set by a setter handed where the test cannot see what with`);
+                seen.push(`${key}: ${e.getText(sf)} holds a value handed in where the test cannot see what with`);
                 continue;
               }
               forwards.add(`${key}: ${p}`);
@@ -636,6 +726,14 @@ describe("recovery phrase screen", () => {
               p.arguments[0] === n &&
               (p.expression.kind === ts.SyntaxKind.ImportKeyword ||
                 (ts.isIdentifier(p.expression) && p.expression.text === "require"))));
+        // `import(\`../${name}.tsx\`)`, `require(x)`: a path built at run time can
+        // name the copy button, and nothing here can read which file it is.
+        if (
+          ts.isCallExpression(n) &&
+          (n.expression.kind === ts.SyntaxKind.ImportKeyword || (ts.isIdentifier(n.expression) && n.expression.text === "require")) &&
+          !(n.arguments[0] && ts.isStringLiteralLike(n.arguments[0]))
+        )
+          offences.push(`${rel}:${at(sf, n)}: loads a path the test cannot read`);
         // A source file of this repo the test cannot find from the import is a
         // file whose components it cannot tell apart, the copy button included.
         if (
