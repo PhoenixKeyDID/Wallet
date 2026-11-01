@@ -130,6 +130,13 @@ describe("recovery phrase screen", () => {
     // Also set by `rememberUncertain`, handed to the money panels as
     // `onUncertain`: they call it with the hash of a submit whose reply never came.
     "src/components/wallet/WalletTabs.tsx#WalletTabs: uncertainHash holds a value handed in where the test cannot see what with",
+    // Handed to `writeLock`/`readLock`/`lockKey` beside that hash. The test
+    // takes no type's word that a value cannot hold an object — an overload, an
+    // array read through a wider alias or a typed pattern over `any` all make a
+    // box look like a string — so every local a call is handed counts. These are
+    // the network the wallet is on and the address it derives the lock key from.
+    "src/components/wallet/WalletTabs.tsx#WalletTabs: changeAddress holds a value handed in where the test cannot see what with",
+    "src/components/wallet/WalletTabs.tsx#WalletTabs: network holds a value handed in where the test cannot see what with",
     "src/components/wallet/WatchOnlyPanel.tsx#WatchOnlyPanel: a.address",
     "src/components/wallet/WatchOnlyPanel.tsx#WatchOnlyPanel: wallet.stakeAddress",
     "src/components/wallet/WatchOnlyPanel.tsx#WatchOnlyPanel: watched",
@@ -470,7 +477,7 @@ describe("recovery phrase screen", () => {
       let hit = false;
       const go = (m: ts.Node) => {
         if (hit) return;
-        if (m.kind === ts.SyntaxKind.ThisKeyword || (ts.isIdentifier(m) && locals.has(m.text) && !primitive(m))) hit = true;
+        if (m.kind === ts.SyntaxKind.ThisKeyword || (ts.isIdentifier(m) && locals.has(m.text))) hit = true;
         else ts.forEachChild(m, go);
       };
       go(o);
@@ -486,10 +493,10 @@ describe("recovery phrase screen", () => {
       const { ids, opaque } = roots(e);
       let changed = false;
       for (const id of ids) {
-        if (!write && !(locals.has(id.text) && !primitive(id))) continue;
+        if (!write && !locals.has(id.text)) continue;
         changed = (blind(id) ? poison(t) : add(id.text, t)) || changed;
       }
-      if (opaque.some((o) => !primitive(o) && (write || reaches(o)))) changed = poison(t) || changed;
+      if (opaque.some((o) => (write || reaches(o)))) changed = poison(t) || changed;
       return changed;
     };
     /** The left of any assignment: a name, a member of one, or a pattern of them, defaults included. */
@@ -612,12 +619,11 @@ describe("recovery phrase screen", () => {
         }
         // `kept.push(secret)`, `Reflect.set(box, "v", secret)`,
         // `[].push.call(kept, secret)`: a call may keep anything it is handed in
-        // any local it is handed — the object it is called on or an argument —
-        // whose type can hold anything: `network` handed beside a hash stays a
-        // network name, a box handed beside it may now hold the hash.
-        // Whether a local can hold an object is read from the type it is
-        // declared with, not from the expression it is handed as or the type
-        // narrowed at that spot: `box as unknown as string` is still the box.
+        // any local it is handed — the object it is called on or an argument.
+        // Every local, whatever its type says: a string-typed name can be a box
+        // (`function f(x: string[]): string` over an untyped body, an array
+        // read through a wider alias, a typed pattern over `any`), and a type
+        // the compiler accepts is not a value the test has seen.
         if (ts.isCallExpression(n) || ts.isNewExpression(n)) {
           const handed = [...(n.arguments ?? [])];
           const callee = bare(n.expression);
@@ -984,6 +990,8 @@ describe("recovery phrase screen", () => {
             // something else (a parameter, a property): `{ meta }` and
             // `export { meta }` stay uses, a name it cannot bind stays one too.
             const find = (m: ts.Node): void => {
+              // `type M = typeof meta` names a type and reads no value.
+              if (ts.isTypeNode(m)) return;
               const other = (): boolean => {
                 if (ts.isShorthandPropertyAssignment(m.parent) || ts.isExportSpecifier(m.parent)) return false;
                 const s = checker!.getSymbolAtLocation(m);

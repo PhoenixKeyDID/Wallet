@@ -798,6 +798,21 @@ const MUTANTS = [
       "  const isText = (x: unknown): x is string => x !== null;\n  const box: { v: string } | string = Date.now() > 0 ? { v: \"\" } : \"\";\n  if (isText(box)) Object.assign(box, { v: secret });\n  return <CopyBtn value={typeof box === 'string' ? box : box.v} />;",
       "typeof box === 'string' ? box : box.v",
     ],
+    [
+      "kept by Object.assign into an array read as a string through a wider alias",
+      '  const box: string[] = [];\n  const outer: string[] = [];\n  const wide: (string | string[])[] = outer;\n  wide.push(box);\n  const s: string = outer[0];\n  Object.assign(s, [secret]);\n  return <CopyBtn value={box.join()} />;',
+      "box.join()",
+    ],
+    [
+      "kept by Object.assign into an array an overload calls a string",
+      '  function asText(x: string[]): string;\n  function asText(x: unknown) {\n    return x;\n  }\n  const box: string[] = [];\n  const s: string = asText(box);\n  Object.assign(s, [secret]);\n  return <CopyBtn value={box.join()} />;',
+      "box.join()",
+    ],
+    [
+      "kept by Object.assign into an array a typed pattern over an untyped value calls a string",
+      '  const box: string[] = [];\n  const key: string = "w";\n  const { s }: { s: string } = Reflect.get({ w: { s: box } }, key);\n  Object.assign(s, [secret]);\n  return <CopyBtn value={box.join()} />;',
+      "box.join()",
+    ],
   ].map(([what, body, value]) => ({
     name: `a copy button fed from a prop ${what}, declared only as copyable`,
     edits: [
