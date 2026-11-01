@@ -526,6 +526,31 @@ const MUTANTS = [
     to: '{[CopyBtn].map((C) => <C key="c" value={address} />)}',
   },
   {
+    // A text-level comment stripper reads `image/*` as a comment opening and
+    // swallows everything up to the next `*/`.
+    name: "a copy button for the phrase sits between `image/*` and a JSX comment",
+    file: PANEL,
+    from: '                  <code className="mono block break-words text-xs">{revealed}</code>',
+    to:
+      '                  <code className="mono block break-words text-xs">{revealed}</code>\n' +
+      '                  <input type="file" accept="image/*" hidden />\n' +
+      "                  <CopyBtn value={revealed} />\n" +
+      "                  {/* end */}",
+  },
+  {
+    // `[^>]*` stops at the `>` of `=>`, before the prop that matters.
+    name: "a forwarder is handed the phrase after a prop that contains an arrow",
+    file: PANEL,
+    from: "              network={account.network}\n              address={primaryAddress(account)}",
+    to: '              network={account.network}\n              key={[0].map((x) => x).join()}\n              address={revealed ?? ""}',
+  },
+  {
+    name: "a forwarder imported under another name",
+    file: PANEL,
+    from: 'import { BalanceView, type DisplayAsset } from "./BalanceView";',
+    to: 'import { BalanceView as Balance, type DisplayAsset } from "./BalanceView";\nconst BalanceView = Balance;',
+  },
+  {
     name: "a locale file that parses to null passes as a namespace with no keys",
     file: LOCALES_GATE,
     from: 'if (json === null || typeof json !== "object" || Array.isArray(json)) {',
