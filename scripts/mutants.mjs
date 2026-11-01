@@ -788,6 +788,16 @@ const MUTANTS = [
       "  (import.meta.env as Record<string, string>).VITE_SHOWN = secret;\n  return <CopyBtn value={import.meta.env.VITE_SHOWN} />;",
       "import.meta.env.VITE_SHOWN",
     ],
+    [
+      "kept by Object.assign into an untyped value declared a string",
+      "  const box: string = JSON.parse('{\"v\":\"\"}');\n  Object.assign(box, { v: secret });\n  return <CopyBtn value={Object.values(box).join()} />;",
+      "Object.values(box).join()",
+    ],
+    [
+      "kept by Object.assign into an object a type predicate calls a string",
+      "  const isText = (x: unknown): x is string => x !== null;\n  const box: { v: string } | string = Date.now() > 0 ? { v: \"\" } : \"\";\n  if (isText(box)) Object.assign(box, { v: secret });\n  return <CopyBtn value={typeof box === 'string' ? box : box.v} />;",
+      "typeof box === 'string' ? box : box.v",
+    ],
   ].map(([what, body, value]) => ({
     name: `a copy button fed from a prop ${what}, declared only as copyable`,
     edits: [
@@ -820,6 +830,35 @@ const MUTANTS = [
           "}",
       },
       { file: COPY_GUARD_TEST, from: COPYABLE_ANCHOR, to: `${COPYABLE_ANCHOR}\n    "${TESTNET_BADGE}#Shown: secret",` },
+    ],
+  },
+  // A held import.meta exported, so the write to it sits in a file whose own
+  // uses of the holder the check never sees.
+  {
+    name: "a copy button fed from import.meta.env written through an exported holder, declared only as copyable",
+    edits: [
+      {
+        file: TESTNET_BADGE,
+        from: 'import type { PhoenixNetwork } from "@/lib/cardano";',
+        to:
+          'import type { PhoenixNetwork } from "@/lib/cardano";\n\n' +
+          "export const held = import.meta as unknown as { env: Record<string, string> };",
+      },
+      {
+        file: BALANCE,
+        from: "export function BalanceView({",
+        to:
+          "export function Shown({ secret }: { secret: string }) {\n" +
+          "  held.env.VITE_SHOWN = secret;\n" +
+          '  return <CopyBtn value={import.meta.env.VITE_SHOWN ?? ""} />;\n' +
+          "}\n\nexport function BalanceView({",
+      },
+      {
+        file: BALANCE,
+        from: 'import { FiatValue } from "./FiatValue";',
+        to: 'import { FiatValue } from "./FiatValue";\nimport { held } from "./TestnetBadge";',
+      },
+      { file: COPY_GUARD_TEST, from: COPYABLE_ANCHOR, to: `${COPYABLE_ANCHOR}\n    "${BALANCE}#Shown: import.meta.env.VITE_SHOWN ?? \\"\\"",` },
     ],
   },
   // Needs no line in the list at all: the button arrives under a name the

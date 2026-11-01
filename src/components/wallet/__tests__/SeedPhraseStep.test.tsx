@@ -210,14 +210,29 @@ describe("recovery phrase screen", () => {
     return out;
   };
   /** A value of a type no write can go into: a string, a number, a literal of one, or a union of them. */
-  const primitive = (e: ts.Node) => {
-    if (!checker) throw new Error("types asked for before the source was read");
-    const t = checker.getTypeAtLocation(e);
+  const plainType = (t: ts.Type) => {
     const flat = (t.isUnion() ? t.types : [t]) as ts.Type[];
     const plain =
       ts.TypeFlags.StringLike | ts.TypeFlags.NumberLike | ts.TypeFlags.BigIntLike | ts.TypeFlags.BooleanLike |
       ts.TypeFlags.Undefined | ts.TypeFlags.Null | ts.TypeFlags.Void | ts.TypeFlags.Never;
     return flat.every((u) => (u.flags & plain) !== 0);
+  };
+  /**
+   * A name read by its declared type, not the type narrowed at this spot: a
+   * hand-written `x is string` can narrow an object to a string.
+   */
+  const primitive = (e: ts.Node) => {
+    if (!checker) throw new Error("types asked for before the source was read");
+    const sym = ts.isIdentifier(e) ? checker.getSymbolAtLocation(e) : undefined;
+    const decl = sym?.valueDeclaration;
+    if (
+      sym &&
+      decl &&
+      (ts.isVariableDeclaration(decl) || ts.isParameter(decl) || ts.isBindingElement(decl)) &&
+      !ts.isShorthandPropertyAssignment(e.parent)
+    )
+      return plainType(checker.getTypeOfSymbolAtLocation(sym, decl));
+    return plainType(checker.getTypeAtLocation(e));
   };
 
   const each = (sf: ts.SourceFile, f: (n: ts.Node) => void) => {
@@ -600,9 +615,9 @@ describe("recovery phrase screen", () => {
         // any local it is handed — the object it is called on or an argument —
         // whose type can hold anything: `network` handed beside a hash stays a
         // network name, a box handed beside it may now hold the hash.
-        // Whether a local can hold an object is read from the local's own type,
-        // not from the expression it is handed as: `box as unknown as string`
-        // is still the box.
+        // Whether a local can hold an object is read from the type it is
+        // declared with, not from the expression it is handed as or the type
+        // narrowed at that spot: `box as unknown as string` is still the box.
         if (ts.isCallExpression(n) || ts.isNewExpression(n)) {
           const handed = [...(n.arguments ?? [])];
           const callee = bare(n.expression);
@@ -938,8 +953,9 @@ describe("recovery phrase screen", () => {
         // `import.meta` is read for `.env` and `.url` only: `.glob` and anything
         // reached through a cast loads files by a pattern the test cannot resolve.
         // One exception, the shape `chainEnv.ts` needs (a stubbed variable only
-        // appears through a held reference): `const meta = import.meta as …`
-        // whose every use, anywhere in the file, passes the same check below.
+        // appears through a held reference): `const meta = import.meta as …`,
+        // not exported, whose every use, anywhere in the file, passes the same
+        // check below. Exported, its uses are in files this check never reads.
         const metaUse = (n: ts.Node, holdable: boolean): void => {
           let up: ts.Node = n;
           while (
@@ -957,18 +973,30 @@ describe("recovery phrase screen", () => {
             decl.initializer === up &&
             ts.isIdentifier(decl.name) &&
             ts.isVariableDeclarationList(decl.parent) &&
-            (decl.parent.flags & ts.NodeFlags.Const) !== 0
+            (decl.parent.flags & ts.NodeFlags.Const) !== 0 &&
+            ts.isVariableStatement(decl.parent.parent) &&
+            !decl.parent.parent.modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword)
           ) {
             const name = decl.name.text;
+            const own = checker!.getSymbolAtLocation(decl.name);
             const uses: ts.Identifier[] = [];
+            // Every name spelled the same, less those the checker binds to
+            // something else (a parameter, a property): `{ meta }` and
+            // `export { meta }` stay uses, a name it cannot bind stays one too.
             const find = (m: ts.Node): void => {
+              const other = (): boolean => {
+                if (ts.isShorthandPropertyAssignment(m.parent) || ts.isExportSpecifier(m.parent)) return false;
+                const s = checker!.getSymbolAtLocation(m);
+                return s !== undefined && own !== undefined && s !== own;
+              };
               if (
                 ts.isIdentifier(m) &&
                 m.text === name &&
                 m !== decl.name &&
                 !ts.isMetaProperty(m.parent) &&
                 !(ts.isPropertyAccessExpression(m.parent) && m.parent.name === m) &&
-                !(ts.isPropertyAssignment(m.parent) && m.parent.name === m)
+                !(ts.isPropertyAssignment(m.parent) && m.parent.name === m) &&
+                !other()
               )
                 uses.push(m);
               ts.forEachChild(m, find);
@@ -1030,9 +1058,13 @@ describe("recovery phrase screen", () => {
         if (
           ts.isIdentifier(n) &&
           n.text === "createElement" &&
-          !(ts.isPropertyAccessExpression(p) && p.name === n && ts.isIdentifier(p.expression) && p.expression.text === "document")
+          !(
+            ts.isPropertyAccessExpression(p) &&
+            p.name === n &&
+            checker!.getNonNullableType(checker!.getTypeAtLocation(p.expression)).getSymbol()?.getName() === "Document"
+          )
         )
-          offences.push(`${rel}:${at(sf, n)}: createElement other than document.createElement`);
+          offences.push(`${rel}:${at(sf, n)}: createElement other than on a Document`);
         if (ts.isStringLiteralLike(n) && /^(cloneElement|createElement|arguments)$/.test(n.text)) offences.push(`${rel}:${at(sf, n)}: "${n.text}"`);
         if (loads && /^react\/jsx(-dev)?-runtime$/.test(n.text)) offences.push(`${rel}:${at(sf, n)}: loads ${n.text}`);
         if (loads && n.text === "react") {
@@ -1057,6 +1089,21 @@ describe("recovery phrase screen", () => {
           const it = checker!.getTypeAtLocation(inner);
           if (!(it.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) && !primitive(inner))
             offences.push(`${rel}:${at(sf, n)}: an object cast to a string, number or boolean`);
+        }
+        // `const box: string = JSON.parse(…)`, `JSON.parse(…) as string`: an
+        // untyped value taken for a string is the same cast without the `as`.
+        if (ts.isExpression(n) && !ts.isLiteralExpression(n) && !/\.test\.[cm]?[jt]sx?$/.test(rel) && !ts.isPartOfTypeNode(n)) {
+          const nt = checker!.getTypeAtLocation(n);
+          if (nt.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) {
+            const target =
+              ts.isAsExpression(p) || ts.isTypeAssertionExpression(p)
+                ? checker!.getTypeAtLocation(p)
+                : ts.isParenthesizedExpression(p) || ts.isNonNullExpression(p) || ts.isSatisfiesExpression(p)
+                  ? undefined
+                  : checker!.getContextualType(n);
+            if (target && !(target.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) && plainType(target))
+              offences.push(`${rel}:${at(sf, n)}: an untyped value taken for a string, number or boolean`);
+          }
         }
         // The state hook reached any way but a call: `import { useState as u }`,
         // `const { useState: u } = React`, `const h = useState`. The setter of
