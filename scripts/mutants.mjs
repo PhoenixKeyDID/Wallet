@@ -763,6 +763,31 @@ const MUTANTS = [
     ["kept by assigning through an alias", '  const box = { v: "" };\n  const ref = box;\n  ref.v = secret;\n  return <CopyBtn value={box.v} />;', "box.v"],
     ["held by a class field", "  class K {\n    v = secret;\n  }\n  return <CopyBtn value={new K().v} />;", "new K().v"],
     ["returned by a class method", "  class K {\n    get() {\n      return secret;\n    }\n  }\n  return <CopyBtn value={new K().get()} />;", "new K().get()"],
+    [
+      "kept by Object.assign into an object cast to a string",
+      '  const box = { v: "" };\n  Object.assign(box as unknown as string, { v: secret });\n  return <CopyBtn value={box.v} />;',
+      "box.v",
+    ],
+    ["thrown and caught", '  let v = "";\n  try {\n    throw secret;\n  } catch (e) {\n    v = e as string;\n  }\n  return <CopyBtn value={v} />;', "v"],
+    ["as a default in a destructured declaration", "  const { a = secret } = {} as { a?: string };\n  return <CopyBtn value={a} />;", "a"],
+    ["as a default in a destructuring assignment", '  let v = "";\n  ({ v = secret } = {} as { v?: string });\n  return <CopyBtn value={v} />;', "v"],
+    ["written through a comma expression", '  const box = { v: "" };\n  (0, box).v = secret;\n  return <CopyBtn value={box.v} />;', "box.v"],
+    ["written through what a local function returns", '  const box = { v: "" };\n  const me = () => box;\n  me().v = secret;\n  return <CopyBtn value={box.v} />;', "box.v"],
+    [
+      "written through an alias picked by a conditional",
+      '  const box = { v: "" };\n  const alias = Date.now() > 0 ? box : box;\n  alias.v = secret;\n  return <CopyBtn value={box.v} />;',
+      "box.v",
+    ],
+    [
+      "read back from arguments",
+      "  function row() {\n    // eslint-disable-next-line prefer-rest-params\n    return <CopyBtn value={arguments[0]} />;\n  }\n  return <div>{row.apply(null, [secret] as unknown as [])}</div>;",
+      "arguments[0]",
+    ],
+    [
+      "written into import.meta.env",
+      "  (import.meta.env as Record<string, string>).VITE_SHOWN = secret;\n  return <CopyBtn value={import.meta.env.VITE_SHOWN} />;",
+      "import.meta.env.VITE_SHOWN",
+    ],
   ].map(([what, body, value]) => ({
     name: `a copy button fed from a prop ${what}, declared only as copyable`,
     edits: [

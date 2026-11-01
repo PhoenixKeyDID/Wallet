@@ -319,8 +319,16 @@ describe("recovery phrase screen", () => {
     };
     // Inside a function, its own parameters are not the names outside it of the
     // same spelling: `(a) => a.toFixed()` holds nothing until it is called.
+    // What was kept somewhere no name records — a field of what a local function
+    // returns, `this` — may be anything the component reads: every value holds it.
+    const poisoned = new Set<string>();
+    const poison = (t: Iterable<string>) => {
+      const before = poisoned.size;
+      for (const p of t) poisoned.add(p);
+      return poisoned.size !== before;
+    };
     const of = (e: ts.Node): Set<string> => {
-      const out = new Set<string>();
+      const out = new Set<string>(poisoned);
       const go = (n: ts.Node, shadow: ReadonlySet<string>) => {
         if (ts.isFunctionLike(n) && n !== fn && n.parameters.length) {
           const inner = new Set(shadow);
@@ -363,43 +371,133 @@ describe("recovery phrase screen", () => {
       for (const a of call.arguments) if (a !== skip) for (const p of of(a)) t.add(p);
       return t;
     };
-    /** The left of any assignment: a name, a member of one, or a pattern of them. */
-    const assign = (e: ts.Expression, t: Set<string>): boolean => {
-      if (ts.isParenthesizedExpression(e) || ts.isNonNullExpression(e) || ts.isAsExpression(e)) return assign(e.expression, t);
-      if (ts.isIdentifier(e)) return add(e.text, t);
-      if (ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) return assign(e.expression, t);
-      if (ts.isSpreadElement(e)) return assign(e.expression, t);
-      if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.EqualsToken) return assign(e.left, t);
-      let changed = false;
-      if (ts.isArrayLiteralExpression(e)) for (const el of e.elements) changed = assign(el, t) || changed;
-      if (ts.isObjectLiteralExpression(e))
-        for (const p of e.properties) {
-          if (ts.isPropertyAssignment(p)) changed = assign(p.initializer, t) || changed;
-          else if (ts.isShorthandPropertyAssignment(p)) changed = add(p.name.text, t) || changed;
-          else if (ts.isSpreadAssignment(p)) changed = assign(p.expression, t) || changed;
-        }
-      return changed;
-    };
     /** Names declared in the component — not `Object`, `JSON`, `console` or an import. */
     const locals = new Set<string>();
     const declared = (m: ts.Node) => {
       if (ts.isVariableDeclaration(m) || ts.isParameter(m)) for (const x of names(m.name)) locals.add(x);
+      if ((ts.isFunctionDeclaration(m) || ts.isClassDeclaration(m)) && m !== fn && m.name) locals.add(m.name.text);
       ts.forEachChild(m, declared);
     };
     declared(fn);
-    /** The name a member chain starts from: `box` for `box.inner[0]`. */
-    const rootName = (e: ts.Expression): string =>
-      ts.isPropertyAccessExpression(e) ||
-      ts.isElementAccessExpression(e) ||
+    /** An expression without the parentheses and type wrappers around it. */
+    const bare = (e: ts.Expression): ts.Expression =>
       ts.isParenthesizedExpression(e) ||
       ts.isNonNullExpression(e) ||
       ts.isAsExpression(e) ||
       ts.isSatisfiesExpression(e) ||
       ts.isTypeAssertionExpression(e)
-        ? rootName(e.expression)
-        : ts.isIdentifier(e)
-          ? e.text
-          : "";
+        ? bare(e.expression)
+        : e;
+    /**
+     * The objects an expression may evaluate to: the names it may be (`a ?? b`,
+     * `c ? a : b`, `(0, a)`, `a.b[0]`, what `Object.assign(a, …)` or `a.m()`
+     * returns), and the parts whose object no name records — what a local
+     * function returns, `this`, an element.
+     */
+    const roots = (e0: ts.Expression) => {
+      const ids: ts.Identifier[] = [];
+      const opaque: ts.Expression[] = [];
+      const K = ts.SyntaxKind;
+      const go = (x: ts.Expression): void => {
+        const e = bare(x);
+        if (ts.isIdentifier(e)) ids.push(e);
+        else if (ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e) || ts.isSpreadElement(e) || ts.isAwaitExpression(e))
+          go(e.expression);
+        else if (ts.isConditionalExpression(e)) (go(e.whenTrue), go(e.whenFalse));
+        else if (ts.isBinaryExpression(e)) {
+          const k = e.operatorToken.kind;
+          if (k === K.AmpersandAmpersandToken || k === K.BarBarToken || k === K.QuestionQuestionToken) (go(e.left), go(e.right));
+          else if (k === K.CommaToken || (k >= K.FirstAssignment && k <= K.LastAssignment)) go(e.right);
+        } else if (ts.isArrayLiteralExpression(e)) for (const el of e.elements) go(el);
+        else if (ts.isObjectLiteralExpression(e))
+          for (const p of e.properties) {
+            if (ts.isPropertyAssignment(p)) go(p.initializer);
+            else if (ts.isShorthandPropertyAssignment(p)) ids.push(p.name);
+            else if (ts.isSpreadAssignment(p)) go(p.expression);
+            else opaque.push(e);
+          }
+        else if (ts.isCallExpression(e) || ts.isNewExpression(e)) {
+          // A call may return its receiver or any argument; what a local
+          // function returns is whatever it closes over.
+          const callee = bare(e.expression);
+          if (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee)) go(callee.expression);
+          else if (!ts.isIdentifier(callee) || locals.has(callee.text)) opaque.push(e);
+          for (const a of e.arguments ?? []) go(a);
+        } else if (
+          !(
+            ts.isLiteralExpression(e) ||
+            ts.isTemplateExpression(e) ||
+            ts.isPrefixUnaryExpression(e) ||
+            ts.isPostfixUnaryExpression(e) ||
+            ts.isTypeOfExpression(e) ||
+            ts.isVoidExpression(e) ||
+            ts.isDeleteExpression(e) ||
+            ts.isFunctionLike(e) ||
+            ts.isClassExpression(e) ||
+            e.kind === K.TrueKeyword ||
+            e.kind === K.FalseKeyword ||
+            e.kind === K.NullKeyword ||
+            e.kind === K.OmittedExpression
+          )
+        )
+          opaque.push(e);
+      };
+      go(e0);
+      return { ids, opaque };
+    };
+    /** An element or a value of no checked type: what is kept in it cannot be told from what it shows. */
+    const blind = (e: ts.Node) => {
+      const t = checker!.getTypeAtLocation(e);
+      return (t.flags & ts.TypeFlags.Any) !== 0 || /\b(Element|ReactElement|ReactNode|ReactPortal)\b/.test(checker!.typeToString(t));
+    };
+    /** Whether an expression reads a local that can hold an object, or `this`. */
+    const reaches = (o: ts.Node) => {
+      let hit = false;
+      const go = (m: ts.Node) => {
+        if (hit) return;
+        if (m.kind === ts.SyntaxKind.ThisKeyword || (ts.isIdentifier(m) && locals.has(m.text) && !primitive(m))) hit = true;
+        else ts.forEachChild(m, go);
+      };
+      go(o);
+      return hit;
+    };
+    /**
+     * `t` may now be kept in what `e` evaluates to. As the object of a write
+     * (`e.v = …`) every name it may be holds it; as an argument or receiver of a
+     * call, the locals among them that can hold an object. Where the object has
+     * no name, or is an element, every value of the component holds it.
+     */
+    const into = (e: ts.Expression, t: Set<string>, write: boolean): boolean => {
+      const { ids, opaque } = roots(e);
+      let changed = false;
+      for (const id of ids) {
+        if (!write && !(locals.has(id.text) && !primitive(id))) continue;
+        changed = (blind(id) ? poison(t) : add(id.text, t)) || changed;
+      }
+      if (opaque.some((o) => !primitive(o) && (write || reaches(o)))) changed = poison(t) || changed;
+      return changed;
+    };
+    /** The left of any assignment: a name, a member of one, or a pattern of them, defaults included. */
+    const target = (x: ts.Expression, t: Set<string>): boolean => {
+      const e = bare(x);
+      if (ts.isIdentifier(e)) return add(e.text, t);
+      if (ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) return into(e.expression, t, true);
+      if (ts.isSpreadElement(e)) return target(e.expression, t);
+      if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+        const d = of(e.right);
+        return target(e.left, t) || (d.size > 0 && target(e.left, d));
+      }
+      let changed = false;
+      if (ts.isArrayLiteralExpression(e)) for (const el of e.elements) changed = target(el, t) || changed;
+      else if (ts.isObjectLiteralExpression(e))
+        for (const p of e.properties) {
+          if (ts.isPropertyAssignment(p)) changed = target(p.initializer, t) || changed;
+          else if (ts.isShorthandPropertyAssignment(p)) changed = add(p.name.text, t) || changed;
+          else if (ts.isSpreadAssignment(p)) changed = target(p.expression, t) || changed;
+        }
+      else changed = poison(t);
+      return changed;
+    };
     /** `{…}` as a JSX prop or child: what the element it sits in is handed. */
     const inElement = (x: ts.JsxExpression) => {
       const el = ts.isJsxAttribute(x.parent) ? x.parent.parent.parent : x.parent;
@@ -449,6 +547,7 @@ describe("recovery phrase screen", () => {
     };
     // A setter handed anywhere but a call that hands it values of its own is
     // called with something the test cannot see: its state holds `UNSEEN`.
+    const thrown = new Set<string>();
     for (let changed = true; changed; ) {
       changed = false;
       const go = (n: ts.Node) => {
@@ -457,7 +556,7 @@ describe("recovery phrase screen", () => {
           if (t.size)
             if (ts.isVariableDeclarationList(n.initializer))
               for (const d of n.initializer.declarations) changed = bind(d.name, t) || changed;
-            else changed = assign(n.initializer, t) || changed;
+            else changed = target(n.initializer, t) || changed;
         } else if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && setters.has(n.expression.text) && n.arguments[0]) {
           const t = of(n.arguments[0]);
           if (t.size) changed = bind(setters.get(n.expression.text)!, t) || changed;
@@ -485,7 +584,7 @@ describe("recovery phrase screen", () => {
         ) {
           // `=`, `+=`, `??=`, and a pattern on the left: `[txHash] = pair`.
           const t = of(n.right);
-          if (t.size) changed = assign(n.left, t) || changed;
+          if (t.size) changed = target(n.left, t) || changed;
         } else if (ts.isFunctionLike(n) && n !== fn && n.parameters.length) {
           const t = calledWith(n);
           if (t.size) for (const p of n.parameters) changed = bind(p.name, t) || changed;
@@ -501,17 +600,22 @@ describe("recovery phrase screen", () => {
         // any local it is handed — the object it is called on or an argument —
         // whose type can hold anything: `network` handed beside a hash stays a
         // network name, a box handed beside it may now hold the hash.
+        // Whether a local can hold an object is read from the local's own type,
+        // not from the expression it is handed as: `box as unknown as string`
+        // is still the box.
         if (ts.isCallExpression(n) || ts.isNewExpression(n)) {
           const handed = [...(n.arguments ?? [])];
-          const callee = n.expression;
+          const callee = bare(n.expression);
           if (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee)) handed.push(callee.expression);
           const t = new Set<string>();
           for (const a of handed) for (const p of of(a)) t.add(p);
-          if (t.size)
-            for (const a of handed) if (locals.has(rootName(a)) && !primitive(a)) changed = assign(a, t) || changed;
+          if (t.size) for (const a of handed) changed = into(a, t, false) || changed;
         }
-        // `const alias = kept` or `ref = box`: both names are one object, so what
-        // is kept through the alias is kept in the original too.
+        // `const alias = kept`, `ref = box`, `const alias = c ? box : other`: the
+        // names are one object, so what is kept through the alias is kept in
+        // every original it may be. Only what the alias holds beyond what it was
+        // made from went in through it: `{ ...panelProps, hash }` holding the
+        // hash puts nothing into `panelProps`.
         const alias =
           ts.isVariableDeclaration(n) && n.initializer
             ? { names: names(n.name), from: n.initializer }
@@ -519,12 +623,29 @@ describe("recovery phrase screen", () => {
               ? { names: [n.left.text], from: n.right }
               : undefined;
         if (alias) {
-          const r = rootName(alias.from);
-          if (r && locals.has(r))
-            for (const x of alias.names) {
-              const t = taint.get(x);
-              if (t?.size) changed = add(r, t) || changed;
-            }
+          const t = new Set<string>();
+          for (const x of alias.names) for (const p of taint.get(x) ?? []) t.add(p);
+          for (const p of of(alias.from)) t.delete(p);
+          if (t.size) changed = into(alias.from, t, false) || changed;
+        }
+        // `const { v = secret } = {}`, `(v = secret) => …`, `({ v = secret } = {})`:
+        // a default is a value the name may hold.
+        if ((ts.isBindingElement(n) || ts.isParameter(n)) && n.initializer) {
+          const t = of(n.initializer);
+          if (t.size) changed = bind(n.name, t) || changed;
+        }
+        if (ts.isShorthandPropertyAssignment(n) && n.objectAssignmentInitializer) {
+          const t = of(n.objectAssignmentInitializer);
+          if (t.size) changed = add(n.name.text, t) || changed;
+        }
+        // `throw secret` anywhere in the component, or anything a call inside the
+        // `try` may throw, is what `catch (e)` holds.
+        if (ts.isThrowStatement(n)) {
+          for (const p of of(n.expression)) if (!thrown.has(p)) (thrown.add(p), (changed = true));
+        }
+        if (ts.isTryStatement(n) && n.catchClause?.variableDeclaration) {
+          const t = new Set([...thrown, ...of(n.tryBlock)]);
+          if (t.size) changed = bind(n.catchClause.variableDeclaration.name, t) || changed;
         }
         ts.forEachChild(n, go);
       };
@@ -816,7 +937,10 @@ describe("recovery phrase screen", () => {
         }
         // `import.meta` is read for `.env` and `.url` only: `.glob` and anything
         // reached through a cast loads files by a pattern the test cannot resolve.
-        if (ts.isMetaProperty(n) && n.keywordToken === ts.SyntaxKind.ImportKeyword) {
+        // One exception, the shape `chainEnv.ts` needs (a stubbed variable only
+        // appears through a held reference): `const meta = import.meta as …`
+        // whose every use, anywhere in the file, passes the same check below.
+        const metaUse = (n: ts.Node, holdable: boolean): void => {
           let up: ts.Node = n;
           while (
             ts.isParenthesizedExpression(up.parent) ||
@@ -826,25 +950,113 @@ describe("recovery phrase screen", () => {
             ts.isTypeAssertionExpression(up.parent)
           )
             up = up.parent;
-          const envOrUrl = (x: ts.Node) =>
-            ts.isPropertyAccessExpression(x.parent) && x.parent.expression === x && /^(env|url)$/.test(x.parent.name.text);
-          // `const meta = import.meta as unknown as { env?: … }`, where every later
-          // `meta` in the file is `meta.env` or `meta.url`. The cast is not taken
-          // on trust: a `meta` spelled any other way fails the whole form.
-          const d = up.parent;
-          const held =
-            ts.isVariableDeclaration(d) &&
-            d.initializer === up &&
-            ts.isIdentifier(d.name) &&
-            (() => {
-              const name = (d.name as ts.Identifier).text;
-              let only = true;
-              each(sf, (m) => {
-                if (ts.isIdentifier(m) && m.text === name && m !== d.name && !ts.isMetaProperty(m.parent) && !envOrUrl(m)) only = false;
-              });
-              return only;
-            })();
-          if (!envOrUrl(up) && !held) offences.push(`${rel}:${at(sf, n)}: import.meta used other than as import.meta.env or .url`);
+          const decl = up.parent;
+          if (
+            holdable &&
+            ts.isVariableDeclaration(decl) &&
+            decl.initializer === up &&
+            ts.isIdentifier(decl.name) &&
+            ts.isVariableDeclarationList(decl.parent) &&
+            (decl.parent.flags & ts.NodeFlags.Const) !== 0
+          ) {
+            const name = decl.name.text;
+            const uses: ts.Identifier[] = [];
+            const find = (m: ts.Node): void => {
+              if (
+                ts.isIdentifier(m) &&
+                m.text === name &&
+                m !== decl.name &&
+                !ts.isMetaProperty(m.parent) &&
+                !(ts.isPropertyAccessExpression(m.parent) && m.parent.name === m) &&
+                !(ts.isPropertyAssignment(m.parent) && m.parent.name === m)
+              )
+                uses.push(m);
+              ts.forEachChild(m, find);
+            };
+            find(sf);
+            for (const u of uses) metaUse(u, false);
+            return;
+          }
+          const envOrUrl =
+            ts.isPropertyAccessExpression(up.parent) && up.parent.expression === up && /^(env|url)$/.test(up.parent.name.text);
+          if (!envOrUrl) offences.push(`${rel}:${at(sf, n)}: import.meta used other than as import.meta.env or .url`);
+          // The whole read, `(import.meta.env as …).VITE_X`, is a string read where
+          // it stands. Written to, it is a store every module shares; held as an
+          // object, it is a box the value list above never follows.
+          let top: ts.Node = up;
+          while (
+            ts.isParenthesizedExpression(top.parent) ||
+            ts.isAsExpression(top.parent) ||
+            ts.isSatisfiesExpression(top.parent) ||
+            ts.isNonNullExpression(top.parent) ||
+            ts.isTypeAssertionExpression(top.parent) ||
+            ((ts.isPropertyAccessExpression(top.parent) || ts.isElementAccessExpression(top.parent)) && top.parent.expression === top)
+          )
+            top = top.parent;
+          let w: ts.Node = top;
+          while (
+            ts.isArrayLiteralExpression(w.parent) ||
+            ts.isSpreadElement(w.parent) ||
+            ts.isSpreadAssignment(w.parent) ||
+            ts.isPropertyAssignment(w.parent) ||
+            ts.isObjectLiteralExpression(w.parent) ||
+            ts.isParenthesizedExpression(w.parent) ||
+            (ts.isBinaryExpression(w.parent) && w.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken && w.parent.right === w)
+          )
+            w = w.parent;
+          const tp = top.parent;
+          const written =
+            (ts.isBinaryExpression(w.parent) &&
+              w.parent.left === w &&
+              w.parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+              w.parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment) ||
+            ((ts.isForOfStatement(w.parent) || ts.isForInStatement(w.parent)) && w.parent.initializer === w) ||
+            ts.isDeleteExpression(tp) ||
+            ((ts.isPrefixUnaryExpression(tp) || ts.isPostfixUnaryExpression(tp)) &&
+              (tp.operator === ts.SyntaxKind.PlusPlusToken || tp.operator === ts.SyntaxKind.MinusMinusToken));
+          const copiedOut =
+            ts.isTypeOfExpression(tp) ||
+            (ts.isCallExpression(tp) &&
+              tp.arguments.indexOf(top as ts.Expression) >= 1 &&
+              tp.expression.getText(sf).replace(/\s/g, "") === "Object.assign");
+          if (written) offences.push(`${rel}:${at(sf, n)}: import.meta written to`);
+          else if (!copiedOut && !primitive(top)) offences.push(`${rel}:${at(sf, n)}: import.meta held as an object`);
+        };
+        if (ts.isMetaProperty(n) && n.keywordToken === ts.SyntaxKind.ImportKeyword) metaUse(n, true);
+        // Ways to hand an element a prop the JSX never shows, or read a
+        // component's props by position: `cloneElement(<CopyBtn …/>, { value })`,
+        // `createElement(CopyBtn, …)`, `arguments[0]`.
+        if (ts.isIdentifier(n) && (n.text === "cloneElement" || n.text === "arguments")) offences.push(`${rel}:${at(sf, n)}: ${n.text}`);
+        if (
+          ts.isIdentifier(n) &&
+          n.text === "createElement" &&
+          !(ts.isPropertyAccessExpression(p) && p.name === n && ts.isIdentifier(p.expression) && p.expression.text === "document")
+        )
+          offences.push(`${rel}:${at(sf, n)}: createElement other than document.createElement`);
+        if (ts.isStringLiteralLike(n) && /^(cloneElement|createElement|arguments)$/.test(n.text)) offences.push(`${rel}:${at(sf, n)}: "${n.text}"`);
+        if (loads && /^react\/jsx(-dev)?-runtime$/.test(n.text)) offences.push(`${rel}:${at(sf, n)}: loads ${n.text}`);
+        if (loads && n.text === "react") {
+          const plain =
+            ts.isImportDeclaration(p) &&
+            (!p.importClause?.name || p.importClause.isTypeOnly) &&
+            (!p.importClause?.namedBindings || ts.isNamedImports(p.importClause.namedBindings) || p.importClause.isTypeOnly);
+          if (!plain) offences.push(`${rel}:${at(sf, n)}: loads react other than by named imports`);
+        }
+        // `box as unknown as string`: an object passed off as a string is let
+        // through every rule above that reads a string as unable to hold anything.
+        if ((ts.isAsExpression(n) || ts.isTypeAssertionExpression(n)) && !/\.test\.[cm]?[jt]sx?$/.test(rel) && primitive(n)) {
+          let inner: ts.Expression = n.expression;
+          while (
+            ts.isParenthesizedExpression(inner) ||
+            ts.isAsExpression(inner) ||
+            ts.isSatisfiesExpression(inner) ||
+            ts.isNonNullExpression(inner) ||
+            ts.isTypeAssertionExpression(inner)
+          )
+            inner = inner.expression;
+          const it = checker!.getTypeAtLocation(inner);
+          if (!(it.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) && !primitive(inner))
+            offences.push(`${rel}:${at(sf, n)}: an object cast to a string, number or boolean`);
         }
         // The state hook reached any way but a call: `import { useState as u }`,
         // `const { useState: u } = React`, `const h = useState`. The setter of
