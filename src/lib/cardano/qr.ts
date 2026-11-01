@@ -15,12 +15,23 @@
  *   PHXAIR|<v>|<kind>|<seq>|<total>|<id>|<b64url-chunk>
  *
  * INTEGRITY: for an `unsigned-tx` transfer the `<id>` is NOT a free label — it
- * is `frameId(payload)` = `blake2b_256(payload)` truncated to 8 hex chars. The
- * receiver recomputes it after reassembling and rejects the payload on any
- * mismatch, so an injected or reordered chunk cannot assemble into a DIFFERENT
- * transaction than the one the sender framed. `witness` frames reuse that same
- * id only to correlate the reply (a witness is verified by the ledger, not by
- * this tag), so their id is not self-checked.
+ * is `frameId(payload)` = `blake2b_256(payload)` truncated to 32 hex chars
+ * (128 bits). The receiver recomputes it after reassembling and rejects the
+ * payload on any mismatch, so an injected or reordered chunk cannot assemble
+ * into a DIFFERENT transaction than the one the sender framed.
+ *
+ * Why 128 bits: the sender is honest, so an attacker who injects chunks has to
+ * find a second payload hashing to an id it did not choose — a second preimage,
+ * ~2^128 work at this length. At the earlier 8 hex chars (32 bits) that was
+ * ~2^32 blake2b calls, a search a laptop finishes over the free bytes of a tx.
+ * It does NOT defend a sender that frames attacker-chosen bytes (a collision,
+ * ~2^64) — the sender only ever frames the tx it built and showed for review.
+ *
+ * Every id on the wire is exactly 32 lowercase hex chars; any other length is
+ * refused on both encode and parse, with no fallback to the old 8-char form
+ * (accepting both would keep the short tag usable). `witness` frames reuse the
+ * unsigned-tx's id only to correlate the reply (a witness is verified by the
+ * ledger, not by this tag), so their id is not self-checked against the payload.
  */
 import { blake2b256, toHex } from "./hash";
 
@@ -28,6 +39,10 @@ const MAGIC = "PHXAIR";
 const VERSION = 1;
 
 export type AirKind = "unsigned-tx" | "witness";
+
+/** Length of every on-wire id, in hex chars (128 bits). */
+export const FRAME_ID_HEX_LEN = 32;
+const FRAME_ID_RE = /^[0-9a-f]{32}$/;
 
 export type AirFrame = {
   version: number;
@@ -53,9 +68,9 @@ function b64urlDecode(s: string): Uint8Array {
   return out;
 }
 
-/** Integrity tag for a payload: first 8 hex chars of its blake2b-256 hash. */
+/** Integrity tag for a payload: first 32 hex chars of its blake2b-256 hash. */
 export function frameId(payload: Uint8Array): string {
-  return toHex(blake2b256(payload)).slice(0, 8);
+  return toHex(blake2b256(payload)).slice(0, FRAME_ID_HEX_LEN);
 }
 
 /**
@@ -71,7 +86,7 @@ export function encodeFrames(
   id: string,
   chunkBytes = 700,
 ): string[] {
-  if (!/^[0-9a-zA-Z]{1,16}$/.test(id)) throw new Error("air-gap id must be 1–16 alphanumerics");
+  if (!FRAME_ID_RE.test(id)) throw new Error("air-gap id must be 32 lowercase hex chars");
   if (kind === "unsigned-tx" && id !== frameId(payload)) {
     throw new Error("unsigned-tx id must be frameId(payload) — integrity tag mismatch");
   }
@@ -92,6 +107,7 @@ export function parseFrame(text: string): AirFrame {
   const version = Number(vStr);
   if (version !== VERSION) throw new Error(`unsupported PHXAIR version ${vStr}`);
   if (kind !== "unsigned-tx" && kind !== "witness") throw new Error(`unknown kind ${kind}`);
+  if (!FRAME_ID_RE.test(id)) throw new Error("frame id must be 32 lowercase hex chars");
   return { version, kind, seq: Number(seqStr), total: Number(totalStr), id, chunk };
 }
 
