@@ -50,6 +50,8 @@ const SEED_STEP = "src/components/wallet/SeedPhraseStep.tsx";
 const PANEL = "src/components/wallet/LocalWalletPanel.tsx";
 const TESTNET_BADGE = "src/components/wallet/TestnetBadge.tsx";
 const CSS_GATE = "scripts/check-popup-css.mjs";
+const LOCALES_GATE = "scripts/check-locales.mjs";
+const BALANCE = "src/components/wallet/BalanceView.tsx";
 const POPUP_CSS = "extension/src/popup.css";
 // A gate is worth mutating too. "Is this guard pinned" and "is the thing that
 // checks the guard pinned" are different questions, and the second one has gone
@@ -69,6 +71,7 @@ const TESTS = [
   "src/components/wallet/__tests__/SeedPhraseStep.test.tsx",
   "src/components/wallet/__tests__/LocalWalletPanel.context.test.tsx",
   "scripts/__tests__/checkPopupCss.test.ts",
+  "scripts/__tests__/checkLocales.test.ts",
 ];
 
 /**
@@ -503,6 +506,30 @@ const MUTANTS = [
     file: TX_SUMMARY_VIEW,
     from: "${assetLabel(n)}",
     to: '${assetLabel(n).split(" · ")[0]}',
+  },
+  {
+    name: "a component that forwards its prop to a copy button is handed the revealed phrase",
+    file: PANEL,
+    from: "address={primaryAddress(account)}",
+    to: 'address={revealed ?? ""}',
+  },
+  {
+    name: "a second file writes the clipboard itself, the legacy way",
+    file: SEND,
+    from: "<CopyBtn value={txHash} />",
+    to: "<CopyBtn value={txHash} />{void document.execCommand}",
+  },
+  {
+    name: "a copy button reached under another name, out of sight of the value list",
+    file: BALANCE,
+    from: "<CopyBtn value={address} />",
+    to: '{[CopyBtn].map((C) => <C key="c" value={address} />)}',
+  },
+  {
+    name: "a locale file that parses to null passes as a namespace with no keys",
+    file: LOCALES_GATE,
+    from: 'if (json === null || typeof json !== "object" || Array.isArray(json)) {',
+    to: "if (false) {",
   },
 ];
 

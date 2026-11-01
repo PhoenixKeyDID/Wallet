@@ -180,7 +180,9 @@ describe("the real popup", () => {
       css: join(REPO, "extension/src/popup.css"),
       aliases: [["@/lib/toast", join(REPO, "extension/src/toast.ts")]],
     });
-    expect(r.dynamic).toBeLessThanOrEqual(MAX_UNREADABLE);
+    // Equal, not at-most: once one site is made readable the ceiling has to come
+    // down with it, or a new blind site could take its place unnoticed.
+    expect(r.dynamic).toBe(MAX_UNREADABLE);
   });
 
   it("the CLI exits 1 and names the class when a rule is removed", () => {

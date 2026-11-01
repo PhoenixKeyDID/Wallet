@@ -17,7 +17,8 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "locales");
+// An argument points the guard at another tree; its own tests use that.
+const ROOT = process.argv[2] ?? join(dirname(fileURLToPath(import.meta.url)), "..", "locales");
 const REFERENCE = "en";
 
 const langs = readdirSync(ROOT).sort();
@@ -36,12 +37,18 @@ function load(lang, ns) {
   const path = join(ROOT, lang, `${ns}.json`);
   if (!existsSync(path)) return null;
   const text = readFileSync(path, "utf8");
+  let json;
   try {
-    return { json: JSON.parse(text), text };
+    json = JSON.parse(text);
   } catch (e) {
     errors.push(`${lang}/${ns}.json does not parse: ${e instanceof Error ? e.message : String(e)}`);
     return undefined;
   }
+  if (json === null || typeof json !== "object" || Array.isArray(json)) {
+    errors.push(`${lang}/${ns}.json is not a JSON object`);
+    return undefined;
+  }
+  return { json, text };
 }
 
 /**

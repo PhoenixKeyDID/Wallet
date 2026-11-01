@@ -277,7 +277,10 @@ function main() {
     }
     process.exit(1);
   }
-  console.log("popup CSS OK — every class the popup renders has a rule.");
+  console.log(
+    "popup CSS OK — every class literal the popup's source names has a rule" +
+      (r.dynamic ? `; the ${r.dynamic} expression(s) above that it cannot read were not checked.` : "."),
+  );
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();

@@ -101,32 +101,113 @@ describe("recovery phrase screen", () => {
     "e.txHash",
     "sessionDid",
     "anchorName",
+    // handed to a component in `FORWARDS`
+    "receiveAddress",
+    "custodyAddress",
+    "walletAddress",
+    "derived.address",
+    "uncertainHash",
   ]);
 
-  it("no copy button anywhere is handed anything but an address, a hash or a name", () => {
-    const seen: string[] = [];
+  /**
+   * Components that hand one of their own props straight to a copy button. What
+   * their callers pass in that prop is a copy-button value too, so it is held to
+   * the same list. A new forwarder has to be added here: a copy button handed a
+   * bare name that is neither listed here nor in `LOCAL` fails the test below.
+   */
+  const FORWARDS: Record<string, [component: string, prop: string]> = {
+    "src/components/wallet/BalanceView.tsx": ["BalanceView", "address"],
+    "src/components/wallet/ReceivePanel.tsx": ["AddressCard", "address"],
+    "src/components/wallet/UncertainSubmitNotice.tsx": ["UncertainSubmitNotice", "txHash"],
+  };
+
+  /** Bare names handed to a copy button that are this file's own state or derivation. */
+  const LOCAL = new Set([
+    "src/components/wallet/PhoenixCustodyPanel.tsx: sessionDid",
+    "src/components/wallet/PhoenixCustodyPanel.tsx: anchorName",
+    "src/components/wallet/ReviewOutput.tsx: address",
+    "src/components/wallet/WatchOnlyPanel.tsx: watched",
+    "src/components/wallet/SendPanel.tsx: txHash",
+    "src/components/night/NightRedeem.tsx: address",
+  ]);
+
+  /** Shipped source, comments removed, keyed by repo-relative path. */
+  const shipped = () => {
+    const out = new Map<string, string>();
     const walk = (dir: string) => {
       for (const ent of readdirSync(dir, { withFileTypes: true })) {
         const p = join(dir, ent.name);
         if (ent.isDirectory()) {
           if (ent.name !== "__tests__" && ent.name !== "node_modules") walk(p);
-        } else if (/\.tsx?$/.test(ent.name)) {
-          const src = readFileSync(p, "utf8");
-          for (const m of src.matchAll(/<CopyBtn\b([^>]*)>/g)) {
-            const v = /\bvalue=\{([^}]*)\}/.exec(m[1]!);
-            seen.push(`${relative(REPO, p)}: ${v ? v[1]!.trim() : "<no value={…}>"}`);
-          }
-          // The one place allowed to write the clipboard is the button itself.
-          if (!p.endsWith(join("components", "CopyBtn.tsx"))) {
-            expect(src, p).not.toMatch(/clipboard\s*\.\s*write/);
-          }
+        } else if (/\.[cm]?[jt]sx?$/.test(ent.name) && !/\.d\.ts$/.test(ent.name)) {
+          const code = readFileSync(p, "utf8")
+            .replace(/\/\*[\s\S]*?\*\//g, "")
+            .replace(/(^|[^:"'`\\])\/\/[^\n]*/g, "$1");
+          out.set(relative(REPO, p), code);
         }
       }
     };
     walk(join(REPO, "src"));
     walk(join(REPO, "extension/src"));
+    return out;
+  };
+
+  it("no copy button anywhere is handed anything but an address, a hash or a name", () => {
+    const files = shipped();
+    const seen: string[] = [];
+    const bare: string[] = [];
+    for (const [rel, code] of files) {
+      for (const m of code.matchAll(/<CopyBtn\b([^>]*)>/g)) {
+        const v = /\bvalue=\{([^}]*)\}/.exec(m[1]!);
+        const value = v ? v[1]!.trim() : "<no value={…}>";
+        seen.push(`${rel}: ${value}`);
+        if (/^[A-Za-z_$][\w$]*$/.test(value)) bare.push(`${rel}: ${value}`);
+      }
+    }
+    for (const [component, prop] of Object.values(FORWARDS)) {
+      const tag = new RegExp(`<${component}\\b([^>]*)>`, "g");
+      for (const [rel, code] of files) {
+        for (const m of code.matchAll(tag)) {
+          const v = new RegExp(`\\b${prop}=\\{([^}]*)\\}`).exec(m[1]!);
+          if (v) seen.push(`${rel}: ${v[1]!.trim()}`);
+          else if (new RegExp(`\\b${prop}=`).test(m[1]!) || /\{\s*\.\.\./.test(m[1]!)) {
+            seen.push(`${rel}: <${component} ${prop} not a {…} expression>`);
+          }
+        }
+      }
+    }
     expect(seen.length).toBeGreaterThan(0);
     const unexpected = seen.filter((s) => !COPYABLE.has(s.slice(s.indexOf(": ") + 2)));
     expect(unexpected).toEqual([]);
+    // A bare name is either this file's own value (`LOCAL`) or a prop it was
+    // handed — and then its callers have to be read, which only `FORWARDS` does.
+    const unaccounted = bare.filter((s) => {
+      const [rel, name] = s.split(": ") as [string, string];
+      return !LOCAL.has(s) && FORWARDS[rel]?.[1] !== name;
+    });
+    expect(unaccounted).toEqual([]);
+  });
+
+  it("nothing but the copy button reaches the clipboard, or the copy button by another name", () => {
+    const offences: string[] = [];
+    for (const [rel, code] of shipped()) {
+      if (rel === join("src", "components", "CopyBtn.tsx")) continue;
+      // Every way a page writes the clipboard: the async API under any spelling
+      // (`navigator.clipboard`, `navigator["clipboard"]`, a saved reference),
+      // the legacy `execCommand("copy")`, and a `copy` event's `clipboardData`.
+      for (const re of [/clipboard/i, /execCommand/]) {
+        if (re.test(code)) offences.push(`${rel}: ${re}`);
+      }
+      // The button reached any way but `<CopyBtn …>` and its one import — an
+      // alias, `createElement(CopyBtn, …)`, handed on as a value — is a copy
+      // button the value list above never sees.
+      // The import names the button twice (binding and path), so it is taken out
+      // before counting rather than counted.
+      const body = code.replace(/import\s*\{\s*CopyBtn\s*\}\s*from\s*["']@\/components\/CopyBtn["'];?/g, "");
+      const uses = body.match(/\bCopyBtn\b/g)?.length ?? 0;
+      const jsx = body.match(/<CopyBtn\b/g)?.length ?? 0;
+      if (uses !== jsx) offences.push(`${rel}: CopyBtn used other than as <CopyBtn …> (${uses} uses, ${jsx} tags)`);
+    }
+    expect(offences).toEqual([]);
   });
 });
