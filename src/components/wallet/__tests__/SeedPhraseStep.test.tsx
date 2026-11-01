@@ -10,12 +10,13 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, cleanup, fireEvent } from "@testing-library/react";
 import { readdirSync, readFileSync } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, join, posix, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import i18next from "i18next";
 import ts from "typescript";
 import { I18nextProvider, initReactI18next } from "react-i18next";
 import en from "../../../../locales/en/wallet.json";
+import night from "../../../../locales/en/night.json";
 import { SeedPhraseStep } from "../SeedPhraseStep";
 
 // Located from this file, not process.cwd(): run from another checkout, the
@@ -101,6 +102,13 @@ describe("recovery phrase screen", () => {
     "src/components/wallet/Cip30Panel.tsx#Cip30Panel: conn.networkId",
     "src/components/wallet/LocalWalletPanel.tsx#LocalWalletPanel: account.network",
     "src/components/wallet/LocalWalletPanel.tsx#LocalWalletPanel: changeAddrHex",
+    // The port the panels below get the hash of a sent transaction back from,
+    // and what they ask it with — not the hash, but what it is derived from.
+    "src/components/wallet/Cip30Panel.tsx#Cip30Panel: port",
+    "src/components/wallet/LocalWalletPanel.tsx#LocalWalletPanel: port",
+    "src/components/wallet/WalletTabs.tsx#WalletTabs: changeAddress",
+    "src/components/wallet/WalletTabs.tsx#WalletTabs: network",
+    "src/components/wallet/WalletTabs.tsx#WalletTabs: port",
     "src/components/wallet/BalanceView.tsx#BalanceView: address",
     "src/components/wallet/Cip30Panel.tsx#Cip30Panel: receiveAddress",
     "src/components/wallet/HistoryPanel.tsx#HistoryPanel: e.txHash",
@@ -133,9 +141,18 @@ describe("recovery phrase screen", () => {
    */
   const FORWARDS = [
     "src/components/wallet/BalanceView.tsx#BalanceView: address",
+    // These copy a hash the port answered with; it is set in state from the
+    // answer, so it counts as derived from the port and what it was asked with.
+    "src/components/wallet/HistoryPanel.tsx#HistoryPanel: network",
+    "src/components/wallet/HistoryPanel.tsx#HistoryPanel: port",
     "src/components/wallet/PhoenixCustodyPanel.tsx#PhoenixCustodyPanel: did",
     "src/components/wallet/ReceivePanel.tsx#AddressCard: address",
+    "src/components/wallet/ReceivePanel.tsx#ReceivePanel: network",
+    "src/components/wallet/ReceivePanel.tsx#ReceivePanel: port",
     "src/components/wallet/ReviewOutput.tsx#ReviewOutput: output",
+    "src/components/wallet/SendPanel.tsx#SendPanel: changeAddress",
+    "src/components/wallet/SendPanel.tsx#SendPanel: network",
+    "src/components/wallet/SendPanel.tsx#SendPanel: port",
     "src/components/wallet/UncertainSubmitNotice.tsx#UncertainSubmitNotice: txHash",
     "src/components/wallet/WalletHub.tsx#WalletHub: did",
     // The stored hash it copies is looked up by these; more than strictly
@@ -143,9 +160,11 @@ describe("recovery phrase screen", () => {
     "src/components/wallet/WalletTabs.tsx#WalletTabs: changeAddress",
     "src/components/wallet/WalletTabs.tsx#WalletTabs: network",
     "src/components/wallet/WalletTabs.tsx#WalletTabs: networkId",
+    "src/components/wallet/WalletTabs.tsx#WalletTabs: port",
   ];
 
   const COPY_BTN_FILE = "src/components/CopyBtn.tsx";
+  const LOCALES: Record<string, Record<string, unknown> | undefined> = { wallet: en, night };
 
   /**
    * Shipped source, parsed, keyed by repo-relative path. Parsed rather than
@@ -194,8 +213,11 @@ describe("recovery phrase screen", () => {
     let s = n;
     while (s.parent && !ts.isSourceFile(s.parent)) s = s.parent;
     const fnOf = (e: ts.Node | undefined): Owner["fn"] => {
+      // Through any depth of wrapping: `memo(forwardRef((props, ref) => …))`.
       while (e && (ts.isCallExpression(e) || ts.isParenthesizedExpression(e) || ts.isAsExpression(e))) {
-        e = ts.isCallExpression(e) ? e.arguments.find((a) => ts.isArrowFunction(a) || ts.isFunctionExpression(a)) : e.expression;
+        e = ts.isCallExpression(e)
+          ? e.arguments.find((a) => ts.isArrowFunction(a) || ts.isFunctionExpression(a) || ts.isCallExpression(a))
+          : e.expression;
       }
       return e && (ts.isArrowFunction(e) || ts.isFunctionExpression(e)) ? e : undefined;
     };
@@ -213,8 +235,10 @@ describe("recovery phrase screen", () => {
    * For one component: every name in its body that holds something from its
    * props, mapped to the props it came from. A destructured prop, a variable
    * computed from one (`const sessionDid = did?.trim()`), a callback parameter
-   * of a method called on one (`rows.map((r) => …)`). `*` is the whole props
-   * object. Over-counts on shadowing, which can only add a forwarder.
+   * of a method called on one (`rows.map((r) => …)`), the variable of a
+   * `for…of` / `for…in` over one, and state a `useState` setter is handed one.
+   * `*` is the whole props object. Over-counts on shadowing, which can only add
+   * a forwarder.
    */
   const fromProps = (fn: NonNullable<Owner["fn"]>) => {
     const taint = new Map<string, Set<string>>();
@@ -257,9 +281,33 @@ describe("recovery phrase screen", () => {
       go(e);
       return out;
     };
+    // `const [shown, setShown] = useState(…)`: what the setter is handed is shown.
+    const setters = new Map<string, ts.BindingName>();
+    const findSetters = (n: ts.Node) => {
+      if (
+        ts.isVariableDeclaration(n) &&
+        ts.isArrayBindingPattern(n.name) &&
+        n.initializer &&
+        ts.isCallExpression(n.initializer) &&
+        /(^|\.)use(State|Reducer)$/.test(n.initializer.expression.getText())
+      ) {
+        const [state, setter] = n.name.elements;
+        if (state && setter && ts.isBindingElement(state) && ts.isBindingElement(setter) && ts.isIdentifier(setter.name))
+          setters.set(setter.name.text, state.name);
+      }
+      ts.forEachChild(n, findSetters);
+    };
+    if (fn.body) findSetters(fn.body);
     for (let changed = true; changed; ) {
       changed = false;
       const go = (n: ts.Node) => {
+        if ((ts.isForOfStatement(n) || ts.isForInStatement(n)) && ts.isVariableDeclarationList(n.initializer)) {
+          const t = of(n.expression);
+          if (t.size) for (const d of n.initializer.declarations) changed = bind(d.name, t) || changed;
+        } else if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && setters.has(n.expression.text) && n.arguments[0]) {
+          const t = of(n.arguments[0]);
+          if (t.size) changed = bind(setters.get(n.expression.text)!, t) || changed;
+        }
         if (ts.isVariableDeclaration(n) && n.initializer) {
           const t = of(n.initializer);
           if (t.size) changed = bind(n.name, t) || changed;
@@ -291,19 +339,51 @@ describe("recovery phrase screen", () => {
    * from its props is then watched for those props, and so on until nothing
    * new turns up.
    */
+  const EXTS = [".tsx", ".ts", ".jsx", ".js", ".mts", ".cts", ".mjs", ".cjs"];
+
+  /** The shipped file an import names, or undefined for a package. */
+  const resolveModule = (files: Map<string, ts.SourceFile>, from: string, spec: string) => {
+    const base = spec.startsWith("@/")
+      ? `src/${spec.slice(2)}`
+      : spec.startsWith(".")
+        ? posix.join(posix.dirname(from), spec)
+        : undefined;
+    if (base === undefined) return undefined;
+    return [base, ...EXTS.map((e) => base + e), ...EXTS.map((e) => `${base}/index${e}`)].find((c) => files.has(c));
+  };
+
+  /**
+   * Per file, what each top-level name means: `<file>#<name>` of its own
+   * declarations and of what it imports by name. A tag is matched through
+   * this, so two components that share a name in two files are two components.
+   */
+  const scopes = (files: Map<string, ts.SourceFile>) => {
+    const out = new Map<string, Map<string, string>>();
+    for (const [rel, sf] of files) {
+      const scope = new Map<string, string>();
+      for (const s of sf.statements) {
+        if ((ts.isFunctionDeclaration(s) || ts.isClassDeclaration(s)) && s.name) scope.set(s.name.text, `${rel}#${s.name.text}`);
+        if (ts.isVariableStatement(s))
+          for (const d of s.declarationList.declarations)
+            if (ts.isIdentifier(d.name)) scope.set(d.name.text, `${rel}#${d.name.text}`);
+        if (ts.isImportDeclaration(s) && ts.isStringLiteral(s.moduleSpecifier) && s.importClause) {
+          const target = resolveModule(files, rel, s.moduleSpecifier.text);
+          if (!target) continue;
+          if (s.importClause.name) scope.set(s.importClause.name.text, `${target}#default`);
+          const nb = s.importClause.namedBindings;
+          if (nb && ts.isNamedImports(nb))
+            for (const el of nb.elements) scope.set(el.name.text, `${target}#${(el.propertyName ?? el.name).text}`);
+        }
+      }
+      out.set(rel, scope);
+    }
+    return out;
+  };
+
   const survey = () => {
     const files = shipped();
-    const watched = new Map<string, { rel: string; props: Set<string> }>([
-      ["CopyBtn", { rel: COPY_BTN_FILE, props: new Set(["value"]) }],
-    ]);
-    const decl = new Map<string, string>();
-    for (const [rel, sf] of files) {
-      for (const s of sf.statements) {
-        if ((ts.isFunctionDeclaration(s) || ts.isClassDeclaration(s)) && s.name) decl.set(s.name.text, rel);
-        if (ts.isVariableStatement(s))
-          for (const d of s.declarationList.declarations) if (ts.isIdentifier(d.name)) decl.set(d.name.text, rel);
-      }
-    }
+    const scope = scopes(files);
+    const watched = new Map<string, Set<string>>([[`${COPY_BTN_FILE}#CopyBtn`, new Set(["value"])]]);
     let seen: string[] = [];
     let forwards: Set<string>;
     const tainters = new Map<NonNullable<Owner["fn"]>, (e: ts.Node) => Set<string>>();
@@ -316,32 +396,84 @@ describe("recovery phrase screen", () => {
           if (!ts.isJsxOpeningElement(n) && !ts.isJsxSelfClosingElement(n)) return;
           if (!ts.isIdentifier(n.tagName)) return;
           const tag = n.tagName.text;
-          const w = watched.get(tag);
-          if (!w) return;
+          const props = watched.get(scope.get(rel)!.get(tag) ?? "");
+          if (!props) return;
           const o = owner(n);
           const key = `${rel}#${o.name}`;
+          // A class, a value at module level, or a wrapper not unwrapped above:
+          // where the props come from cannot be read, so it cannot pass.
+          if (!o.fn) {
+            seen.push(`${key}: <${tag}> sits where the test cannot read its props`);
+            return;
+          }
+          const handed: ts.Node[] = [];
+          const fnBody = o.fn;
+          /**
+           * The props a spread sets, when it is a local object literal touched
+           * nowhere but where it is declared and spread (`{ port, network }`,
+           * itself spreading another such literal). Anything else — a prop, a
+           * call, a literal written to after — is unreadable.
+           */
+          const expand = (e: ts.Expression, depth = 0): [string, ts.Node][] | undefined => {
+            if (!ts.isIdentifier(e) || depth > 4) return undefined;
+            const decls: ts.VariableDeclaration[] = [];
+            let foreign = false;
+            const look = (m: ts.Node) => {
+              if (ts.isIdentifier(m) && m.text === e.text) {
+                const q = m.parent;
+                if (ts.isVariableDeclaration(q) && q.name === m) decls.push(q);
+                else if (!((ts.isJsxSpreadAttribute(q) || ts.isSpreadAssignment(q)) && q.expression === m)) foreign = true;
+              }
+              ts.forEachChild(m, look);
+            };
+            look(fnBody);
+            const init = decls.length === 1 ? decls[0].initializer : undefined;
+            if (foreign || !init || !ts.isObjectLiteralExpression(init)) return undefined;
+            const out: [string, ts.Node][] = [];
+            for (const p of init.properties) {
+              if (ts.isShorthandPropertyAssignment(p)) out.push([p.name.text, p.name]);
+              else if (ts.isPropertyAssignment(p) && (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)))
+                out.push([p.name.text, p.initializer]);
+              else if (ts.isSpreadAssignment(p)) {
+                const inner = expand(p.expression, depth + 1);
+                if (!inner) return undefined;
+                out.push(...inner);
+              } else return undefined;
+            }
+            return out;
+          };
           for (const a of n.attributes.properties) {
             // A spread can set the prop, or override it, out of sight of the list.
             if (ts.isJsxSpreadAttribute(a)) {
-              seen.push(`${key}: <${tag} {...${a.expression.getText(sf)}}>`);
+              const set = expand(a.expression);
+              if (!set) seen.push(`${key}: <${tag} {...${a.expression.getText(sf)}}>`);
+              else for (const [prop, e] of set) if (props.has(prop) || props.has("*")) handed.push(e);
               continue;
             }
             const prop = a.name.getText(sf);
-            if (!w.props.has(prop)) continue;
+            if (!props.has(prop) && !props.has("*")) continue;
             const e = a.initializer && ts.isJsxExpression(a.initializer) ? a.initializer.expression : undefined;
             if (!e) {
               seen.push(`${key}: <${tag} ${prop} not a {…} expression>`);
               continue;
             }
+            handed.push(e);
+          }
+          // What sits between the tags is the `children` prop.
+          if ((props.has("children") || props.has("*")) && ts.isJsxOpeningElement(n) && ts.isJsxElement(n.parent))
+            for (const c of n.parent.children) {
+              if (ts.isJsxText(c) && c.containsOnlyTriviaWhiteSpaces) continue;
+              handed.push(ts.isJsxExpression(c) && c.expression ? c.expression : c);
+            }
+          if (!tainters.has(o.fn)) tainters.set(o.fn, fromProps(o.fn));
+          for (const e of handed) {
             seen.push(`${key}: ${e.getText(sf)}`);
-            if (!o.fn) continue;
-            if (!tainters.has(o.fn)) tainters.set(o.fn, fromProps(o.fn));
             for (const p of tainters.get(o.fn)!(e)) {
               forwards.add(`${key}: ${p}`);
-              const ow = watched.get(o.name) ?? { rel, props: new Set<string>() };
-              if (!ow.props.has(p)) {
-                ow.props.add(p);
-                watched.set(o.name, ow);
+              const ow = watched.get(key) ?? new Set<string>();
+              if (!ow.has(p)) {
+                ow.add(p);
+                watched.set(key, ow);
                 grew = true;
               }
             }
@@ -349,9 +481,7 @@ describe("recovery phrase screen", () => {
         });
       }
     }
-    // A component found to forward has to be declared where it is watched from.
-    for (const [name, w] of watched) if (decl.has(name)) w.rel = decl.get(name)!;
-    return { files, watched, seen, forwards: [...forwards!].sort() };
+    return { files, scope, watched, seen, forwards: [...forwards!].sort() };
   };
 
   it("no copy button anywhere is handed anything but an address, a hash or a name", () => {
@@ -363,12 +493,26 @@ describe("recovery phrase screen", () => {
   });
 
   it("nothing but the copy button reaches the clipboard, or a copy button by another name", () => {
-    const { files, watched } = survey();
+    const { files, scope, watched } = survey();
     const offences: string[] = [];
     /** An import path that names one of the files above, however it is spelled. */
     const watchedModule = new RegExp(
-      `(^|/)(${[...new Set([...watched.values()].map((w) => w.rel.replace(/^.*\//, "").replace(/\.[cm]?[jt]sx?$/, "")))].join("|")})(\\.[cm]?[jt]sx?)?$`,
+      `(^|/)(${[...new Set([...watched.keys()].map((k) => k.replace(/#.*$/, "").replace(/^.*\//, "").replace(/\.[cm]?[jt]sx?$/, "")))].join("|")})(\\.[cm]?[jt]sx?)?$`,
     );
+    /** An i18n key that exists: a sentence about the clipboard, not a write to it. */
+    const isKey = (k: string) => {
+      const i = k.indexOf(":");
+      const ns = i < 0 ? undefined : k.slice(0, i);
+      const path = i < 0 ? k : k.slice(i + 1);
+      const tables = ns ? [LOCALES[ns]] : Object.values(LOCALES);
+      return tables.some((tb) => {
+        if (!tb) return false;
+        if (typeof tb[path] === "string") return true;
+        let o: unknown = tb;
+        for (const s of path.split(".")) o = o && typeof o === "object" ? (o as Record<string, unknown>)[s] : undefined;
+        return typeof o === "string";
+      });
+    };
     for (const [rel, sf] of files) {
       if (rel === COPY_BTN_FILE) {
         // The one file allowed to write the clipboard hands out nothing but the
@@ -388,13 +532,15 @@ describe("recovery phrase screen", () => {
         // Every way a page writes the clipboard: the async API under any spelling
         // (`navigator.clipboard`, `navigator["clipboard"]`, a saved reference),
         // the legacy `execCommand("copy")`, and a `copy` event's `clipboardData`.
-        // The one string let through is the key handed to `t()`: a sentence
-        // about the clipboard is not a write to it.
+        // The one string let through is a key handed to `t()` that the English
+        // locale has: a sentence about the clipboard is not a write to it, and
+        // a function merely named `t` handed "clipboard" finds no such key.
         const i18nKey =
           ts.isStringLiteralLike(n) &&
           ts.isCallExpression(n.parent) &&
           n.parent.arguments[0] === n &&
-          (ts.isIdentifier(n.parent.expression) ? n.parent.expression.text === "t" : ts.isPropertyAccessExpression(n.parent.expression) && n.parent.expression.name.text === "t");
+          (ts.isIdentifier(n.parent.expression) ? n.parent.expression.text === "t" : ts.isPropertyAccessExpression(n.parent.expression) && n.parent.expression.name.text === "t") &&
+          isKey(n.text);
         if (ts.isIdentifier(n) || ts.isPrivateIdentifier(n) || (ts.isStringLiteralLike(n) && !i18nKey) || ts.isTemplateLiteralToken(n)) {
           if (/clipboard|execCommand/i.test(n.text)) offences.push(`${rel}:${at(sf, n)}: ${n.text}`);
         }
@@ -420,11 +566,14 @@ describe("recovery phrase screen", () => {
         // The button reached any way but `<Name …>`, its own declaration and an
         // unaliased import — `as Other`, `createElement(Name, …)`, `[Name].map`,
         // `typeof Name` — is a copy button the value list above never sees.
-        if (ts.isIdentifier(n) && watched.has(n.text)) {
+        // Matched through the file's scope: `import { CopyBtn as C }` binds `C`
+        // to the button, so `C` is caught here even though it is spelled apart.
+        const named = ts.isIdentifier(n) ? scope.get(rel)!.get(n.text) : undefined;
+        if (ts.isIdentifier(n) && named && watched.has(named)) {
           const ok =
             ((ts.isJsxOpeningElement(p) || ts.isJsxSelfClosingElement(p) || ts.isJsxClosingElement(p)) && p.tagName === n) ||
             (ts.isImportSpecifier(p) && p.name === n && !p.propertyName) ||
-            (rel === watched.get(n.text)!.rel &&
+            (named === `${rel}#${n.text}` &&
               (ts.isFunctionDeclaration(p) || ts.isVariableDeclaration(p) || ts.isClassDeclaration(p)) &&
               p.name === n);
           if (!ok) offences.push(`${rel}:${at(sf, n)}: ${n.text} used other than as <${n.text} …>`);

@@ -55,6 +55,11 @@ const BALANCE = "src/components/wallet/BalanceView.tsx";
 const POPUP_CSS = "extension/src/popup.css";
 const COPY_BTN = "src/components/CopyBtn.tsx";
 const WALLET_HUB = "src/components/wallet/WalletHub.tsx";
+// The copy-button guard's own lists, which a mutant edits the way an author
+// would to make a new component look declared.
+const COPY_GUARD_TEST = "src/components/wallet/__tests__/SeedPhraseStep.test.tsx";
+const COPYABLE_ANCHOR = '    "src/components/wallet/WatchOnlyPanel.tsx#WatchOnlyPanel: watched",';
+const FORWARDS_ANCHOR = '    "src/components/wallet/WalletTabs.tsx#WalletTabs: port",\n  ];';
 // A gate is worth mutating too. "Is this guard pinned" and "is the thing that
 // checks the guard pinned" are different questions, and the second one has gone
 // unanswered here before: two table rows named after a detector were going red
@@ -580,6 +585,96 @@ const MUTANTS = [
       "}\n\n" +
       "export function CopyBtn({",
   },
+  // The five below each take more than one edit: the component, and the line in
+  // the test's lists an author would add so the component looks declared.
+  {
+    name: "a copy button behind memo(forwardRef(…)), declared only as copyable",
+    edits: [
+      {
+        file: BALANCE,
+        from: "export function BalanceView({",
+        to:
+          "export const AddressChip = memo(forwardRef<HTMLSpanElement, { address: string }>(({ address }, ref) => (\n" +
+          "  <span ref={ref}><CopyBtn value={address} /></span>\n" +
+          ")));\n\n" +
+          "export function BalanceView({",
+      },
+      { file: BALANCE, from: 'import { FiatValue } from "./FiatValue";', to: 'import { FiatValue } from "./FiatValue";\nimport { forwardRef, memo } from "react";' },
+      { file: COPY_GUARD_TEST, from: COPYABLE_ANCHOR, to: `${COPYABLE_ANCHOR}\n    "${BALANCE}#AddressChip: address",` },
+    ],
+  },
+  {
+    name: "a copy button in a class component, declared only as copyable",
+    edits: [
+      {
+        file: BALANCE,
+        from: "export function BalanceView({",
+        to:
+          "export class TxRow extends Component<{ txHash: string }> {\n" +
+          "  render() {\n" +
+          "    return <CopyBtn value={this.props.txHash} />;\n" +
+          "  }\n" +
+          "}\n\n" +
+          "export function BalanceView({",
+      },
+      { file: BALANCE, from: 'import { FiatValue } from "./FiatValue";', to: 'import { FiatValue } from "./FiatValue";\nimport { Component } from "react";' },
+      { file: COPY_GUARD_TEST, from: COPYABLE_ANCHOR, to: `${COPYABLE_ANCHOR}\n    "${BALANCE}#TxRow: this.props.txHash",` },
+    ],
+  },
+  {
+    name: "a declared forwarder is handed the phrase as its children",
+    edits: [
+      {
+        file: BALANCE,
+        from: "export function BalanceView({",
+        to:
+          "export function CopyChip({ children }: { children: string }) {\n" +
+          "  return <CopyBtn value={children} />;\n" +
+          "}\n\n" +
+          "export function BalanceView({",
+      },
+      {
+        file: PANEL,
+        from: 'import { BalanceView, type DisplayAsset } from "./BalanceView";',
+        to: 'import { BalanceView, CopyChip, type DisplayAsset } from "./BalanceView";',
+      },
+      {
+        file: PANEL,
+        from: '                  <code className="mono block break-words text-xs">{revealed}</code>',
+        to:
+          '                  <code className="mono block break-words text-xs">{revealed}</code>\n' +
+          '                  <CopyChip>{revealed ?? ""}</CopyChip>',
+      },
+      { file: COPY_GUARD_TEST, from: COPYABLE_ANCHOR, to: `${COPYABLE_ANCHOR}\n    "${BALANCE}#CopyChip: children",` },
+      { file: COPY_GUARD_TEST, from: FORWARDS_ANCHOR, to: `    "${BALANCE}#CopyChip: children",\n${FORWARDS_ANCHOR}` },
+    ],
+  },
+  {
+    name: "a copy button fed by a for…of over a prop, declared only as copyable",
+    edits: [
+      {
+        file: BALANCE,
+        from: "export function BalanceView({",
+        to:
+          "export function TxList({ txs }: { txs: string[] }) {\n" +
+          "  const rows = [];\n" +
+          "  for (const txHash of txs) rows.push(<CopyBtn key={txHash} value={txHash} />);\n" +
+          "  return <>{rows}</>;\n" +
+          "}\n\n" +
+          "export function BalanceView({",
+      },
+      { file: COPY_GUARD_TEST, from: COPYABLE_ANCHOR, to: `${COPYABLE_ANCHOR}\n    "${BALANCE}#TxList: txHash",` },
+    ],
+  },
+  {
+    name: "a local function named t reaches the clipboard by a string",
+    file: BALANCE,
+    from: "export function BalanceView({",
+    to:
+      "const t = (k: string) => (navigator as unknown as Record<string, Clipboard>)[k];\n" +
+      "export const copyAny = (v: string) => t(\"clipboard\").writeText(v);\n\n" +
+      "export function BalanceView({",
+  },
   {
     name: "a locale file that parses to null passes as a namespace with no keys",
     file: LOCALES_GATE,
@@ -610,8 +705,9 @@ const write = (rel, text) => writeFileSync(join(REPO, rel), text);
 const runTests = () =>
   spawnSync("npx", ["vitest", "run", ...TESTS], { cwd: REPO, encoding: "utf8" }).status ?? 1;
 
+const editsOf = (m) => m.edits ?? [m];
 const originals = new Map();
-for (const m of MUTANTS) if (!originals.has(m.file)) originals.set(m.file, read(m.file));
+for (const m of MUTANTS) for (const e of editsOf(m)) if (!originals.has(e.file)) originals.set(e.file, read(e.file));
 const restoreAll = () => {
   for (const [rel, text] of originals) write(rel, text);
 };
@@ -635,16 +731,26 @@ try {
   }
 
   for (const m of MUTANTS) {
-    const src = originals.get(m.file);
-    const hits = src.split(m.from).length - 1;
-    if (hits !== 1) {
-      console.error(`  ANCHOR  ← ${m.name}\n          (matched ${hits}× in ${m.file}; expected 1)`);
+    // Edits apply in order, each to the file as the previous ones left it.
+    const next = new Map();
+    let miss;
+    for (const e of editsOf(m)) {
+      const src = next.get(e.file) ?? originals.get(e.file);
+      const hits = src.split(e.from).length - 1;
+      if (hits !== 1) {
+        miss = `matched ${hits}× in ${e.file}; expected 1`;
+        break;
+      }
+      next.set(e.file, src.replace(e.from, e.to));
+    }
+    if (miss) {
+      console.error(`  ANCHOR  ← ${m.name}\n          (${miss})`);
       unanchored += 1;
       continue;
     }
-    write(m.file, src.replace(m.from, m.to));
+    for (const [rel, text] of next) write(rel, text);
     const caught = runTests() !== 0;
-    write(m.file, src);
+    for (const rel of next.keys()) write(rel, originals.get(rel));
     console.log(`  ${caught ? "RED   " : "GREEN "}  ← ${m.name}`);
     if (!caught) survived += 1;
   }
