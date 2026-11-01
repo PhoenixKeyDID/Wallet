@@ -813,6 +813,53 @@ const MUTANTS = [
       '  const box: string[] = [];\n  const key: string = "w";\n  const { s }: { s: string } = Reflect.get({ w: { s: box } }, key);\n  Object.assign(s, [secret]);\n  return <CopyBtn value={box.join()} />;',
       "box.join()",
     ],
+    // Nothing below hands the phrase on as a value: each rebuilds it from what
+    // a test on it decided, or puts it where any other code can read it back.
+    [
+      "rebuilt letter by letter under an if",
+      '  let out = "";\n  for (let i = 0; i < secret.length; i++)\n    for (const c of "abcdefghijklmnopqrstuvwxyz ") if (secret[i] === c) out += c;\n  return <CopyBtn value={out} />;',
+      "out",
+    ],
+    [
+      "rebuilt letter by letter behind &&",
+      '  let out = "";\n  for (let i = 0; i < secret.length; i++)\n    for (const c of "abcdefghijklmnopqrstuvwxyz ") void (secret.charAt(i) === c && (out = out.concat(c)));\n  return <CopyBtn value={out} />;',
+      "out",
+    ],
+    [
+      "rebuilt letter by letter in a catch a test throws into",
+      '  let out = "";\n  for (let i = 0; i < secret.length; i++)\n    for (const c of "abcdefghijklmnopqrstuvwxyz ")\n      try {\n        if (secret[i] === c) throw 0;\n      } catch {\n        out += c;\n      }\n  return <CopyBtn value={out} />;',
+      "out",
+    ],
+    [
+      "rebuilt letter by letter from where a loop breaks",
+      '  let out = "";\n  for (let i = 0; i < secret.length; i++) {\n    let hit = "";\n    for (const c of "abcdefghijklmnopqrstuvwxyz ") {\n      hit = c;\n      if (secret[i] === c) break;\n    }\n    out += hit;\n  }\n  return <CopyBtn value={out} />;',
+      "out",
+    ],
+    [
+      "kept as the key of an object",
+      "  const keys: Record<string, true> = {};\n  keys[secret] = true;\n  return <CopyBtn value={Object.keys(keys)[0]} />;",
+      "Object.keys(keys)[0]",
+    ],
+    [
+      "rebuilt through a computed key in a pattern",
+      '  const table: Record<string, string> = {};\n  for (const c of "abcdefghijklmnopqrstuvwxyz ") table[c] = c;\n  let out = "";\n  for (const ch of secret) {\n    const { [ch]: hit = "" } = table;\n    out += hit;\n  }\n  return <CopyBtn value={out} />;',
+      "out",
+    ],
+    [
+      "kept in sessionStorage",
+      "  sessionStorage.setItem('k', secret);\n  return <CopyBtn value={sessionStorage.getItem('k') ?? ''} />;",
+      "sessionStorage.getItem('k') ?? ''",
+    ],
+    [
+      "kept in an attribute of a hidden element",
+      "  return (\n    <>\n      <span id='shown-k' data-k={secret} hidden />\n      <CopyBtn value={document.getElementById('shown-k')?.dataset.k ?? ''} />\n    </>\n  );",
+      "document.getElementById('shown-k')?.dataset.k ?? ''",
+    ],
+    [
+      "kept in localStorage from inside an effect",
+      "  useEffect(() => {\n    window.localStorage.setItem('k', secret);\n  }, [secret]);\n  return <CopyBtn value={window.localStorage.getItem('k') ?? ''} />;",
+      "window.localStorage.getItem('k') ?? ''",
+    ],
   ].map(([what, body, value]) => ({
     name: `a copy button fed from a prop ${what}, declared only as copyable`,
     edits: [

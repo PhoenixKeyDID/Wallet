@@ -163,6 +163,8 @@ describe("recovery phrase screen", () => {
     "src/components/wallet/SendPanel.tsx#SendPanel: changeAddress",
     "src/components/wallet/SendPanel.tsx#SendPanel: network",
     "src/components/wallet/SendPanel.tsx#SendPanel: port",
+    // Whether a submit runs at all, and so whether its hash is set, turns on it.
+    "src/components/wallet/SendPanel.tsx#SendPanel: uncertainHash",
     "src/components/wallet/UncertainSubmitNotice.tsx#UncertainSubmitNotice: txHash",
     "src/components/wallet/WalletHub.tsx#WalletHub: did",
     // The stored hash it copies is looked up by these; more than strictly
@@ -280,6 +282,11 @@ describe("recovery phrase screen", () => {
 
   /** Taint of a value handed in from somewhere the test cannot follow. */
   const UNSEEN = "<unseen>";
+  /** Not a name: the key under which a component's taint keeps what it put where the page keeps state. */
+  const WORLD = "<world>";
+  /** The language's own namespaces and constructors: calling them keeps nothing in them. */
+  const LANGUAGE =
+    /^(Object|JSON|Math|Number|String|Boolean|Array|Date|Intl|Promise|Symbol|BigInt|Error|TypeError|RangeError|Reflect|console|Set|Map|WeakMap|WeakSet|RegExp|Uint8Array|ArrayBuffer|DataView|TextEncoder|TextDecoder|Proxy|NaN|Infinity)$/;
   /**
    * For one component: every name in its body that holds something from its
    * props, mapped to the props it came from. A destructured prop, a name
@@ -314,7 +321,9 @@ describe("recovery phrase screen", () => {
         const narrowed =
           ts.isObjectBindingPattern(b) && props.has("*") && key && !el.dotDotDotToken
             ? new Set([key.getText(), ...[...props].filter((p) => p !== "*")])
-            : props;
+            : new Set(props);
+        // `const { [secret]: v } = o`: which value `v` gets is chosen by the key.
+        if (el.propertyName && ts.isComputedPropertyName(el.propertyName)) for (const p of of(el.propertyName.expression)) narrowed.add(p);
         changed = bind(el.name, narrowed) || changed;
       }
       return changed;
@@ -343,6 +352,48 @@ describe("recovery phrase screen", () => {
     // same spelling: `(a) => a.toFixed()` holds nothing until it is called.
     // What was kept somewhere no name records — a field of what a local function
     // returns, `this` — may be anything the component reads: every value holds it.
+    // What the page itself keeps — storage, the DOM, any global — is one store:
+    // anything handed to it may come back through any global name.
+    // `sessionStorage.setItem("k", secret)`, `<span data-k={secret} />`, then
+    // `sessionStorage.getItem("k")` or `document.getElementById(…).dataset.k`.
+    // A module-level `const cache = new Map()` or an import is the same store.
+    const outsideOf = new Map<ts.Identifier, boolean>();
+    /** A name declared outside the component, not a label or `undefined`. */
+    const outside = (id: ts.Identifier) => {
+      let r = outsideOf.get(id);
+      if (r === undefined) {
+        let s = checker!.getSymbolAtLocation(id);
+        if (s && s.flags & ts.SymbolFlags.Alias) s = checker!.getAliasedSymbol(s);
+        const file = fn.getSourceFile();
+        r =
+          !!s &&
+          id.text !== "undefined" &&
+          !(s.declarations ?? []).some((d) => d.getSourceFile() === file && d.pos >= fn.pos && d.end <= fn.end);
+        outsideOf.set(id, r);
+      }
+      return r;
+    };
+    /**
+     * Such a name that can hold a value — a variable, not a function, class or
+     * type; not one of the language's own namespaces and constructors
+     * (`Object.keys(o)` keeps nothing in `Object`), and not a constant whose
+     * type is one literal (`const ALPHABET = "ab"` holds nothing else); and
+     * not a variable whose value is a function or a constructor
+     * (`export const useTranslation = …`, `Buffer`) — what such a function keeps
+     * in its own module is not followed here, as with a function declaration.
+     */
+    const store = (id: ts.Identifier) => {
+      if (!outside(id)) return false;
+      let s = checker!.getSymbolAtLocation(id)!;
+      if (s.flags & ts.SymbolFlags.Alias) s = checker!.getAliasedSymbol(s);
+      const ds = s.declarations ?? [];
+      if (!ds.length) return true;
+      if (!(s.flags & ts.SymbolFlags.Variable)) return false;
+      if (LANGUAGE.test(id.text) && ds.every((d) => d.getSourceFile().hasNoDefaultLib)) return false;
+      const type = checker!.getTypeOfSymbol(s);
+      if (type.getCallSignatures().length || type.getConstructSignatures().length) return false;
+      return !(type.flags & (ts.TypeFlags.Literal | ts.TypeFlags.BooleanLiteral));
+    };
     const poisoned = new Set<string>();
     const poison = (t: Iterable<string>) => {
       const before = poisoned.size;
@@ -368,8 +419,22 @@ describe("recovery phrase screen", () => {
         // holds `UNSEEN`. The hook handed on or renamed fails the clipboard test.
         if (ts.isCallExpression(n) && isStateHook(n.expression) && !statePair(n)) for (const x of unseen()) out.add(x);
         if (ts.isPropertyAccessExpression(n)) return go(n.expression, shadow);
-        if (ts.isPropertyAssignment(n)) return go(n.initializer, shadow);
-        if (ts.isIdentifier(n)) for (const p of tainted(n.text) ?? []) out.add(p);
+        // `{ [secret]: true }`: a key is a value the object holds.
+        if (ts.isPropertyAssignment(n)) {
+          if (ts.isComputedPropertyName(n.name)) go(n.name.expression, shadow);
+          return go(n.initializer, shadow);
+        }
+        // A tag or an attribute name is not a value; what is handed to it is.
+        if (ts.isJsxAttribute(n)) {
+          if (n.initializer) go(n.initializer, shadow);
+          return;
+        }
+        if (ts.isJsxOpeningElement(n) || ts.isJsxSelfClosingElement(n)) return go(n.attributes, shadow);
+        if (ts.isJsxClosingElement(n) || ts.isTypeNode(n)) return;
+        if (ts.isIdentifier(n)) {
+          for (const p of tainted(n.text) ?? []) out.add(p);
+          if (!shadow.has(n.text) && store(n)) for (const p of taint.get(WORLD) ?? []) out.add(p);
+        }
         ts.forEachChild(n, (c) => go(c, shadow));
       };
       go(e, new Set());
@@ -391,6 +456,7 @@ describe("recovery phrase screen", () => {
       const t = new Set<string>();
       if (ts.isPropertyAccessExpression(call.expression)) for (const p of of(call.expression.expression)) t.add(p);
       for (const a of call.arguments) if (a !== skip) for (const p of of(a)) t.add(p);
+      for (const p of decides(call)) t.add(p);
       return t;
     };
     /** Names declared in the component — not `Object`, `JSON`, `console` or an import. */
@@ -503,7 +569,9 @@ describe("recovery phrase screen", () => {
     const target = (x: ts.Expression, t: Set<string>): boolean => {
       const e = bare(x);
       if (ts.isIdentifier(e)) return add(e.text, t);
-      if (ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) return into(e.expression, t, true);
+      if (ts.isPropertyAccessExpression(e)) return into(e.expression, t, true);
+      // `keys[secret] = true`: the key is kept as much as the value is.
+      if (ts.isElementAccessExpression(e)) return into(e.expression, new Set([...t, ...of(e.argumentExpression)]), true);
       if (ts.isSpreadElement(e)) return target(e.expression, t);
       if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
         const d = of(e.right);
@@ -513,7 +581,8 @@ describe("recovery phrase screen", () => {
       if (ts.isArrayLiteralExpression(e)) for (const el of e.elements) changed = target(el, t) || changed;
       else if (ts.isObjectLiteralExpression(e))
         for (const p of e.properties) {
-          if (ts.isPropertyAssignment(p)) changed = target(p.initializer, t) || changed;
+          if (ts.isPropertyAssignment(p))
+            changed = target(p.initializer, ts.isComputedPropertyName(p.name) ? new Set([...t, ...of(p.name.expression)]) : t) || changed;
           else if (ts.isShorthandPropertyAssignment(p)) changed = add(p.name.text, t) || changed;
           else if (ts.isSpreadAssignment(p)) changed = target(p.expression, t) || changed;
         }
@@ -523,7 +592,7 @@ describe("recovery phrase screen", () => {
     /** `{…}` as a JSX prop or child: what the element it sits in is handed. */
     const inElement = (x: ts.JsxExpression) => {
       const el = ts.isJsxAttribute(x.parent) ? x.parent.parent.parent : x.parent;
-      return of(ts.isJsxOpeningElement(el) ? el.parent : el);
+      return valueAt(ts.isJsxOpeningElement(el) ? el.parent : el);
     };
     const unseen = () => new Set(fn.parameters.length ? [UNSEEN] : []);
     /** What one use of a function, the function itself or a name for it, calls it with. */
@@ -532,6 +601,7 @@ describe("recovery phrase screen", () => {
       if (ts.isCallExpression(p) && p.expression === use) {
         const t = new Set<string>();
         for (const a of p.arguments) for (const x of of(a)) t.add(x);
+        for (const x of decides(p)) t.add(x);
         return t;
       }
       if (ts.isCallExpression(p) && p.arguments.includes(use as ts.Expression)) {
@@ -567,6 +637,60 @@ describe("recovery phrase screen", () => {
       if (ts.isVariableDeclaration(f.parent) && f.parent.initializer === f) return byName(f.parent);
       return callsWith(f);
     };
+    // Whether a line runs at all says something about what decided it:
+    // `for (const c of ALPHABET) if (secret[i] === c) out += c` copies the
+    // phrase without assigning any of it. What is written under an `if`,
+    // `switch`, loop, `?:`, `&&`, `||`, `??` or in a `catch` also holds what
+    // chose that branch; and a `break`, `continue`, `return` or `throw` under
+    // such a choice decides everything that runs only if it did not jump.
+    const jumps = new Map<ts.Node, Set<string>>();
+    const K = ts.SyntaxKind;
+    const SHORT = new Set([
+      K.AmpersandAmpersandToken,
+      K.BarBarToken,
+      K.QuestionQuestionToken,
+      K.AmpersandAmpersandEqualsToken,
+      K.BarBarEqualsToken,
+      K.QuestionQuestionEqualsToken,
+    ]);
+    /** What decides whether `n` runs. */
+    const decides = (n: ts.Node): Set<string> => {
+      const t = new Set<string>();
+      const put = (s: Iterable<string>) => {
+        for (const p of s) t.add(p);
+      };
+      for (let x = n; ; x = x.parent) {
+        put(jumps.get(x) ?? []);
+        if (x === fn || !x.parent) break;
+        const p = x.parent;
+        if (ts.isIfStatement(p) && x !== p.expression) put(of(p.expression));
+        else if ((ts.isWhileStatement(p) || ts.isDoStatement(p)) && x === p.statement) put(of(p.expression));
+        else if (ts.isForStatement(p) && x !== p.initializer && p.condition) put(of(p.condition));
+        else if ((ts.isForOfStatement(p) || ts.isForInStatement(p)) && x === p.statement) put(of(p.expression));
+        else if (ts.isSwitchStatement(p) && x === p.caseBlock) {
+          put(of(p.expression));
+          for (const c of p.caseBlock.clauses) if (ts.isCaseClause(c)) put(of(c.expression));
+        } else if (ts.isConditionalExpression(p) && x !== p.condition) put(of(p.condition));
+        else if (ts.isBinaryExpression(p) && x === p.right && SHORT.has(p.operatorToken.kind)) put(of(p.left));
+        else if (ts.isTryStatement(p) && x !== p.tryBlock) put(of(p.tryBlock));
+      }
+      return t;
+    };
+    /** What a value written at `e` holds: itself, and what decided that it is written. */
+    const valueAt = (e: ts.Node) => new Set([...of(e), ...decides(e)]);
+    /** The code a jump skips or not: the loop or `switch` a `break` leaves, the function a `return` leaves, the `try` a `throw` lands in. */
+    const landing = (j: ts.Node): ts.Node | undefined => {
+      const label = ts.isBreakStatement(j) || ts.isContinueStatement(j) ? j.label?.text : undefined;
+      for (let x: ts.Node = j, p = j.parent; p; x = p, p = p.parent) {
+        if (ts.isFunctionLike(p)) return ts.isReturnStatement(j) || ts.isThrowStatement(j) ? p : undefined;
+        if (ts.isBreakStatement(j) || ts.isContinueStatement(j)) {
+          // What follows the loop runs either way; what it left behind does not.
+          if (label ? ts.isLabeledStatement(p) && p.label.text === label : ts.isIterationStatement(p, false) || (ts.isBreakStatement(j) && ts.isSwitchStatement(p)))
+            return p.parent;
+        } else if (ts.isThrowStatement(j) && ts.isTryStatement(p) && p.catchClause && x === p.tryBlock) return p;
+      }
+      return undefined;
+    };
     // A setter handed anywhere but a call that hands it values of its own is
     // called with something the test cannot see: its state holds `UNSEEN`.
     const thrown = new Set<string>();
@@ -574,13 +698,14 @@ describe("recovery phrase screen", () => {
       changed = false;
       const go = (n: ts.Node) => {
         if (ts.isForOfStatement(n) || ts.isForInStatement(n)) {
-          const t = of(n.expression);
-          if (t.size)
-            if (ts.isVariableDeclarationList(n.initializer))
-              for (const d of n.initializer.declarations) changed = bind(d.name, t) || changed;
-            else changed = target(n.initializer, t) || changed;
+          // Ungated: a computed key in the pattern is kept even when the
+          // value is not (`for ({ [secret]: hit } of table)`).
+          const t = valueAt(n.expression);
+          if (ts.isVariableDeclarationList(n.initializer))
+            for (const d of n.initializer.declarations) changed = bind(d.name, t) || changed;
+          else changed = target(n.initializer, t) || changed;
         } else if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && setters.has(n.expression.text) && n.arguments[0]) {
-          const t = of(n.arguments[0]);
+          const t = valueAt(n.arguments[0]);
           if (t.size) changed = bind(setters.get(n.expression.text)!, t) || changed;
         } else if (ts.isIdentifier(n) && setters.has(n.text) && !(ts.isBindingElement(n.parent) && n.parent.name === n)) {
           const call = n.parent;
@@ -592,21 +717,20 @@ describe("recovery phrase screen", () => {
             // Without props there is nothing of the caller's it could be handed.
             // `<Field onChange={setShown} … />`: handed what that element is.
             const el = ts.isJsxExpression(call) && ts.isJsxAttribute(call.parent) ? call.parent.parent.parent : undefined;
-            const t = el ? of(ts.isJsxOpeningElement(el) ? el.parent : el) : new Set([UNSEEN]);
+            const t = el ? valueAt(ts.isJsxOpeningElement(el) ? el.parent : el) : new Set([UNSEEN]);
             if (t.size) changed = bind(setters.get(n.text)!, t) || changed;
           }
         }
         if (ts.isVariableDeclaration(n) && n.initializer) {
-          const t = of(n.initializer);
-          if (t.size) changed = bind(n.name, t) || changed;
+          changed = bind(n.name, valueAt(n.initializer)) || changed;
         } else if (
           ts.isBinaryExpression(n) &&
           n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
           n.operatorToken.kind <= ts.SyntaxKind.LastAssignment
         ) {
           // `=`, `+=`, `??=`, and a pattern on the left: `[txHash] = pair`.
-          const t = of(n.right);
-          if (t.size) changed = target(n.left, t) || changed;
+          // Ungated: `keys[secret] = true` keeps the key though `true` holds nothing.
+          changed = target(n.left, valueAt(n.right)) || changed;
         } else if (ts.isFunctionLike(n) && n !== fn && n.parameters.length) {
           const t = calledWith(n);
           if (t.size) for (const p of n.parameters) changed = bind(p.name, t) || changed;
@@ -630,7 +754,45 @@ describe("recovery phrase screen", () => {
           if (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee)) handed.push(callee.expression);
           const t = new Set<string>();
           for (const a of handed) for (const p of of(a)) t.add(p);
-          if (t.size) for (const a of handed) changed = into(a, t, false) || changed;
+          if (t.size) for (const p of decides(n)) t.add(p);
+          if (t.size)
+            for (const a of handed) {
+              changed = into(a, t, false) || changed;
+              // `sessionStorage.setItem("k", secret)`, `cache.set(k, secret)` on a
+              // module-level `cache`: kept where any other global name may read it.
+              if (roots(a).ids.some(store)) changed = add(WORLD, t) || changed;
+            }
+        }
+        // `<span data-k={secret} hidden />`, `<i>{secret}</i>`: the page now holds
+        // it; `ref={r}` hands the element, and what it holds, to `r`.
+        if ((ts.isJsxOpeningElement(n) || ts.isJsxSelfClosingElement(n)) && /^[a-z]/.test(n.tagName.getText())) {
+          for (const a of n.attributes.properties) {
+            const e = ts.isJsxSpreadAttribute(a) ? a.expression : a.initializer;
+            if (!e) continue;
+            const t = valueAt(e);
+            if (t.size) changed = add(WORLD, t) || changed;
+            if (ts.isJsxAttribute(a) && a.name.getText() === "ref" && ts.isJsxExpression(e) && e.expression) {
+              const held = valueAt(ts.isJsxOpeningElement(n) ? n.parent : n);
+              if (held.size) changed = into(e.expression, held, true) || changed;
+            }
+          }
+          if (ts.isJsxOpeningElement(n))
+            for (const c of n.parent.children)
+              if (ts.isJsxExpression(c) && c.expression) {
+                const t = valueAt(c.expression);
+                if (t.size) changed = add(WORLD, t) || changed;
+              }
+        }
+        if (ts.isBreakStatement(n) || ts.isContinueStatement(n) || ts.isReturnStatement(n) || ts.isThrowStatement(n)) {
+          const to = landing(n);
+          const d = to && decides(n);
+          if (to && d && d.size) {
+            const s = jumps.get(to) ?? new Set<string>();
+            const before = s.size;
+            for (const p of d) s.add(p);
+            jumps.set(to, s);
+            if (s.size !== before) changed = true;
+          }
         }
         // `const alias = kept`, `ref = box`, `const alias = c ? box : other`: the
         // names are one object, so what is kept through the alias is kept in
@@ -652,17 +814,17 @@ describe("recovery phrase screen", () => {
         // `const { v = secret } = {}`, `(v = secret) => …`, `({ v = secret } = {})`:
         // a default is a value the name may hold.
         if ((ts.isBindingElement(n) || ts.isParameter(n)) && n.initializer) {
-          const t = of(n.initializer);
+          const t = valueAt(n.initializer);
           if (t.size) changed = bind(n.name, t) || changed;
         }
         if (ts.isShorthandPropertyAssignment(n) && n.objectAssignmentInitializer) {
-          const t = of(n.objectAssignmentInitializer);
+          const t = valueAt(n.objectAssignmentInitializer);
           if (t.size) changed = add(n.name.text, t) || changed;
         }
         // `throw secret` anywhere in the component, or anything a call inside the
         // `try` may throw, is what `catch (e)` holds.
         if (ts.isThrowStatement(n)) {
-          for (const p of of(n.expression)) if (!thrown.has(p)) (thrown.add(p), (changed = true));
+          for (const p of valueAt(n.expression)) if (!thrown.has(p)) (thrown.add(p), (changed = true));
         }
         if (ts.isTryStatement(n) && n.catchClause?.variableDeclaration) {
           const t = new Set([...thrown, ...of(n.tryBlock)]);
