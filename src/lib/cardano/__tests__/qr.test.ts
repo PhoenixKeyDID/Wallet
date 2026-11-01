@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { encodeFrames, parseFrame, frameId, FrameCollector } from "../qr";
+import { encodeFrames, parseFrame, frameId, FrameCollector, FRAME_ID_HEX_LEN } from "../qr";
+
+const ID_A = "a".repeat(32);
+const ID_B = "b".repeat(32);
 
 function randomBytesDet(n: number): Uint8Array {
   // deterministic pseudo-bytes (no real randomness needed for a framing test)
@@ -23,7 +26,7 @@ describe("air-gap QR framing", () => {
 
   it("multi-frame chunking reassembles in any order", () => {
     const payload = randomBytesDet(1800);
-    const frames = encodeFrames(payload, "witness", "tx01", 700);
+    const frames = encodeFrames(payload, "witness", ID_A, 700);
     expect(frames.length).toBe(3);
     const c = new FrameCollector();
     // add out of order
@@ -40,8 +43,8 @@ describe("air-gap QR framing", () => {
   });
 
   it("rejects mixing frames from different transfers", () => {
-    const a = encodeFrames(randomBytesDet(1000), "witness", "aaa", 700);
-    const b = encodeFrames(randomBytesDet(1000), "witness", "bbb", 700);
+    const a = encodeFrames(randomBytesDet(1000), "witness", ID_A, 700);
+    const b = encodeFrames(randomBytesDet(1000), "witness", ID_B, 700);
     const c = new FrameCollector();
     c.add(a[0]);
     expect(() => c.add(b[1])).toThrow();
@@ -51,10 +54,28 @@ describe("air-gap QR framing", () => {
     expect(() => encodeFrames(randomBytesDet(10), "witness", "bad id!")).toThrow();
   });
 
+  it("frameId is 128 bits: 32 lowercase hex chars", () => {
+    expect(FRAME_ID_HEX_LEN).toBe(32);
+    expect(frameId(randomBytesDet(50))).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  it("refuses any id that is not exactly 32 hex chars — no 8-char fallback", () => {
+    const payload = randomBytesDet(200);
+    const full = frameId(payload);
+    const good = encodeFrames(payload, "unsigned-tx", full)[0];
+    expect(parseFrame(good).id).toBe(full);
+    // The old 8-char tag of the same payload is still a prefix of its hash, and still refused.
+    for (const id of [full.slice(0, 8), full.slice(0, 31), full + "0", full.toUpperCase()]) {
+      expect(() => encodeFrames(payload, "witness", id)).toThrow(/32 lowercase hex/);
+      expect(() => parseFrame(good.replace(`|${full}|`, `|${id}|`))).toThrow(/32 lowercase hex/);
+    }
+  });
+
   it("forces an unsigned-tx id to be frameId(payload) (integrity binding)", () => {
     const payload = randomBytesDet(200);
-    // A free-label id is rejected for the spend path.
-    expect(() => encodeFrames(payload, "unsigned-tx", "abc123")).toThrow(/integrity tag/);
+    // A well-formed id that is not frameId(payload) is rejected for the spend path.
+    expect(ID_A).not.toBe(frameId(payload));
+    expect(() => encodeFrames(payload, "unsigned-tx", ID_A)).toThrow(/integrity tag/);
     // The correct id is accepted.
     expect(encodeFrames(payload, "unsigned-tx", frameId(payload))).toHaveLength(1);
   });
