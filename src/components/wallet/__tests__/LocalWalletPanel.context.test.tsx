@@ -17,7 +17,10 @@ import viLocale from "../../../../locales/vi/wallet.json";
 
 const ctx = vi.hoisted(() => ({ ext: false }));
 vi.mock("@/lib/keystore/storage", async (orig) => {
-  const real = await orig<typeof import("@/lib/keystore/storage")>();
+  // Untyped on purpose: a `typeof import("…keystore…")` here is an import of
+  // the keystore as far as check:keystore-boundary can tell, and this test has
+  // no business widening that gate.
+  const real = (await orig()) as Record<string, unknown>;
   return {
     ...real,
     isExtensionContext: () => ctx.ext,

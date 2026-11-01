@@ -9,14 +9,19 @@
  */
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, cleanup, fireEvent } from "@testing-library/react";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readdirSync, readFileSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import i18next from "i18next";
 import { I18nextProvider, initReactI18next } from "react-i18next";
 import en from "../../../../locales/en/wallet.json";
 import { SeedPhraseStep } from "../SeedPhraseStep";
 
-const PHRASE = "abandon ability able about above absent absorb abstract absurd abuse access accident";
+// Located from this file, not process.cwd(): run from another checkout, the
+// walk below would read that checkout's source and pass or fail on it.
+const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
+
+const PHRASE ="abandon ability able about above absent absorb abstract absurd abuse access accident";
 
 const i18n = i18next.createInstance();
 await i18n.use(initReactI18next).init({
@@ -76,8 +81,52 @@ describe("recovery phrase screen", () => {
     expect(labels).toHaveLength(3);
   });
 
-  it("the panel never hands the phrase to a copy button", () => {
-    const src = readFileSync(join(process.cwd(), "src/components/wallet/LocalWalletPanel.tsx"), "utf8");
-    expect(src).not.toMatch(/<CopyBtn[^>]*(phrase|mnemonic|words)/i);
+  /**
+   * An allow-list, not a deny-list: a phrase held in a variable called
+   * `revealed` or `secret` matches no pattern of bad names, and the reveal
+   * screen for an existing wallet holds it in exactly such a variable. So every
+   * value handed to a copy button anywhere in the shipped code must be one of
+   * these — public identifiers — and a new one has to be added here, in a diff
+   * someone reads.
+   */
+  const COPYABLE = new Set([
+    "address",
+    "a.address",
+    "r.address",
+    "primaryAddress(account)",
+    "wallet.stakeAddress",
+    "watched",
+    "txHash",
+    "u.txHash",
+    "e.txHash",
+    "sessionDid",
+    "anchorName",
+  ]);
+
+  it("no copy button anywhere is handed anything but an address, a hash or a name", () => {
+    const seen: string[] = [];
+    const walk = (dir: string) => {
+      for (const ent of readdirSync(dir, { withFileTypes: true })) {
+        const p = join(dir, ent.name);
+        if (ent.isDirectory()) {
+          if (ent.name !== "__tests__" && ent.name !== "node_modules") walk(p);
+        } else if (/\.tsx?$/.test(ent.name)) {
+          const src = readFileSync(p, "utf8");
+          for (const m of src.matchAll(/<CopyBtn\b([^>]*)>/g)) {
+            const v = /\bvalue=\{([^}]*)\}/.exec(m[1]!);
+            seen.push(`${relative(REPO, p)}: ${v ? v[1]!.trim() : "<no value={…}>"}`);
+          }
+          // The one place allowed to write the clipboard is the button itself.
+          if (!p.endsWith(join("components", "CopyBtn.tsx"))) {
+            expect(src, p).not.toMatch(/clipboard\s*\.\s*write/);
+          }
+        }
+      }
+    };
+    walk(join(REPO, "src"));
+    walk(join(REPO, "extension/src"));
+    expect(seen.length).toBeGreaterThan(0);
+    const unexpected = seen.filter((s) => !COPYABLE.has(s.slice(s.indexOf(": ") + 2)));
+    expect(unexpected).toEqual([]);
   });
 });

@@ -96,6 +96,27 @@ const MUTANTS = [
       '      {step === "words" && (\n        <SeedPhraseStep',
   },
   {
+    // The name a deny-list of `phrase|mnemonic|words` never matches.
+    name: "the reveal screen for an existing wallet gets a copy button for the phrase",
+    file: PANEL,
+    from: '                  <code className="mono block break-words text-xs">{revealed}</code>',
+    to:
+      '                  <code className="mono block break-words text-xs">{revealed}</code>\n' +
+      "                  <CopyBtn value={revealed} />",
+  },
+  {
+    name: "css gate: a spread onto a DOM element is no longer counted as unreadable",
+    file: CSS_GATE,
+    from: "    } else if (ts.isJsxSpreadAttribute(n) && /^[a-z]/.test(n.parent.parent.tagName.getText(sf))) {",
+    to: "    } else if (false) {",
+  },
+  {
+    name: "css gate: a spread onto a component is counted too, so the ceiling is blown by props",
+    file: CSS_GATE,
+    from: "    } else if (ts.isJsxSpreadAttribute(n) && /^[a-z]/.test(n.parent.parent.tagName.getText(sf))) {",
+    to: "    } else if (ts.isJsxSpreadAttribute(n)) {",
+  },
+  {
     name: "the extension shows the web page's long risk paragraph again",
     file: PANEL,
     from: "      {isExtensionContext() ? (",

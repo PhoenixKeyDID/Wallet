@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 // @ts-expect-error — plain .mjs script, no declaration file
-import { analyze, definedClasses, scanSource } from "../check-popup-css.mjs";
+import { analyze, definedClasses, MAX_UNREADABLE, scanSource } from "../check-popup-css.mjs";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -106,6 +106,18 @@ describe("class collection", () => {
     expect(r.missing).toEqual([]);
   });
 
+  it("counts a spread onto a DOM element, not one onto a component", () => {
+    const r = stage(
+      {
+        "src/popup.tsx":
+          `const B = (p: object) => <span className="in-b" />;\n` +
+          `export const A = (p: object) => <div><div {...p} /><B {...p} /></div>;`,
+      },
+      ".in-b {}",
+    );
+    expect(r.unreadable).toEqual([expect.stringMatching(/popup\.tsx:2$/)]);
+  });
+
   it("reports an import that does not resolve rather than skipping it", () => {
     const r = stage({ "src/popup.tsx": `import "./Gone"; export const A = () => <div />;` }, "");
     expect(r.problems.join("\n")).toContain("./Gone");
@@ -160,6 +172,15 @@ describe("the real popup", () => {
     const run = spawnSync("node", [join(REPO, "scripts", "check-popup-css.mjs")], { encoding: "utf8" });
     expect(run.stdout + run.stderr).toContain("popup CSS OK");
     expect(run.status).toBe(0);
+  });
+
+  it("stays within the declared ceiling of className expressions it cannot read", () => {
+    const r = analyze({
+      entries: [join(REPO, "extension/src/popup.tsx")],
+      css: join(REPO, "extension/src/popup.css"),
+      aliases: [["@/lib/toast", join(REPO, "extension/src/toast.ts")]],
+    });
+    expect(r.dynamic).toBeLessThanOrEqual(MAX_UNREADABLE);
   });
 
   it("the CLI exits 1 and names the class when a rule is removed", () => {

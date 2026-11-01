@@ -13,7 +13,7 @@
  * Module locales are FLAT: every value is a string. A nested object is the
  * signature of host content that leaked in.
  */
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -27,25 +27,59 @@ const namespaces = readdirSync(join(ROOT, REFERENCE))
 
 const errors = [];
 
+/**
+ * `null` only when the file is absent. A file that is there but does not parse
+ * is a failure of its own: reading it as "missing" — or skipping the whole
+ * namespace when it is the reference — turned a broken file into a green run.
+ */
 function load(lang, ns) {
+  const path = join(ROOT, lang, `${ns}.json`);
+  if (!existsSync(path)) return null;
+  const text = readFileSync(path, "utf8");
   try {
-    return JSON.parse(readFileSync(join(ROOT, lang, `${ns}.json`), "utf8"));
-  } catch {
-    return null;
+    return { json: JSON.parse(text), text };
+  } catch (e) {
+    errors.push(`${lang}/${ns}.json does not parse: ${e instanceof Error ? e.message : String(e)}`);
+    return undefined;
   }
+}
+
+/**
+ * Every key of the top-level object, in order, duplicates included.
+ *
+ * Walks the text token by token instead of matching lines, so a duplicate on
+ * the same line as another key, or indented differently, is still seen.
+ */
+function topLevelKeys(text) {
+  const keys = [];
+  let depth = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '"') {
+      let j = i + 1;
+      while (text[j] !== '"') j += text[j] === "\\" ? 2 : 1;
+      if (depth === 1) {
+        let k = j + 1;
+        while (/\s/.test(text[k] ?? "")) k++;
+        if (text[k] === ":") keys.push(JSON.parse(text.slice(i, j + 1)));
+      }
+      i = j;
+    } else if (c === "{" || c === "[") depth++;
+    else if (c === "}" || c === "]") depth--;
+  }
+  return keys;
 }
 
 for (const ns of namespaces) {
   const reference = load(REFERENCE, ns);
   if (!reference) continue;
-  const expected = Object.keys(reference).sort();
+  const expected = Object.keys(reference.json).sort();
 
   for (const lang of langs) {
-    const json = load(lang, ns);
-    if (!json) {
-      errors.push(`${lang}/${ns}.json is missing`);
-      continue;
-    }
+    const loaded = load(lang, ns);
+    if (loaded === null) errors.push(`${lang}/${ns}.json is missing`);
+    if (!loaded) continue;
+    const { json, text } = loaded;
 
     for (const [key, value] of Object.entries(json)) {
       if (typeof value !== "string") {
@@ -61,10 +95,7 @@ for (const ns of namespaces) {
     // translation and the fix for it can sit in one file with the stale one
     // silently winning or losing by position. Only the raw text can see it.
     const seen = new Map();
-    for (const line of readFileSync(join(ROOT, lang, `${ns}.json`), "utf8").split("\n")) {
-      const m = /^ {2}"([^"]+)"\s*:/.exec(line);
-      if (m) seen.set(m[1], (seen.get(m[1]) ?? 0) + 1);
-    }
+    for (const k of topLevelKeys(text)) seen.set(k, (seen.get(k) ?? 0) + 1);
     const dups = [...seen].filter(([, n]) => n > 1).map(([k]) => k);
     if (dups.length) errors.push(`${lang}/${ns}.json has duplicate keys (the later one silently wins): ${dups.join(", ")}`);
 

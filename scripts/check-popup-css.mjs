@@ -113,7 +113,8 @@ export function scanSource(file, source) {
   const sf = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   const imports = [];
   const pieces = [];
-  let dynamic = 0;
+  const dynamic = [];
+  const where = (n) => `${file}:${sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1}`;
 
   // Pass 1: every variable initialised with a string/template, by name. A class
   // list kept in a constant (`const card = "rounded-brand …"`) is read through
@@ -162,14 +163,20 @@ export function scanSource(file, source) {
       // `className={prop}` where nothing in it resolves to a literal here
       // (a parameter handed down by the caller): unreadable at this site. The
       // caller's own `className="…"` is read where the caller is.
-      if (!resolved && ts.isJsxExpression(n.initializer) && n.initializer.expression) dynamic += 1;
+      if (!resolved && ts.isJsxExpression(n.initializer) && n.initializer.expression) dynamic.push(where(n));
+    } else if (ts.isJsxSpreadAttribute(n) && /^[a-z]/.test(n.parent.parent.tagName.getText(sf))) {
+      // `<div {...props}>` can put a `className` on the DOM that this file never
+      // names. A spread onto a component (`<SendPanel {...p}>`) cannot: that
+      // component's own `className` is read in its own file, and if it takes one
+      // from its caller, its `className={prop}` is counted there.
+      dynamic.push(where(n));
     }
     ts.forEachChild(n, visit);
   };
   visit(sf);
   const tokens = new Set();
   for (const p of pieces) for (const t of p.split(/\s+/)) if (t) tokens.add(t);
-  return { imports, tokens, dynamic };
+  return { imports, tokens, dynamic: dynamic.length, unreadable: dynamic };
 }
 
 /** The class names that `css` has at least one selector for. */
@@ -196,7 +203,7 @@ export function analyze({ entries, css, root = REPO, aliases = [] }) {
   const queue = [...entries];
   const used = new Map(); // token -> first file
   const problems = [];
-  let dynamic = 0;
+  const unreadable = [];
   while (queue.length) {
     const file = queue.pop();
     if (seen.has(file)) continue;
@@ -209,7 +216,7 @@ export function analyze({ entries, css, root = REPO, aliases = [] }) {
       continue;
     }
     const r = scanSource(file, source);
-    dynamic += r.dynamic;
+    unreadable.push(...r.unreadable);
     for (const t of r.tokens) if (!used.has(t)) used.set(t, file);
     for (const spec of r.imports) {
       const p = resolveImport(spec, file, root, aliases);
@@ -228,8 +235,17 @@ export function analyze({ entries, css, root = REPO, aliases = [] }) {
     }
     missing.push({ token, file });
   }
-  return { files: seen.size, used: used.size, missing, exempted, dynamic, problems };
+  return { files: seen.size, used: used.size, missing, exempted, dynamic: unreadable.length, unreadable, problems };
 }
+
+/**
+ * How many className expressions the gate may fail to read before it stops
+ * calling itself a check. Each one is a place a class can reach the popup with
+ * no rule behind it and the gate still print OK, so the number may only go
+ * down: a new unreadable site has to be made readable, or this raised in a
+ * diff that says why.
+ */
+export const MAX_UNREADABLE = 2;
 
 function main() {
   const entries = [join(REPO, "extension/src/popup.tsx")];
@@ -246,6 +262,14 @@ function main() {
       `${r.exempted.length} exempt (breakpoint variants + markers), ` +
       `${r.dynamic} className expression(s) not readable from source`,
   );
+  if (r.dynamic > MAX_UNREADABLE) {
+    console.error(
+      `\npopup CSS check FAILED — ${r.dynamic} className expression(s) the gate cannot read, ` +
+        `more than the ${MAX_UNREADABLE} allowed. Use a literal or a named constant, or raise MAX_UNREADABLE with a reason:\n`,
+    );
+    for (const u of r.unreadable) console.error(`  • ${u.replace(REPO + "/", "")}`);
+    process.exit(1);
+  }
   if (r.missing.length) {
     console.error(`\npopup CSS check FAILED — ${r.missing.length} class(es) used with no rule in popup.css:\n`);
     for (const { token, file } of r.missing) {
