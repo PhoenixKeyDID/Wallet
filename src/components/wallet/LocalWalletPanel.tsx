@@ -23,6 +23,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toastApiError } from "@/lib/toast";
 import { CopyBtn } from "@/components/CopyBtn";
+import { SeedPhraseStep } from "./SeedPhraseStep";
+import { TestnetBadge } from "./TestnetBadge";
 import {
   createMnemonic,
   mnemonicToEntropyBytes,
@@ -577,16 +579,27 @@ export function LocalWalletPanel() {
 
   return (
     <div className="space-y-4" onPointerDown={() => session.touch()}>
-      {/* The risk statement sits above every entry point, not below it. */}
-      <div className="rounded-brand border border-amber-brand/40 bg-bg1 p-5 space-y-2">
-        <h3 className="text-sm font-medium text-amber-brand">{t("local_risk_title")}</h3>
-        <p className="text-xs text-text-dim">{t("local_risk_body")}</p>
-        {!isExtensionContext() && <p className="text-xs text-text-dim">{t("local_risk_web")}</p>}
-      </div>
+      {/* The risk statement sits above every entry point, not below it. The web
+          page and the extension get different sentences: the long one explains
+          what the extension would have added, which is false (and half a
+          popup tall) when the reader is already inside it. */}
+      {isExtensionContext() ? (
+        <p className="rounded-brand border border-amber-brand/40 bg-bg1 p-3 text-xs text-amber-brand">
+          {t("local_risk_ext")}
+        </p>
+      ) : (
+        <div className="rounded-brand border border-amber-brand/40 bg-bg1 p-5 space-y-2">
+          <h3 className="text-sm font-medium text-amber-brand">{t("local_risk_title")}</h3>
+          <p className="text-xs text-text-dim">{t("local_risk_body")}</p>
+          <p className="text-xs text-text-dim">{t("local_risk_web")}</p>
+        </div>
+      )}
 
       {step === "list" && (
         <div className="rounded-brand border border-border-soft bg-bg1 p-5 space-y-4">
-          <p className="text-sm text-text-dim">{t("local_intro")}</p>
+          <p className="text-sm text-text-dim">
+            {t(isExtensionContext() ? "local_intro_ext" : "local_intro")}
+          </p>
 
           <label className="flex items-center gap-2 text-xs">
             <span className="text-text-hint">{t("network_label")}</span>
@@ -648,41 +661,16 @@ export function LocalWalletPanel() {
       )}
 
       {step === "words" && (
-        <div className="rounded-brand border border-border-soft bg-bg1 p-5 space-y-4">
-          <h3 className="text-sm font-medium">{t("local_words_title")}</h3>
-          <p className="text-xs text-amber-brand">{t("local_words_warning")}</p>
-          {concealed ? (
-            <div className="rounded-brand border border-border-soft bg-bg2 p-4 text-center space-y-2">
-              <p className="text-sm">{t("local_concealed_body")}</p>
-              <button className={btnCls} onClick={() => setConcealed(false)}>
-                {t("local_concealed_show")}
-              </button>
-            </div>
-          ) : (
-            <ol className="grid grid-cols-2 gap-x-4 gap-y-1 sm:grid-cols-3">
-              {phrase.split(" ").map((w, i) => (
-                <li key={i} className="mono text-sm">
-                  <span className="text-text-hint">{i + 1}.</span> {w}
-                </li>
-              ))}
-            </ol>
-          )}
-          <div className="flex flex-wrap items-center gap-2">
-            {!concealed && <CopyBtn value={phrase} />}
-            <button className={primaryCls} onClick={startConfirm}>
-              {t("local_words_next")}
-            </button>
-            <button
-              className={btnCls}
-              onClick={() => {
-                resetDraft();
-                setStep("list");
-              }}
-            >
-              {t("local_cancel")}
-            </button>
-          </div>
-        </div>
+        <SeedPhraseStep
+          phrase={phrase}
+          concealed={concealed}
+          onReveal={() => setConcealed(false)}
+          onNext={startConfirm}
+          onCancel={() => {
+            resetDraft();
+            setStep("list");
+          }}
+        />
       )}
 
       {step === "confirm" && (
@@ -911,6 +899,7 @@ export function LocalWalletPanel() {
                 </div>
               </div>
             )}
+            <TestnetBadge network={account.network} />
             <div className="flex items-center gap-2">
               <code className="mono break-all text-xs">{primaryAddress(account)}</code>
               <CopyBtn value={primaryAddress(account)} />

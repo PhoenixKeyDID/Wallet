@@ -240,6 +240,7 @@ bun run check:node-globals # the Node-globals shim is imported before @stricahq
 bun run check:keystore-boundary # only the key-holding screens and the bundle smoke check may import the keystore
 bun run check:bundle  # the browser build runs with no Node globals (see below)
 bun run check:package # the built extension is loadable and claims no reach it does not use
+bun run check:popup-css # every class the popup renders has a rule in the hand-typed popup.css
 bun run check:readme  # the two claims above that go stale on their own
 ```
 

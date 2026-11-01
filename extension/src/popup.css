@@ -19,6 +19,8 @@
   --text-hint: #7e8794;
   --danger: #ff6b6b;
   --danger-bg: #2a1618;
+  --teal: #2dd4bf;
+  --border-teal: color-mix(in srgb, var(--teal) 40%, transparent);
 }
 @media (prefers-color-scheme: light) {
   :root {
@@ -33,6 +35,7 @@
     --text-hint: #6b7280;
     --danger: #b3261e;
     --danger-bg: #fdeceb;
+    --teal: #0f766e;
   }
 }
 
@@ -120,6 +123,101 @@ button:disabled { cursor: default; opacity: .5; }
 .hover\:border-border-amber:hover { border-color: var(--border-amber); }
 .hover\:bg-bg2:hover { background: var(--bg2); }
 .disabled\:opacity-50:disabled { opacity: .5; }
+
+/*
+ * Utilities added so every class the popup renders has a rule — the list is
+ * enforced by `bun run check:popup-css`, not by memory. Values are Tailwind v3's
+ * default scale (spacing n × 0.25rem, text sizes with their line-heights); the
+ * brand colours go through the tokens above so light/dark follow `:root`.
+ */
+.bg-white { background: #fff; }
+.bg-amber-brand\/10 { background: color-mix(in srgb, var(--amber) 10%, transparent); }
+.bg-amber-brand\/25 { background: color-mix(in srgb, var(--amber) 25%, transparent); }
+.bg-teal-brand\/10 { background: color-mix(in srgb, var(--teal) 10%, transparent); }
+.hover\:bg-amber-brand\/20:hover { background: color-mix(in srgb, var(--amber) 20%, transparent); }
+.hover\:bg-teal-brand\/20:hover { background: color-mix(in srgb, var(--teal) 20%, transparent); }
+.border-b { border-bottom-width: 1px; border-bottom-style: solid; }
+.border-amber-brand { border-color: var(--amber); }
+.border-border-amber { border-color: var(--border-amber); }
+.border-border-teal { border-color: var(--border-teal); }
+.border-teal-brand { border-color: var(--teal); }
+.focus\:border-border-amber:focus { border-color: var(--border-amber); }
+.divide-y > * + * { border-top-width: 1px; border-top-style: solid; }
+.divide-border-soft > * + * { border-color: var(--border-soft); }
+.last\:border-b-0:last-child { border-bottom-width: 0; }
+.last\:pb-0:last-child { padding-bottom: 0; }
+.rounded-sm { border-radius: .125rem; }
+.text-text { color: var(--text); }
+.text-teal-brand { color: var(--teal); }
+.hover\:text-text-dim:hover { color: var(--text-dim); }
+.text-2xl { font-size: 1.5rem; line-height: 2rem; }
+.text-3xl { font-size: 1.875rem; line-height: 2.25rem; }
+.text-base { font-size: 1rem; line-height: 1.5rem; }
+.text-\[10px\] { font-size: 10px; }
+.text-\[11px\] { font-size: 11px; }
+.text-center { text-align: center; }
+.text-right { text-align: right; }
+.leading-none { line-height: 1; }
+.leading-relaxed { line-height: 1.625; }
+.tracking-wider { letter-spacing: .05em; }
+.tracking-widest { letter-spacing: .1em; }
+.uppercase { text-transform: uppercase; }
+.underline { text-decoration-line: underline; }
+.hover\:underline:hover { text-decoration-line: underline; }
+.disabled\:no-underline:disabled { text-decoration-line: none; }
+.line-clamp-3 {
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+}
+.flex-1 { flex: 1 1 0%; }
+.flex-col { flex-direction: column; }
+.shrink-0 { flex-shrink: 0; }
+.items-start { align-items: flex-start; }
+.items-baseline { align-items: baseline; }
+.justify-center { justify-content: center; }
+.gap-1 { gap: .25rem; }
+.gap-y-0\.5 { row-gap: .125rem; }
+.space-y-1 > * + * { margin-top: .25rem; }
+.space-y-1\.5 > * + * { margin-top: .375rem; }
+.p-1 { padding: .25rem; }
+.p-2 { padding: .5rem; }
+.p-2\.5 { padding: .625rem; }
+.p-4 { padding: 1rem; }
+.px-0\.5 { padding-left: .125rem; padding-right: .125rem; }
+.px-1\.5 { padding-left: .375rem; padding-right: .375rem; }
+.py-0\.5 { padding-top: .125rem; padding-bottom: .125rem; }
+.py-1\.5 { padding-top: .375rem; padding-bottom: .375rem; }
+.pt-1 { padding-top: .25rem; }
+.pt-2 { padding-top: .5rem; }
+.pb-2 { padding-bottom: .5rem; }
+.mb-1 { margin-bottom: .25rem; }
+.mb-2 { margin-bottom: .5rem; }
+.mr-1\.5 { margin-right: .375rem; }
+.ml-auto { margin-left: auto; }
+.mx-auto { margin-left: auto; margin-right: auto; }
+.w-5 { width: 1.25rem; }
+.w-8 { width: 2rem; }
+.w-20 { width: 5rem; }
+.w-24 { width: 6rem; }
+.w-28 { width: 7rem; }
+.w-auto { width: auto; }
+.w-fit { width: fit-content; }
+.h-16 { height: 4rem; }
+.max-h-72 { max-height: 18rem; }
+.max-h-96 { max-height: 24rem; }
+.max-w-\[60\%\] { max-width: 60%; }
+.min-w-\[4\.5rem\] { min-width: 4.5rem; }
+.overflow-x-auto { overflow-x: auto; }
+.overflow-y-auto { overflow-y: auto; }
+.resize-none { resize: none; }
+.cursor-pointer { cursor: pointer; }
+.cursor-not-allowed { cursor: not-allowed; }
+.opacity-70 { opacity: .7; }
+.disabled\:opacity-40:disabled { opacity: .4; }
+.disabled\:opacity-60:disabled { opacity: .6; }
 /*
  * Match the host app's CSS reset. Tailwind's preflight strips list markers, and
  * the wallet components are written for that: the recovery-phrase list renders
@@ -242,8 +340,8 @@ body.approve-page {
  * never covers the amount or the address — the two things a person is reading
  * when a toast arrives.
  *
- * `--success` and `--teal` are absent from the token block above, so the
- * success colour is stated here rather than referenced. That is a symptom of
+ * `--success` is absent from the token block above, so the success colour is
+ * stated here rather than referenced. That is a symptom of
  * this file being a hand-typed second copy of the host's token table; the fix is
  * to stop hand-typing it, which is a separate change.
  */

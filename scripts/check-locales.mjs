@@ -57,6 +57,17 @@ for (const ns of namespaces) {
       }
     }
 
+    // `JSON.parse` keeps the LAST of two equal keys and says nothing, so a stale
+    // translation and the fix for it can sit in one file with the stale one
+    // silently winning or losing by position. Only the raw text can see it.
+    const seen = new Map();
+    for (const line of readFileSync(join(ROOT, lang, `${ns}.json`), "utf8").split("\n")) {
+      const m = /^ {2}"([^"]+)"\s*:/.exec(line);
+      if (m) seen.set(m[1], (seen.get(m[1]) ?? 0) + 1);
+    }
+    const dups = [...seen].filter(([, n]) => n > 1).map(([k]) => k);
+    if (dups.length) errors.push(`${lang}/${ns}.json has duplicate keys (the later one silently wins): ${dups.join(", ")}`);
+
     const actual = Object.keys(json).sort();
     const missing = expected.filter((k) => !actual.includes(k));
     const extra = actual.filter((k) => !expected.includes(k));

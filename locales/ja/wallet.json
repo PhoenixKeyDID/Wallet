@@ -213,8 +213,8 @@
   "connect_embedded_soon": "近日公開",
   "connect_embedded_note": "アプリ内蔵の dApp ブラウザは現在開発中です。今のところは、上の「開く」ボタンで新しいタブから dApp をご利用ください。",
   "connect_embedded_open": "開く（現在利用不可）",
-  "network_preprod": "Preprod",
-  "network_preview": "Preview",
+  "network_preprod": "Preprod — テストネット、価値はありません",
+  "network_preview": "Preview — テストネット、価値はありません",
   "tab_send": "送信",
   "tab_receive": "受取",
   "tab_history": "履歴",
@@ -398,5 +398,11 @@
   "hist_shown_recent": "直近 {{count}} 件の取引を表示しています。",
   "hist_show_more": "さらに表示",
   "local_account_empty_note": "アカウント {{n}} は空です。新規アカウントとはこういうものです。他のアカウントはそのままで、何も移動していません。",
-  "local_account_back_zero": "アカウント 0 に戻る"
+  "local_account_back_zero": "アカウント 0 に戻る",
+  "network_testnet_badge": "テストネット（{{name}}）— ここのコインに実際の価値はありません",
+  "local_risk_ext": "鍵はこの端末にパスワードで暗号化して保管されます。このベータ版は監査を受けていません。失ってもよい額だけ入れてください。",
+  "local_intro_ext": "ここで、選んだパスワードで保護されたウォレットを作成します。リカバリーフレーズは標準のBIP-39なので、Lace・Eternl・Yoroiでも開けます。",
+  "popup_title": "Phoenix Wallet",
+  "popup_tagline": "オープンソース (Apache-2.0) · 鍵は自分で管理",
+  "popup_footer": "ベータ版・監査未実施。実資金を預ける前にテストネットで試してください。"
 }

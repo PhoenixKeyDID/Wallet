@@ -44,6 +44,13 @@ const TX_SUMMARY = "src/lib/cardano/txSummary.ts";
 const REVIEW_OUTPUT = "src/components/wallet/ReviewOutput.tsx";
 const TX_SUMMARY_VIEW = "extension/src/TxSummaryView.tsx";
 const STORE = "src/components/wallet/uncertainStore.ts";
+// Round six: the store-readiness work. A phrase on the clipboard, the web
+// page's sentences inside the extension, and the stylesheet gate.
+const SEED_STEP = "src/components/wallet/SeedPhraseStep.tsx";
+const PANEL = "src/components/wallet/LocalWalletPanel.tsx";
+const TESTNET_BADGE = "src/components/wallet/TestnetBadge.tsx";
+const CSS_GATE = "scripts/check-popup-css.mjs";
+const POPUP_CSS = "extension/src/popup.css";
 // A gate is worth mutating too. "Is this guard pinned" and "is the thing that
 // checks the guard pinned" are different questions, and the second one has gone
 // unanswered here before: two table rows named after a detector were going red
@@ -59,6 +66,9 @@ const TESTS = [
   "src/lib/cardano/__tests__/txSummary.test.ts",
   "src/components/wallet/__tests__/ReviewOutput.test.tsx",
   "extension/src/__tests__/TxSummaryView.test.tsx",
+  "src/components/wallet/__tests__/SeedPhraseStep.test.tsx",
+  "src/components/wallet/__tests__/LocalWalletPanel.context.test.tsx",
+  "scripts/__tests__/checkPopupCss.test.ts",
 ];
 
 /**
@@ -67,6 +77,72 @@ const TESTS = [
  * measuring nothing, which is the failure mode it was written to prevent.
  */
 const MUTANTS = [
+  // ── Round six: a recovery phrase must not reach the clipboard; the popup must
+  // not say the web page's sentences; the stylesheet gate must actually gate ──
+  {
+    name: "a copy button for the recovery phrase is back on the words screen",
+    file: SEED_STEP,
+    from: "        <button className={primaryCls} onClick={onNext}>",
+    to:
+      "        <button aria-label=\"Copy\" onClick={() => void navigator.clipboard.writeText(phrase)}>⧉</button>\n" +
+      "        <button className={primaryCls} onClick={onNext}>",
+  },
+  {
+    name: "the panel hands the phrase to a copy button outside the words screen",
+    file: PANEL,
+    from: '      {step === "words" && (\n        <SeedPhraseStep',
+    to:
+      '      {step === "words" && <CopyBtn value={phrase} />}\n' +
+      '      {step === "words" && (\n        <SeedPhraseStep',
+  },
+  {
+    name: "the extension shows the web page's long risk paragraph again",
+    file: PANEL,
+    from: "      {isExtensionContext() ? (",
+    to: "      {false ? (",
+  },
+  {
+    name: "the extension shows the web intro ('no extension needed') again",
+    file: PANEL,
+    from: 't(isExtensionContext() ? "local_intro_ext" : "local_intro")',
+    to: 't("local_intro")',
+  },
+  {
+    name: "the test-network reminder is shown on mainnet too",
+    file: TESTNET_BADGE,
+    from: "  if (network === 1) return null;\n",
+    to: "",
+  },
+  {
+    name: "popup.css loses a rule the tab row needs (overflow-x-auto) — the gate must go red",
+    file: POPUP_CSS,
+    from: ".overflow-x-auto { overflow-x: auto; }\n",
+    to: "",
+  },
+  {
+    name: "css gate: a used class with no rule is no longer reported",
+    file: CSS_GATE,
+    from: "    missing.push({ token, file });",
+    to: "    void file;",
+  },
+  {
+    name: "css gate: every `variant:` token is exempt, not just breakpoints",
+    file: CSS_GATE,
+    from: "const BREAKPOINT_VARIANT = /^(sm|md|lg|xl|2xl):/;",
+    to: "const BREAKPOINT_VARIANT = /^[a-z0-9-]+:/;",
+  },
+  {
+    name: "css gate: stops following imports, so only the entry file is read",
+    file: CSS_GATE,
+    from: "      else if (p) queue.push(p);",
+    to: "      else if (p) void p;",
+  },
+  {
+    name: "css gate: a class list kept in a constant is no longer read",
+    file: CSS_GATE,
+    from: "          pieces.push(...via);",
+    to: "          void via;",
+  },
   // ── Round five: the remaining text checks, and the half of the pair that
   // was never held to the same standard as the other half ──
   {

@@ -73,6 +73,8 @@ The seed is generated in the page (BIP-39, 24 words by default, `crypto.getRando
 
 The practical consequence: the phrase is the asset and the password is a convenience. Back up the phrase off the device.
 
+The screen that shows a new phrase has **no copy button, and no other control of this wallet puts the phrase on the clipboard.** A copied phrase is readable by every program and extension that watches the clipboard and by clipboard history and sync, and a "copy" button next to the words reads as "this is the safe way to keep them" — the opposite of the paper copy the screen asks for. The screen is its own component (`SeedPhraseStep`) so a test can list every control on it and press each one with the clipboard spied (`SeedPhraseStep.test.tsx`); a second test fails if the panel hands the phrase to a copy button anywhere else.
+
 What this mode is **not** protected against, stated plainly because the mitigations do not reach it:
 
 - **Any script that executes in the page can reach an unlocked key.** A compromised dependency, a hostile browser extension with host access, or an XSS bug in the host app defeats the vault, because the vault protects data at rest, not a running page.

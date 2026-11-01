@@ -56,7 +56,17 @@ export function parseAcctXvk(input: string): Bip32PublicKey {
     }
     bytes = Buffer.from(s, "hex");
   } else {
-    const { prefix, words } = bech32.decode(s, BECH32_LIMIT);
+    // The bech32 library puts the whole input into its error text ("Invalid
+    // checksum for …"), and that text reaches the host's toast and console. The
+    // field is where someone pastes the wrong thing — a private key, a phrase —
+    // so a typo there must not carry it out. Throw a fixed message instead.
+    let decoded: { prefix: string; words: number[] };
+    try {
+      decoded = bech32.decode(s, BECH32_LIMIT);
+    } catch {
+      throw new Error("not a valid acct_xvk — expected 128 hex chars, acct_xvk1… or xpub1…");
+    }
+    const { prefix, words } = decoded;
     if (!ACCT_XVK_PREFIXES.has(prefix)) {
       throw new Error(
         `"${prefix}" is not an account extended public key — expected acct_xvk… or xpub…`,

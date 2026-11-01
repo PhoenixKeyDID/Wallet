@@ -57,6 +57,29 @@ describe("parseAcctXvk", () => {
       );
     }
   });
+
+  /**
+   * The error text reaches the host's toast and console. Someone who pastes a
+   * private key or a phrase here by mistake must not have it echoed back out —
+   * the bech32 library's own messages quote the whole input.
+   */
+  it("never echoes the pasted text in its error", async () => {
+    const { xprv } = await acctFromSeed();
+    const good = bech32.encode("acct_xsk", bech32.toWords(xprv.toBytes()), 256);
+    const typo = good.slice(0, -1) + (good.endsWith("q") ? "p" : "q");
+    const phrase = "abandon ability able about above absent absorb abstract absurd abuse access accident";
+    for (const input of [typo, phrase, good.toUpperCase().slice(0, 40) + good.slice(40)]) {
+      let msg = "";
+      try {
+        parseAcctXvk(input);
+      } catch (e) {
+        msg = (e as Error).message;
+      }
+      expect(msg).not.toBe("");
+      expect(msg).not.toContain(input.slice(12, 40));
+      expect(msg).not.toContain("abandon");
+    }
+  });
 });
 
 describe("CKDpub soft derivation equals private-then-public", () => {

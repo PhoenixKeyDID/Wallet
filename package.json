@@ -20,6 +20,7 @@
     "check:bundle": "node extension/smoke/run.mjs",
     "check:package": "node scripts/check-extension-package.mjs",
     "check:readme": "node scripts/check-readme-claims.mjs",
+    "check:popup-css": "node scripts/check-popup-css.mjs",
     "check:i18n-keys": "node scripts/check-i18n-keys.mjs",
     "check:extension-host": "node scripts/check-extension-host.mjs"
   },
