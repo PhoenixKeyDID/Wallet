@@ -284,6 +284,10 @@ describe("recovery phrase screen", () => {
   const UNSEEN = "<unseen>";
   /** Not a name: the key under which a component's taint keeps what it put where the page keeps state. */
   const WORLD = "<world>";
+  /** Not a name: the key under which it keeps what it put on the page — what only the page's own globals read back. */
+  const DOM = "<dom>";
+  /** Not a prop: what marks a value as a function declared in the component, so a call it decides can be followed in. */
+  const FN = "<fn:";
   /** The language's own namespaces and constructors: calling them keeps nothing in them. */
   const LANGUAGE =
     /^(Object|JSON|Math|Number|String|Boolean|Array|Date|Intl|Promise|Symbol|BigInt|Error|TypeError|RangeError|Reflect|console|Set|Map|WeakMap|WeakSet|RegExp|Uint8Array|ArrayBuffer|DataView|TextEncoder|TextDecoder|Proxy|NaN|Infinity)$/;
@@ -394,15 +398,47 @@ describe("recovery phrase screen", () => {
       if (type.getCallSignatures().length || type.getConstructSignatures().length) return false;
       return !(type.flags & (ts.TypeFlags.Literal | ts.TypeFlags.BooleanLiteral));
     };
+    /**
+     * One of the language's own names. Calling a function on it keeps nothing
+     * there, but it is still an object: `Reflect.set(Math, "k", secret)` or
+     * `Math.k = secret` keeps the value where `Reflect.get(Math, "k")` reads it.
+     */
+    const language = (id: ts.Identifier) => LANGUAGE.test(id.text) && outside(id);
+    /**
+     * A global of the page itself — `document`, `window`, `globalThis` — rather
+     * than of a module: what is rendered may be read back through it, as may
+     * anything kept in any store. A module's own `const LINKS = { … }` reads
+     * back only what was kept in a store, not what the component shows.
+     */
+    const page = (id: ts.Identifier) => {
+      if (!store(id)) return false;
+      let s = checker!.getSymbolAtLocation(id)!;
+      if (s.flags & ts.SymbolFlags.Alias) s = checker!.getAliasedSymbol(s);
+      return (s.declarations ?? []).every((d) => d.getSourceFile().hasNoDefaultLib);
+    };
+    /** A name bound by `fn`'s own parameters — a prop, or what the caller handed in. */
+    const given = (id: ts.Identifier) =>
+      (checker!.getSymbolAtLocation(id)?.declarations ?? []).some((d) => {
+        for (let p: ts.Node | undefined = d; p && p !== fn; p = p.parent) if (ts.isParameter(p) && p.parent === fn) return true;
+        return false;
+      });
+    /** Whether what `e` evaluates to may be a store, so that writing into it keeps the value for any other code. */
+    const held = (e: ts.Expression) => roots(e).ids.some((id) => store(id) || language(id));
     const poisoned = new Set<string>();
     const poison = (t: Iterable<string>) => {
       const before = poisoned.size;
       for (const p of t) poisoned.add(p);
       return poisoned.size !== before;
     };
+    /** The function each `FN` label marks. */
+    const fns = new Map<string, ts.Node>();
     const of = (e: ts.Node): Set<string> => {
       const out = new Set<string>(poisoned);
       const go = (n: ts.Node, shadow: ReadonlySet<string>) => {
+        if (ts.isFunctionLike(n) && n !== fn) {
+          out.add(FN + n.pos);
+          fns.set(FN + n.pos, n);
+        }
         if (ts.isFunctionLike(n) && n !== fn && n.parameters.length) {
           const inner = new Set(shadow);
           for (const p of n.parameters) for (const x of names(p.name)) inner.add(x);
@@ -433,7 +469,8 @@ describe("recovery phrase screen", () => {
         if (ts.isJsxClosingElement(n) || ts.isTypeNode(n)) return;
         if (ts.isIdentifier(n)) {
           for (const p of tainted(n.text) ?? []) out.add(p);
-          if (!shadow.has(n.text) && store(n)) for (const p of taint.get(WORLD) ?? []) out.add(p);
+          if (!shadow.has(n.text) && (store(n) || language(n))) for (const p of taint.get(WORLD) ?? []) out.add(p);
+          if (!shadow.has(n.text) && page(n)) for (const p of taint.get(DOM) ?? []) out.add(p);
         }
         ts.forEachChild(n, (c) => go(c, shadow));
       };
@@ -568,10 +605,16 @@ describe("recovery phrase screen", () => {
     /** The left of any assignment: a name, a member of one, or a pattern of them, defaults included. */
     const target = (x: ts.Expression, t: Set<string>): boolean => {
       const e = bare(x);
-      if (ts.isIdentifier(e)) return add(e.text, t);
-      if (ts.isPropertyAccessExpression(e)) return into(e.expression, t, true);
+      // `sessionStorage.k = secret`, `document.title = secret`, `Math.k = secret`:
+      // kept where any other global name may read it.
+      const world = (o: ts.Expression, k: Set<string>) => held(o) && k.size > 0 && add(WORLD, k);
+      if (ts.isIdentifier(e)) return [world(e, t), add(e.text, t)].some(Boolean);
+      if (ts.isPropertyAccessExpression(e)) return [world(e.expression, t), into(e.expression, t, true)].some(Boolean);
       // `keys[secret] = true`: the key is kept as much as the value is.
-      if (ts.isElementAccessExpression(e)) return into(e.expression, new Set([...t, ...of(e.argumentExpression)]), true);
+      if (ts.isElementAccessExpression(e)) {
+        const k = new Set([...t, ...of(e.argumentExpression)]);
+        return [world(e.expression, k), into(e.expression, k, true)].some(Boolean);
+      }
       if (ts.isSpreadElement(e)) return target(e.expression, t);
       if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
         const d = of(e.right);
@@ -676,6 +719,31 @@ describe("recovery phrase screen", () => {
       }
       return t;
     };
+    /**
+     * What decides which function a callee is: `c` in `table[c]`, the
+     * condition of `c ? f : g`. A `const` bound to one function, or a function
+     * declaration, is that function whatever else it reads; any other name may
+     * have been chosen by anything it holds.
+     */
+    const choice = (x: ts.Expression): Set<string> => {
+      const e = bare(x);
+      if (ts.isIdentifier(e)) {
+        const d = checker!.getSymbolAtLocation(e)?.valueDeclaration;
+        const fixed =
+          !!d &&
+          (ts.isFunctionDeclaration(d) ||
+            (ts.isVariableDeclaration(d) &&
+              !!(ts.getCombinedNodeFlags(d) & ts.NodeFlags.Const) &&
+              !!d.initializer &&
+              ts.isFunctionLike(bare(d.initializer))));
+        return fixed ? new Set() : of(e);
+      }
+      if (ts.isPropertyAccessExpression(e)) return choice(e.expression);
+      if (ts.isElementAccessExpression(e)) return new Set([...choice(e.expression), ...of(e.argumentExpression)]);
+      if (ts.isConditionalExpression(e)) return new Set([...of(e.condition), ...choice(e.whenTrue), ...choice(e.whenFalse)]);
+      if (ts.isBinaryExpression(e) && SHORT.has(e.operatorToken.kind)) return new Set([...of(e.left), ...choice(e.right)]);
+      return of(e);
+    };
     /** What a value written at `e` holds: itself, and what decided that it is written. */
     const valueAt = (e: ts.Node) => new Set([...of(e), ...decides(e)]);
     /** The code a jump skips or not: the loop or `switch` a `break` leaves, the function a `return` leaves, the `try` a `throw` lands in. */
@@ -760,29 +828,52 @@ describe("recovery phrase screen", () => {
               changed = into(a, t, false) || changed;
               // `sessionStorage.setItem("k", secret)`, `cache.set(k, secret)` on a
               // module-level `cache`: kept where any other global name may read it.
-              if (roots(a).ids.some(store)) changed = add(WORLD, t) || changed;
+              // `Reflect.set(Math, "k", secret)` too; but `Math.max(a, b)` keeps
+              // nothing in `Math`, so a language name counts only as an argument.
+              const kept = n.arguments?.includes(a as ts.Expression) ? held(a) : roots(a).ids.some(store);
+              if (kept) changed = add(WORLD, t) || changed;
+            }
+          // `table[c]?.()`, `if (c === "a") addA()`: which function runs is a
+          // choice, so what it writes holds what chose it.
+          const by = [...choice(n.expression), ...decides(n)].filter((p) => !p.startsWith(FN));
+          // A function handed in (`onUncertain(hash)`) is the caller's, not chosen
+          // here: it is followed where it is handed, by the survey below. Props
+          // share one label, so its value here would be every function any prop
+          // was handed — `port.m().then(f)` — and every one would seem chosen.
+          const { ids, opaque } = roots(n.expression);
+          if (by.length && (opaque.length || !ids.every(given)))
+            for (const p of of(n.expression)) {
+              const f = fns.get(p);
+              if (!f) continue;
+              const s = jumps.get(f) ?? new Set<string>();
+              const before = s.size;
+              for (const q of by) s.add(q);
+              jumps.set(f, s);
+              if (s.size !== before) changed = true;
             }
         }
-        // `<span data-k={secret} hidden />`, `<i>{secret}</i>`: the page now holds
-        // it; `ref={r}` hands the element, and what it holds, to `r`.
-        if ((ts.isJsxOpeningElement(n) || ts.isJsxSelfClosingElement(n)) && /^[a-z]/.test(n.tagName.getText())) {
+        // `n++`, `delete o[k]`: a write, as much as `n += 1` is.
+        if (
+          (ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) &&
+          (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken)
+        )
+          changed = target(n.operand, valueAt(n)) || changed;
+        if (ts.isDeleteExpression(n)) changed = target(n.expression, valueAt(n)) || changed;
+        // `<span data-k={secret} hidden />`, `<>{secret}</>`, `<Row v={secret} />`:
+        // the page may now hold it, for `document`, `window` and the like to read
+        // back; `ref={r}` hands the element, and what it holds, to `r`.
+        if ((ts.isJsxExpression(n) && n.expression) || ts.isJsxSpreadAttribute(n)) {
+          const t = valueAt(n.expression!);
+          if (t.size) changed = add(DOM, t) || changed;
+        }
+        if ((ts.isJsxOpeningElement(n) || ts.isJsxSelfClosingElement(n)) && /^[a-z]/.test(n.tagName.getText()))
           for (const a of n.attributes.properties) {
             const e = ts.isJsxSpreadAttribute(a) ? a.expression : a.initializer;
-            if (!e) continue;
-            const t = valueAt(e);
-            if (t.size) changed = add(WORLD, t) || changed;
-            if (ts.isJsxAttribute(a) && a.name.getText() === "ref" && ts.isJsxExpression(e) && e.expression) {
-              const held = valueAt(ts.isJsxOpeningElement(n) ? n.parent : n);
-              if (held.size) changed = into(e.expression, held, true) || changed;
+            if (ts.isJsxAttribute(a) && a.name.getText() === "ref" && e && ts.isJsxExpression(e) && e.expression) {
+              const shown = valueAt(ts.isJsxOpeningElement(n) ? n.parent : n);
+              if (shown.size) changed = into(e.expression, shown, true) || changed;
             }
           }
-          if (ts.isJsxOpeningElement(n))
-            for (const c of n.parent.children)
-              if (ts.isJsxExpression(c) && c.expression) {
-                const t = valueAt(c.expression);
-                if (t.size) changed = add(WORLD, t) || changed;
-              }
-        }
         if (ts.isBreakStatement(n) || ts.isContinueStatement(n) || ts.isReturnStatement(n) || ts.isThrowStatement(n)) {
           const to = landing(n);
           const d = to && decides(n);
@@ -1003,6 +1094,7 @@ describe("recovery phrase screen", () => {
           for (const e of handed) {
             seen.push(`${key}: ${e.getText(sf)}`);
             for (const p of taintOf(e)) {
+              if (p.startsWith(FN)) continue;
               if (p === UNSEEN) {
                 seen.push(`${key}: ${e.getText(sf)} holds a value handed in where the test cannot see what with`);
                 continue;

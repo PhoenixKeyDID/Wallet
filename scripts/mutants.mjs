@@ -860,6 +860,36 @@ const MUTANTS = [
       "  useEffect(() => {\n    window.localStorage.setItem('k', secret);\n  }, [secret]);\n  return <CopyBtn value={window.localStorage.getItem('k') ?? ''} />;",
       "window.localStorage.getItem('k') ?? ''",
     ],
+    [
+      "rebuilt by picking which function to call",
+      '  let out = "";\n  const table: Record<string, () => void> = {};\n  for (const ch of "abcdefghijklmnopqrstuvwxyz ") table[ch] = () => {\n    out += ch;\n  };\n  for (const c of secret) table[c]?.();\n  return <CopyBtn value={out} />;',
+      "out",
+    ],
+    [
+      "rebuilt by counting up to each letter",
+      '  const A = "abcdefghijklmnopqrstuvwxyz ";\n  let out = "";\n  for (let i = 0; i < 64; i++) {\n    let n = 0;\n    while (n < A.length && A[n] !== secret[i]) n++;\n    out += A.charAt(n);\n  }\n  return <CopyBtn value={out} />;',
+      "out",
+    ],
+    [
+      "kept as a property of sessionStorage",
+      "  (sessionStorage as unknown as Record<string, string>).k = secret;\n  return <CopyBtn value={window.sessionStorage.getItem('k') ?? ''} />;",
+      "window.sessionStorage.getItem('k') ?? ''",
+    ],
+    [
+      "kept in the document title",
+      "  document.title = secret;\n  return <CopyBtn value={window.document.title} />;",
+      "window.document.title",
+    ],
+    [
+      "kept on Math through Reflect",
+      "  Reflect.set(Math, 'leak', secret);\n  return <CopyBtn value={String(Reflect.get(Math, 'leak'))} />;",
+      "String(Reflect.get(Math, 'leak'))",
+    ],
+    [
+      "kept in a fragment the page reads back",
+      "  return (\n    <>\n      {secret}\n      <CopyBtn value={document.body.textContent ?? ''} />\n    </>\n  );",
+      "document.body.textContent ?? ''",
+    ],
   ].map(([what, body, value]) => ({
     name: `a copy button fed from a prop ${what}, declared only as copyable`,
     edits: [
