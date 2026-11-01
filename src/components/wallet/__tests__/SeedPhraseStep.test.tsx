@@ -175,27 +175,49 @@ describe("recovery phrase screen", () => {
    * the start of a comment and swallows the code after it, and `[^>]*` stops
    * at the first `=>` inside a tag.
    */
+  /**
+   * Types of the shipped source, for one question only: can a value hold
+   * anything? A string handed to a call cannot be written into; an object can.
+   */
+  let checker: ts.TypeChecker | undefined;
   const shipped = () => {
-    const out = new Map<string, ts.SourceFile>();
+    const paths: string[] = [];
     const walk = (dir: string) => {
       for (const ent of readdirSync(dir, { withFileTypes: true })) {
         const p = join(dir, ent.name);
         if (ent.isDirectory()) {
           if (ent.name !== "__tests__" && ent.name !== "node_modules") walk(p);
-        } else if (/\.[cm]?[jt]sx?$/.test(ent.name) && !/\.d\.[cm]?ts$/.test(ent.name)) {
-          const kind = /\.[cm]?tsx$/.test(ent.name)
-            ? ts.ScriptKind.TSX
-            : /\.[cm]?ts$/.test(ent.name)
-              ? ts.ScriptKind.TS
-              : ts.ScriptKind.JSX;
-          const sf = ts.createSourceFile(p, readFileSync(p, "utf8"), ts.ScriptTarget.Latest, true, kind);
-          out.set(relative(REPO, p).split(sep).join("/"), sf);
-        }
+        } else if (/\.[cm]?[jt]sx?$/.test(ent.name) && !/\.d\.[cm]?ts$/.test(ent.name)) paths.push(p);
       }
     };
     walk(join(REPO, "src"));
     walk(join(REPO, "extension/src"));
+    const config = ts.getParsedCommandLineOfConfigFile(join(REPO, "tsconfig.json"), {}, {
+      ...ts.sys,
+      onUnRecoverableConfigFileDiagnostic: (d) => {
+        throw new Error(ts.flattenDiagnosticMessageText(d.messageText, "\n"));
+      },
+    });
+    if (!config) throw new Error("tsconfig.json did not parse");
+    const program = ts.createProgram(paths, { ...config.options, allowJs: true, noEmit: true });
+    checker = program.getTypeChecker();
+    const out = new Map<string, ts.SourceFile>();
+    for (const p of paths) {
+      const sf = program.getSourceFile(p);
+      if (!sf) throw new Error(`${p} is not in the program`);
+      out.set(relative(REPO, p).split(sep).join("/"), sf);
+    }
     return out;
+  };
+  /** A value of a type no write can go into: a string, a number, a literal of one, or a union of them. */
+  const primitive = (e: ts.Node) => {
+    if (!checker) throw new Error("types asked for before the source was read");
+    const t = checker.getTypeAtLocation(e);
+    const flat = (t.isUnion() ? t.types : [t]) as ts.Type[];
+    const plain =
+      ts.TypeFlags.StringLike | ts.TypeFlags.NumberLike | ts.TypeFlags.BigIntLike | ts.TypeFlags.BooleanLike |
+      ts.TypeFlags.Undefined | ts.TypeFlags.Null | ts.TypeFlags.Void | ts.TypeFlags.Never;
+    return flat.every((u) => (u.flags & plain) !== 0);
   };
 
   const each = (sf: ts.SourceFile, f: (n: ts.Node) => void) => {
@@ -279,6 +301,22 @@ describe("recovery phrase screen", () => {
     /** Every name a binding pattern declares. */
     const names = (b: ts.BindingName): string[] =>
       ts.isIdentifier(b) ? [b.text] : b.elements.flatMap((el) => (ts.isOmittedExpression(el) ? [] : names(el.name)));
+    /** `useState`, `React.useState`, `React["useState"]` and the same for `useReducer`. */
+    const isStateHook = (e: ts.Expression) =>
+      (ts.isIdentifier(e) && /^use(State|Reducer)$/.test(e.text)) ||
+      (ts.isPropertyAccessExpression(e) && /^use(State|Reducer)$/.test(e.name.text)) ||
+      (ts.isElementAccessExpression(e) && ts.isStringLiteralLike(e.argumentExpression) && /^use(State|Reducer)$/.test(e.argumentExpression.text));
+    /** The one shape whose setter is followed: `const [state, setState] = useState(…)`. */
+    const statePair = (call: ts.CallExpression) => {
+      const d = call.parent;
+      if (!ts.isVariableDeclaration(d) || d.initializer !== call || !ts.isArrayBindingPattern(d.name)) return false;
+      const els = d.name.elements;
+      return (
+        els.length <= 2 &&
+        els.every((el) => ts.isOmittedExpression(el) || !el.dotDotDotToken) &&
+        (els.length < 2 || (ts.isBindingElement(els[1]) && ts.isIdentifier(els[1].name)))
+      );
+    };
     // Inside a function, its own parameters are not the names outside it of the
     // same spelling: `(a) => a.toFixed()` holds nothing until it is called.
     const of = (e: ts.Node): Set<string> => {
@@ -295,6 +333,10 @@ describe("recovery phrase screen", () => {
           for (const p of tainted(n.expression.text)!) if (p !== "*") out.add(p);
           return;
         }
+        // State any other way than `[state, setState]` — `const st = useState(…)`,
+        // `{ 0: s, 1: set }` — has a setter the test cannot follow: the state
+        // holds `UNSEEN`. The hook handed on or renamed fails the clipboard test.
+        if (ts.isCallExpression(n) && isStateHook(n.expression) && !statePair(n)) for (const x of unseen()) out.add(x);
         if (ts.isPropertyAccessExpression(n)) return go(n.expression, shadow);
         if (ts.isPropertyAssignment(n)) return go(n.initializer, shadow);
         if (ts.isIdentifier(n)) for (const p of tainted(n.text) ?? []) out.add(p);
@@ -306,14 +348,8 @@ describe("recovery phrase screen", () => {
     // `const [shown, setShown] = useState(…)`: what the setter is handed is shown.
     const setters = new Map<string, ts.BindingName>();
     const findSetters = (n: ts.Node) => {
-      if (
-        ts.isVariableDeclaration(n) &&
-        ts.isArrayBindingPattern(n.name) &&
-        n.initializer &&
-        ts.isCallExpression(n.initializer) &&
-        /(^|\.)use(State|Reducer)$/.test(n.initializer.expression.getText())
-      ) {
-        const [state, setter] = n.name.elements;
+      if (ts.isCallExpression(n) && isStateHook(n.expression) && statePair(n)) {
+        const [state, setter] = (n.parent as ts.VariableDeclaration & { name: ts.ArrayBindingPattern }).name.elements;
         if (state && setter && ts.isBindingElement(state) && ts.isBindingElement(setter) && ts.isIdentifier(setter.name))
           setters.set(setter.name.text, state.name);
       }
@@ -353,7 +389,13 @@ describe("recovery phrase screen", () => {
     declared(fn);
     /** The name a member chain starts from: `box` for `box.inner[0]`. */
     const rootName = (e: ts.Expression): string =>
-      ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e) || ts.isParenthesizedExpression(e) || ts.isNonNullExpression(e)
+      ts.isPropertyAccessExpression(e) ||
+      ts.isElementAccessExpression(e) ||
+      ts.isParenthesizedExpression(e) ||
+      ts.isNonNullExpression(e) ||
+      ts.isAsExpression(e) ||
+      ts.isSatisfiesExpression(e) ||
+      ts.isTypeAssertionExpression(e)
         ? rootName(e.expression)
         : ts.isIdentifier(e)
           ? e.text
@@ -448,19 +490,41 @@ describe("recovery phrase screen", () => {
           const t = calledWith(n);
           if (t.size) for (const p of n.parameters) changed = bind(p.name, t) || changed;
         }
-        // `function current() { return secret; }`: the name holds what it returns.
-        if (ts.isFunctionDeclaration(n) && n !== fn && n.name && n.body) {
+        // `function current() { return secret; }`: the name holds what it returns;
+        // `class K { v = secret }`: the class holds what its members do.
+        if ((ts.isFunctionDeclaration(n) || ts.isClassDeclaration(n)) && n !== fn && n.name && (ts.isClassDeclaration(n) || n.body)) {
           const t = of(n);
           if (t.size) changed = add(n.name.text, t) || changed;
         }
-        // `kept.push(secret)`, `map.set(k, secret)`, `Object.assign(box, { secret })`:
-        // a method handed something may keep it in the local it is called on.
-        if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression)) {
-          const c = n.expression;
-          const [target, ...rest] = c.getText() === "Object.assign" ? n.arguments : [c.expression, ...n.arguments];
+        // `kept.push(secret)`, `Reflect.set(box, "v", secret)`,
+        // `[].push.call(kept, secret)`: a call may keep anything it is handed in
+        // any local it is handed — the object it is called on or an argument —
+        // whose type can hold anything: `network` handed beside a hash stays a
+        // network name, a box handed beside it may now hold the hash.
+        if (ts.isCallExpression(n) || ts.isNewExpression(n)) {
+          const handed = [...(n.arguments ?? [])];
+          const callee = n.expression;
+          if (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee)) handed.push(callee.expression);
           const t = new Set<string>();
-          for (const a of rest) for (const p of of(a)) t.add(p);
-          if (t.size && target && locals.has(rootName(target))) changed = assign(target, t) || changed;
+          for (const a of handed) for (const p of of(a)) t.add(p);
+          if (t.size)
+            for (const a of handed) if (locals.has(rootName(a)) && !primitive(a)) changed = assign(a, t) || changed;
+        }
+        // `const alias = kept` or `ref = box`: both names are one object, so what
+        // is kept through the alias is kept in the original too.
+        const alias =
+          ts.isVariableDeclaration(n) && n.initializer
+            ? { names: names(n.name), from: n.initializer }
+            : ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(n.left)
+              ? { names: [n.left.text], from: n.right }
+              : undefined;
+        if (alias) {
+          const r = rootName(alias.from);
+          if (r && locals.has(r))
+            for (const x of alias.names) {
+              const t = taint.get(x);
+              if (t?.size) changed = add(r, t) || changed;
+            }
         }
         ts.forEachChild(n, go);
       };
@@ -749,6 +813,49 @@ describe("recovery phrase screen", () => {
             !p.importClause?.name &&
             (!p.importClause?.namedBindings || ts.isNamedImports(p.importClause.namedBindings));
           if (!plain) offences.push(`${rel}:${at(sf, n)}: loads ${n.text} other than as a named import`);
+        }
+        // `import.meta` is read for `.env` and `.url` only: `.glob` and anything
+        // reached through a cast loads files by a pattern the test cannot resolve.
+        if (ts.isMetaProperty(n) && n.keywordToken === ts.SyntaxKind.ImportKeyword) {
+          let up: ts.Node = n;
+          while (
+            ts.isParenthesizedExpression(up.parent) ||
+            ts.isAsExpression(up.parent) ||
+            ts.isSatisfiesExpression(up.parent) ||
+            ts.isNonNullExpression(up.parent) ||
+            ts.isTypeAssertionExpression(up.parent)
+          )
+            up = up.parent;
+          const envOrUrl = (x: ts.Node) =>
+            ts.isPropertyAccessExpression(x.parent) && x.parent.expression === x && /^(env|url)$/.test(x.parent.name.text);
+          // `const meta = import.meta as unknown as { env?: … }`, where every later
+          // `meta` in the file is `meta.env` or `meta.url`. The cast is not taken
+          // on trust: a `meta` spelled any other way fails the whole form.
+          const d = up.parent;
+          const held =
+            ts.isVariableDeclaration(d) &&
+            d.initializer === up &&
+            ts.isIdentifier(d.name) &&
+            (() => {
+              const name = (d.name as ts.Identifier).text;
+              let only = true;
+              each(sf, (m) => {
+                if (ts.isIdentifier(m) && m.text === name && m !== d.name && !ts.isMetaProperty(m.parent) && !envOrUrl(m)) only = false;
+              });
+              return only;
+            })();
+          if (!envOrUrl(up) && !held) offences.push(`${rel}:${at(sf, n)}: import.meta used other than as import.meta.env or .url`);
+        }
+        // The state hook reached any way but a call: `import { useState as u }`,
+        // `const { useState: u } = React`, `const h = useState`. The setter of
+        // such a call is one the value list above cannot follow.
+        if ((ts.isIdentifier(n) || ts.isStringLiteralLike(n)) && (n.text === "useState" || n.text === "useReducer")) {
+          const ok =
+            (ts.isCallExpression(p) && p.expression === n) ||
+            (ts.isPropertyAccessExpression(p) && p.name === n && ts.isCallExpression(p.parent) && p.parent.expression === p) ||
+            (ts.isElementAccessExpression(p) && p.argumentExpression === n && ts.isCallExpression(p.parent) && p.parent.expression === p) ||
+            (ts.isImportSpecifier(p) && p.name === n && !p.propertyName);
+          if (!ok) offences.push(`${rel}:${at(sf, n)}: ${n.text} reached other than by calling it`);
         }
         // The button reached any way but `<Name …>`, its own declaration and an
         // unaliased import — `as Other`, `createElement(Name, …)`, `[Name].map`,

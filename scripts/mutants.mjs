@@ -741,6 +741,28 @@ const MUTANTS = [
       "  const m = new Map<string, string>();\n  m.set('k', secret);\n  return <CopyBtn value={m.get('k') ?? ''} />;",
       "m.get('k') ?? ''",
     ],
+    [
+      "set through the useState tuple",
+      '  const st = useState("");\n  useEffect(() => {\n    st[1](secret);\n  }, [secret]);\n  return <CopyBtn value={st[0]} />;',
+      "st[0]",
+    ],
+    [
+      "set through an object pattern on useState",
+      '  const { 0: shown, 1: setShown } = useState("");\n  useEffect(() => {\n    setShown(secret);\n  }, [secret]);\n  return <CopyBtn value={shown} />;',
+      "shown",
+    ],
+    ["kept by Reflect.set", '  const box = { v: "" };\n  Reflect.set(box, "v", secret);\n  return <CopyBtn value={box.v} />;', "box.v"],
+    [
+      "kept by Object.defineProperty",
+      '  const box = { v: "" };\n  Object.defineProperty(box, "v", { value: secret });\n  return <CopyBtn value={box.v} />;',
+      "box.v",
+    ],
+    ['kept by Object["assign"]', '  const box = { v: "" };\n  Object["assign"](box, { v: secret });\n  return <CopyBtn value={box.v} />;', "box.v"],
+    ["kept by push.call", "  const kept: string[] = [];\n  Array.prototype.push.call(kept, secret);\n  return <CopyBtn value={kept[0]} />;", "kept[0]"],
+    ["kept by push on an alias", "  const kept: string[] = [];\n  const alias = kept;\n  alias.push(secret);\n  return <CopyBtn value={kept[0]} />;", "kept[0]"],
+    ["kept by assigning through an alias", '  const box = { v: "" };\n  const ref = box;\n  ref.v = secret;\n  return <CopyBtn value={box.v} />;', "box.v"],
+    ["held by a class field", "  class K {\n    v = secret;\n  }\n  return <CopyBtn value={new K().v} />;", "new K().v"],
+    ["returned by a class method", "  class K {\n    get() {\n      return secret;\n    }\n  }\n  return <CopyBtn value={new K().get()} />;", "new K().get()"],
   ].map(([what, body, value]) => ({
     name: `a copy button fed from a prop ${what}, declared only as copyable`,
     edits: [
@@ -790,6 +812,65 @@ const MUTANTS = [
           "const Lazy = lazy(() => import(`../${part}.tsx`).then((m) => ({ default: m[part] })));\n\n" +
           "export function Shown({ secret }: { secret: string }) {\n" +
           "  return <Lazy value={secret} />;\n" +
+          "}",
+      },
+    ],
+  },
+  // The state hook under another name: its setter is one the value list never
+  // follows, so the state reads as a constant.
+  {
+    name: "a copy button fed from a prop through a renamed useState, declared only as copyable",
+    edits: [
+      {
+        file: BALANCE,
+        from: "export function BalanceView({",
+        to:
+          "export function Shown({ secret }: { secret: string }) {\n" +
+          '  const [shown, setShown] = useLater("");\n' +
+          "  useEffect(() => {\n    setShown(secret);\n  }, [secret]);\n" +
+          "  return <CopyBtn value={shown} />;\n}\n\nexport function BalanceView({",
+      },
+      {
+        file: BALANCE,
+        from: 'import { FiatValue } from "./FiatValue";',
+        to: 'import { FiatValue } from "./FiatValue";\nimport { useEffect, useState as useLater } from "react";',
+      },
+      { file: COPY_GUARD_TEST, from: COPYABLE_ANCHOR, to: `${COPYABLE_ANCHOR}\n    "${BALANCE}#Shown: shown",` },
+    ],
+  },
+  // Needs no line in the list: `import.meta.glob` loads the button by a
+  // pattern, and here the pattern does not even spell the file's name.
+  {
+    name: "a copy button loaded by import.meta.glob",
+    edits: [
+      {
+        file: TESTNET_BADGE,
+        from: 'import type { PhoenixNetwork } from "@/lib/cardano";',
+        to:
+          'import type { PhoenixNetwork } from "@/lib/cardano";\n\n' +
+          "type Mods = Record<string, Record<string, (p: { value: string }) => JSX.Element>>;\n" +
+          'const mods = (import.meta as unknown as { glob: (p: string, o: { eager: true }) => Mods }).glob("../C*.tsx", { eager: true });\n' +
+          "const Btn = Object.values(Object.values(mods)[0])[0];\n\n" +
+          "export function Shown({ secret }: { secret: string }) {\n" +
+          "  return <Btn value={secret} />;\n" +
+          "}",
+      },
+    ],
+  },
+  {
+    name: "a copy button loaded by import.meta.glob through a variable cast to look like env",
+    edits: [
+      {
+        file: TESTNET_BADGE,
+        from: 'import type { PhoenixNetwork } from "@/lib/cardano";',
+        to:
+          'import type { PhoenixNetwork } from "@/lib/cardano";\n\n' +
+          "type Mods = Record<string, Record<string, (p: { value: string }) => JSX.Element>>;\n" +
+          "const meta = import.meta as unknown as { env?: unknown };\n" +
+          'const mods = (meta as unknown as { glob: (p: string, o: { eager: true }) => Mods }).glob("../C*.tsx", { eager: true });\n' +
+          "const Btn = Object.values(Object.values(mods)[0])[0];\n\n" +
+          "export function Shown({ secret }: { secret: string }) {\n" +
+          "  return <Btn value={secret} />;\n" +
           "}",
       },
     ],
