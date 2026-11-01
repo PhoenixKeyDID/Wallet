@@ -53,6 +53,8 @@ const CSS_GATE = "scripts/check-popup-css.mjs";
 const LOCALES_GATE = "scripts/check-locales.mjs";
 const BALANCE = "src/components/wallet/BalanceView.tsx";
 const POPUP_CSS = "extension/src/popup.css";
+const COPY_BTN = "src/components/CopyBtn.tsx";
+const WALLET_HUB = "src/components/wallet/WalletHub.tsx";
 // A gate is worth mutating too. "Is this guard pinned" and "is the thing that
 // checks the guard pinned" are different questions, and the second one has gone
 // unanswered here before: two table rows named after a detector were going red
@@ -549,6 +551,34 @@ const MUTANTS = [
     file: PANEL,
     from: 'import { BalanceView, type DisplayAsset } from "./BalanceView";',
     to: 'import { BalanceView as Balance, type DisplayAsset } from "./BalanceView";\nconst BalanceView = Balance;',
+  },
+  {
+    // `PhoenixCustodyPanel` copies a value derived from its `did` prop; nothing
+    // declared it as forwarding, so what a caller handed it was never read.
+    name: "a component that copies something derived from its prop is handed something off the list",
+    file: WALLET_HUB,
+    from: "<PhoenixCustodyPanel did={did} />",
+    to: '<PhoenixCustodyPanel did={sessionStorage.getItem("phrase") ?? ""} />',
+  },
+  {
+    name: "a second component in a file already on the list forwards its prop to a copy button",
+    file: BALANCE,
+    from: "export function BalanceView({",
+    to:
+      "export function AddressLine({ address }: { address: string }) {\n" +
+      "  return <CopyBtn value={address} />;\n" +
+      "}\n\n" +
+      "export function BalanceView({",
+  },
+  {
+    name: "the copy button's file exports a helper that copies whatever it is given",
+    file: COPY_BTN,
+    from: "export function CopyBtn({",
+    to:
+      "export async function copyText(v: string) {\n" +
+      "  await navigator.clipboard.writeText(v);\n" +
+      "}\n\n" +
+      "export function CopyBtn({",
   },
   {
     name: "a locale file that parses to null passes as a namespace with no keys",
