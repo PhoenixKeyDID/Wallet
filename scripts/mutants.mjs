@@ -951,6 +951,89 @@ const MUTANTS = [
       { file: COPY_GUARD_TEST, from: COPYABLE_ANCHOR, to: `${COPYABLE_ANCHOR}\n    "${BALANCE}#Shown: doc.body.textContent ?? ''",` },
     ],
   },
+  // What code outside the component keeps, or what decides that a line inside
+  // it runs: a helper, a store reached through a helper, a context, a throw, an
+  // optional chain, a default. Declaring the copied value alone is not enough.
+  ...[
+    [
+      "kept by a module helper",
+      'let box = "";\nfunction keep(v: string) {\n  box = v;\n}\nfunction give() {\n  return box;\n}',
+      "Shown",
+      "  keep(secret);\n  return <CopyBtn value={give()} />;",
+      "give()",
+    ],
+    [
+      "kept in sessionStorage reached through a module helper",
+      "const ss = () => sessionStorage;",
+      "Shown",
+      '  ss().setItem("k", secret);\n  return <CopyBtn value={ss().getItem("k")} />;',
+      'ss().getItem("k")',
+    ],
+    [
+      "handed on through a context",
+      'const Ctx = createContext("");\nfunction Inner() {\n  const v = useContext(Ctx);\n  return <CopyBtn value={v} />;\n}',
+      "Inner",
+      "  return (\n    <Ctx.Provider value={secret}>\n      <Inner />\n    </Ctx.Provider>\n  );",
+      "v",
+    ],
+    [
+      "rebuilt by which letters a built-in lets through without throwing",
+      "",
+      "Shown",
+      '  const A = "abcdefghijklmnopqrstuvwxyz ";\n  let out = "";\n  for (let i = 0; i < 64; i++)\n    for (const c of A) {\n      try {\n        "".repeat(secret[i] === c ? 1 : -1);\n        out += c;\n      } catch {}\n    }\n  return <CopyBtn value={out} />;',
+      "out",
+    ],
+    [
+      "rebuilt by which letters a module helper lets through without throwing",
+      'const A = "abcdefghijklmnopqrstuvwxyz ";\nconst must = (b: boolean) => {\n  if (!b) throw 0;\n};',
+      "Shown",
+      '  let out = "";\n  for (let i = 0; i < 64; i++)\n    for (const c of A) {\n      try {\n        must(secret[i] === c);\n        out += c;\n      } catch {}\n    }\n  return <CopyBtn value={out} />;',
+      "out",
+    ],
+    [
+      "rebuilt by which letters a local helper lets through without throwing",
+      "",
+      "Shown",
+      '  const A = "abcdefghijklmnopqrstuvwxyz ";\n  const must = (b: boolean) => {\n    if (!b) throw 0;\n  };\n  let out = "";\n  for (let i = 0; i < 64; i++)\n    for (const c of A) {\n      try {\n        must(secret[i] === c);\n        out += c;\n      } catch {}\n    }\n  return <CopyBtn value={out} />;',
+      "out",
+    ],
+    [
+      "rebuilt by which optional chains go on",
+      "",
+      "Shown",
+      '  const A = "abcdefghijklmnopqrstuvwxyz ";\n  let out = "";\n  for (let i = 0; i < 64; i++)\n    for (const c of A) (secret[i] === c ? "" : undefined)?.charAt((out += c, 0));\n  return <CopyBtn value={out} />;',
+      "out",
+    ],
+    [
+      "rebuilt by which parameter defaults run",
+      "",
+      "Shown",
+      '  const A = "abcdefghijklmnopqrstuvwxyz ";\n  let out = "";\n  for (let i = 0; i < 64; i++)\n    for (const c of A) {\n      const g = (x: string | undefined = (out += c)) => x;\n      g(secret[i] === c ? undefined : "");\n    }\n  return <CopyBtn value={out} />;',
+      "out",
+    ],
+    [
+      "rebuilt by which destructuring defaults run",
+      "",
+      "Shown",
+      '  const A = "abcdefghijklmnopqrstuvwxyz ";\n  let out = "";\n  for (let i = 0; i < 64; i++)\n    for (const c of A) {\n      const { z = (out += c) }: { z?: string } = secret[i] === c ? {} : { z: "" };\n      void z;\n    }\n  return <CopyBtn value={out} />;',
+      "out",
+    ],
+  ].map(([what, prelude, at, body, value]) => ({
+    name: `a copy button fed from a prop ${what}, declared only as copyable`,
+    edits: [
+      {
+        file: BALANCE,
+        from: "export function BalanceView({",
+        to: `${prelude}\n\nexport function Shown({ secret }: { secret: string }) {\n${body}\n}\n\nexport function BalanceView({`,
+      },
+      {
+        file: BALANCE,
+        from: 'import { FiatValue } from "./FiatValue";',
+        to: 'import { FiatValue } from "./FiatValue";\nimport { createContext, useContext } from "react";',
+      },
+      { file: COPY_GUARD_TEST, from: COPYABLE_ANCHOR, to: `${COPYABLE_ANCHOR}\n    "${BALANCE}#${at}: ${value}",` },
+    ],
+  })),
   // In a file with no copy button yet, so nothing else it already holds goes
   // missing when the import is not followed.
   {

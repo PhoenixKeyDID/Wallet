@@ -140,6 +140,35 @@ describe("recovery phrase screen", () => {
     "src/components/wallet/WatchOnlyPanel.tsx#WatchOnlyPanel: a.address",
     "src/components/wallet/WatchOnlyPanel.tsx#WatchOnlyPanel: wallet.stakeAddress",
     "src/components/wallet/WatchOnlyPanel.tsx#WatchOnlyPanel: watched",
+    // Values read through code outside the component — a hook, a helper, a
+    // store, the page. The test does not follow them there, so each stands
+    // here on its own word: what that code hands back is an address, a hash,
+    // a network, a DID or the port it is asked through, never the phrase.
+    "src/components/night/NightRedeem.tsx#NightRedeem: address reads what code outside the component keeps",
+    "src/components/wallet/Cip30Panel.tsx#Cip30Panel: conn.changeAddress reads what code outside the component keeps",
+    "src/components/wallet/Cip30Panel.tsx#Cip30Panel: conn.networkId reads what code outside the component keeps",
+    "src/components/wallet/Cip30Panel.tsx#Cip30Panel: port reads what code outside the component keeps",
+    "src/components/wallet/Cip30Panel.tsx#Cip30Panel: receiveAddress reads what code outside the component keeps",
+    "src/components/wallet/HistoryPanel.tsx#HistoryPanel: e.txHash reads what code outside the component keeps",
+    "src/components/wallet/HistoryPanel.tsx#HistoryPanel: u.txHash reads what code outside the component keeps",
+    "src/components/wallet/LocalWalletPanel.tsx#LocalWalletPanel: account.network reads what code outside the component keeps",
+    "src/components/wallet/LocalWalletPanel.tsx#LocalWalletPanel: changeAddrHex reads what code outside the component keeps",
+    "src/components/wallet/LocalWalletPanel.tsx#LocalWalletPanel: port reads what code outside the component keeps",
+    "src/components/wallet/LocalWalletPanel.tsx#LocalWalletPanel: primaryAddress(account) reads what code outside the component keeps",
+    "src/components/wallet/PhoenixCustodyPanel.tsx#PhoenixCustodyPanel: anchorName reads what code outside the component keeps",
+    "src/components/wallet/PhoenixCustodyPanel.tsx#PhoenixCustodyPanel: custodyAddress reads what code outside the component keeps",
+    "src/components/wallet/PhoenixCustodyPanel.tsx#PhoenixCustodyPanel: sessionDid reads what code outside the component keeps",
+    "src/components/wallet/ReceivePanel.tsx#ReceivePanel: derived.address reads what code outside the component keeps",
+    "src/components/wallet/ReceivePanel.tsx#ReceivePanel: r.address reads what code outside the component keeps",
+    "src/components/wallet/ReceivePanel.tsx#ReceivePanel: walletAddress reads what code outside the component keeps",
+    "src/components/wallet/ReviewOutput.tsx#ReviewOutput: address reads what code outside the component keeps",
+    "src/components/wallet/SendPanel.tsx#SendPanel: o reads what code outside the component keeps",
+    "src/components/wallet/SendPanel.tsx#SendPanel: txHash reads what code outside the component keeps",
+    "src/components/wallet/WalletTabs.tsx#WalletTabs: network reads what code outside the component keeps",
+    "src/components/wallet/WalletTabs.tsx#WalletTabs: uncertainHash reads what code outside the component keeps",
+    "src/components/wallet/WatchOnlyPanel.tsx#WatchOnlyPanel: a.address reads what code outside the component keeps",
+    "src/components/wallet/WatchOnlyPanel.tsx#WatchOnlyPanel: wallet.stakeAddress reads what code outside the component keeps",
+    "src/components/wallet/WatchOnlyPanel.tsx#WatchOnlyPanel: watched reads what code outside the component keeps",
   ]);
 
   /**
@@ -286,6 +315,12 @@ describe("recovery phrase screen", () => {
   const WORLD = "<world>";
   /** Not a name: the key under which it keeps what it put on the page — what only the page's own globals read back. */
   const DOM = "<dom>";
+  /**
+   * Taint of a value read from where any other component may have put one —
+   * a store, the page, a context, what a helper outside the component returns.
+   * No prop it was made from can vouch for it.
+   */
+  const KEPT = "<kept>";
   /** Not a prop: what marks a value as a function declared in the component, so a call it decides can be followed in. */
   const FN = "<fn:";
   /** The language's own namespaces and constructors: calling them keeps nothing in them. */
@@ -405,6 +440,31 @@ describe("recovery phrase screen", () => {
      */
     const language = (id: ts.Identifier) => LANGUAGE.test(id.text) && outside(id);
     /**
+     * A function, class or module of the shipped code declared outside the
+     * component — a helper at module level or an import, not the language's or
+     * a package's. What it keeps between calls (`let box; const keep = (v) =>
+     * (box = v)`) or hands back (`const ss = () => sessionStorage`) is not
+     * followed into it: a call to one keeps what it is handed, and what it
+     * returns is kept.
+     */
+    const project = (id: ts.Identifier) => {
+      if (!outside(id) || store(id)) return false;
+      let s = checker!.getSymbolAtLocation(id)!;
+      if (s.flags & ts.SymbolFlags.Alias) s = checker!.getAliasedSymbol(s);
+      const ds = s.declarations ?? [];
+      return ds.length > 0 && ds.every((d) => !d.getSourceFile().hasNoDefaultLib && !d.getSourceFile().fileName.includes("/node_modules/"));
+    };
+    /** Whether `e` is, or is read off, what a call to such a function returns: `ss()`, `ss().getItem`. */
+    const fromProject = (x: ts.Expression): boolean => {
+      const e = bare(x);
+      if (ts.isCallExpression(e) || ts.isNewExpression(e)) {
+        const c = bare(e.expression);
+        return (ts.isIdentifier(c) && project(c)) || fromProject(c);
+      }
+      if (ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) return fromProject(e.expression);
+      return false;
+    };
+    /**
      * A global of the page itself — `document`, `window`, `globalThis` — rather
      * than of a module: what is rendered may be read back through it, as may
      * anything kept in any store. A module's own `const LINKS = { … }` reads
@@ -501,7 +561,7 @@ describe("recovery phrase screen", () => {
      * own names, which keep what is set on them but not what a call is handed.
      */
     const holder = (id: ts.Identifier, lang: boolean, seen = new Set<ts.Symbol>()): boolean => {
-      if (store(id) || (lang && language(id))) return true;
+      if (store(id) || project(id) || (lang && language(id))) return true;
       const s = checker!.getSymbolAtLocation(id);
       if (!s || seen.has(s)) return false;
       seen.add(s);
@@ -541,6 +601,8 @@ describe("recovery phrase screen", () => {
         // `{ 0: s, 1: set }` — has a setter the test cannot follow: the state
         // holds `UNSEEN`. The hook handed on or renamed fails the clipboard test.
         if (ts.isCallExpression(n) && isStateHook(n.expression) && !statePair(n)) for (const x of unseen()) out.add(x);
+        // `useContext(Ctx)`, `use(Ctx)`: whatever any provider above was handed.
+        if (ts.isCallExpression(n) && /(^|\.)(useContext|use)$/.test(bare(n.expression).getText())) out.add(KEPT);
         if (ts.isPropertyAccessExpression(n)) return go(n.expression, shadow);
         // `{ [secret]: true }`: a key is a value the object holds.
         if (ts.isPropertyAssignment(n)) {
@@ -556,7 +618,8 @@ describe("recovery phrase screen", () => {
         if (ts.isJsxClosingElement(n) || ts.isTypeNode(n)) return;
         if (ts.isIdentifier(n)) {
           for (const p of tainted(n.text) ?? []) out.add(p);
-          if (!shadow.has(n.text) && (store(n) || language(n))) for (const p of taint.get(WORLD) ?? []) out.add(p);
+          if (!shadow.has(n.text) && (store(n) || language(n) || project(n))) for (const p of taint.get(WORLD) ?? []) out.add(p);
+          if (!shadow.has(n.text) && (store(n) || project(n) || page(n))) out.add(KEPT);
           if (!shadow.has(n.text) && page(n)) for (const p of taint.get(DOM) ?? []) out.add(p);
           // `parseInt.leak`, `Reflect.get(parseInt, "leak")`: a function outside the
           // component is an object too, and what was set on it reads back.
@@ -564,7 +627,7 @@ describe("recovery phrase screen", () => {
           const member = (ts.isPropertyAccessExpression(up) || ts.isElementAccessExpression(up)) && up.expression === n;
           const asked = ts.isCallExpression(up) && up.arguments.includes(n) && byLanguage(up);
           if (!shadow.has(n.text) && outside(n) && !store(n) && ((member && !(ts.isCallExpression(up.parent) && up.parent.expression === up)) || asked))
-            for (const p of taint.get(WORLD) ?? []) out.add(p);
+            for (const p of [...(taint.get(WORLD) ?? []), KEPT]) out.add(p);
         }
         ts.forEachChild(n, (c) => go(c, shadow));
       };
@@ -811,8 +874,73 @@ describe("recovery phrase screen", () => {
         } else if (ts.isConditionalExpression(p) && x !== p.condition) put(of(p.condition));
         else if (ts.isBinaryExpression(p) && x === p.right && SHORT.has(p.operatorToken.kind)) put(of(p.left));
         else if (ts.isTryStatement(p) && x !== p.tryBlock) put(of(p.tryBlock));
+        const q = p as ts.Node;
+        // `try { A.repeat(secret[i] === c ? 1 : -1); out += c } catch {}`: any
+        // statement before it in a `try` may throw, and decide that it runs.
+        if (ts.isBlock(q) && caught(q)) {
+          for (const s of q.statements) if (s.end <= x.pos) put(of(s));
+        }
+        // `(secret[i] === c ? A : undefined)?.charAt((out += c, 0))`: what an
+        // optional chain hands on runs only if what it is read off is there.
+        else if ((ts.isCallExpression(q) || ts.isElementAccessExpression(q)) && x !== q.expression && ts.isOptionalChain(q)) put(of(q.expression));
+        // `(x = (out += c)) => x` called with `undefined` or not; `const { z = (out
+        // += c) } = …`; `({ z = (out += c) } = …)`: a default runs only if what
+        // it defaults is missing.
+        else if (ts.isParameter(q) && x === q.initializer) put(defaulted(q));
+        else if (ts.isBindingElement(q) && x === q.initializer) put(boundFrom(q));
+        else if (ts.isShorthandPropertyAssignment(q) && x === q.objectAssignmentInitializer) put(assignedFrom(q));
+        else if (
+          ts.isBinaryExpression(q) &&
+          q.operatorToken.kind === K.EqualsToken &&
+          x === q.right &&
+          (ts.isArrayLiteralExpression(q.parent) || ts.isObjectLiteralExpression(q.parent) || ts.isPropertyAssignment(q.parent))
+        )
+          put(assignedFrom(q));
       }
       return t;
+    };
+    /** Whether a throw in block `b` may land in a `catch` of the component. */
+    const caught = (b: ts.Block) => {
+      for (let y: ts.Node = b, q = b.parent; q && !ts.isFunctionLike(q); y = q, q = q.parent)
+        if (ts.isTryStatement(q) && q.catchClause && y === q.tryBlock) return true;
+      return false;
+    };
+    /** What decides whether a parameter's default runs: what its function is called with. */
+    const defaulted = (p: ts.ParameterDeclaration): Set<string> => (p.parent === fn ? of(p.name) : calledWith(p.parent));
+    /** What a destructuring pattern takes apart, from the binding element down in it. */
+    const boundFrom = (b: ts.BindingElement): Set<string> => {
+      let y: ts.Node = b;
+      while (ts.isBindingElement(y) || ts.isObjectBindingPattern(y) || ts.isArrayBindingPattern(y)) y = y.parent;
+      if (ts.isParameter(y)) return defaulted(y);
+      if (ts.isVariableDeclaration(y)) {
+        if (y.initializer) return of(y.initializer);
+        if (ts.isCatchClause(y.parent)) return new Set(thrown);
+        const l = y.parent.parent;
+        if (ts.isForOfStatement(l) || ts.isForInStatement(l)) return of(l.expression);
+      }
+      return new Set([UNSEEN]);
+    };
+    /** What an assignment pattern takes apart, from a default down in it; nothing if it is no pattern. */
+    const assignedFrom = (n: ts.Node): Set<string> => {
+      let y = n;
+      for (let q = y.parent; ; y = q, q = q.parent)
+        if (
+          !(
+            ts.isArrayLiteralExpression(q) ||
+            ts.isObjectLiteralExpression(q) ||
+            ts.isSpreadElement(q) ||
+            ts.isSpreadAssignment(q) ||
+            ts.isParenthesizedExpression(q) ||
+            ts.isShorthandPropertyAssignment(q) ||
+            (ts.isPropertyAssignment(q) && q.initializer === y) ||
+            (ts.isBinaryExpression(q) && q.operatorToken.kind === K.EqualsToken && q.left === y && !ts.isExpressionStatement(q.parent) && (ts.isArrayLiteralExpression(q.parent) || ts.isObjectLiteralExpression(q.parent) || ts.isPropertyAssignment(q.parent)))
+          )
+        )
+          break;
+      const q = y.parent;
+      if (ts.isBinaryExpression(q) && q.operatorToken.kind === K.EqualsToken && q.left === y) return of(q.right);
+      if ((ts.isForOfStatement(q) || ts.isForInStatement(q)) && q.initializer === y) return of(q.expression);
+      return new Set();
     };
     /**
      * What decides which function a callee is: `c` in `table[c]`, the
@@ -928,9 +1056,11 @@ describe("recovery phrase screen", () => {
               // `Reflect.set(Math, "k", secret)` too; but `Math.max(a, b)` keeps
               // nothing in `Math`, so a language name counts only as an argument.
               // `Reflect.set(parseInt, "leak", secret)`: any outside name handed to one.
+              // `keep(secret)`, `ss().setItem("k", secret)`: a helper outside the
+              // component keeps what it is handed, as far as the test follows it.
               const kept = n.arguments?.includes(a as ts.Expression)
-                ? held(a) || (byLanguage(n) && roots(a).ids.some(outside))
-                : roots(a).ids.some((id) => holder(id, false));
+                ? held(a) || (byLanguage(n) && roots(a).ids.some(outside)) || (ts.isIdentifier(callee) && project(callee)) || fromProject(callee)
+                : roots(a).ids.some((id) => holder(id, false)) || fromProject(a);
               if (kept) changed = add(WORLD, t) || changed;
             }
           // `table[c]?.()`, `if (c === "a") addA()`: which function runs is a
@@ -1197,6 +1327,12 @@ describe("recovery phrase screen", () => {
               if (p.startsWith(FN)) continue;
               if (p === UNSEEN) {
                 seen.push(`${key}: ${e.getText(sf)} holds a value handed in where the test cannot see what with`);
+                continue;
+              }
+              // Not followed out of the component, so not vouched for: the line
+              // has to stand in COPYABLE on its own word.
+              if (p === KEPT) {
+                seen.push(`${key}: ${e.getText(sf)} reads what code outside the component keeps`);
                 continue;
               }
               forwards.add(`${key}: ${p}`);
