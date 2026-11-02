@@ -22,6 +22,23 @@
 # opening a PR; if that matters enough to enforce, it belongs in branch
 # protection, not in a comment.
 
+# Everything, as a floor. GitHub applies the LAST matching line, so every line
+# below still decides its own files; this one only catches what no line names.
+# Before it existed, the list above was the whole of what needed review, and
+# what it missed was mergeable with no owner looking: package.json and bun.lock
+# (what gets installed and run), vitest.config.ts and tsconfig.json (what the
+# gates see), src/lib/node-globals.ts (the shim the browser bundle depends on),
+# several src/lib/cardano files, the wallet components, src/lib/api.ts and
+# src/lib/wallet.ts.
+# A list of the dangerous files is only as good as the memory of whoever wrote
+# it; a default turns forgetting into one extra review instead of none.
+#
+# `scripts/check-urls.mjs` reads this file as its allow-list and does NOT count
+# this line as gating anything — it matches literal paths and directory
+# prefixes only, and a test pins that. If it did count it, a URL could sit in
+# any file and the guard would pass everything.
+*                               @AladinContract @GreenSun-Tech
+
 /src/lib/cardano/connect.ts     @AladinContract @GreenSun-Tech
 /src/lib/cardano/send.ts        @AladinContract @GreenSun-Tech
 /src/lib/cardano/tx.ts          @AladinContract @GreenSun-Tech

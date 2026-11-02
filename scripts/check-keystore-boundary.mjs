@@ -15,11 +15,18 @@
  * is the check. Widening the allow-list is allowed — it is a reviewed diff in a
  * CODEOWNERS-gated file, which is exactly the conversation that should happen.
  */
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, join, relative, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
-const REPO = join(dirname(fileURLToPath(import.meta.url)), "..");
+/**
+ * The repo this script lives in, unless a root is passed as the first argument
+ * — which is for the tests, so they can stage an import this gate must refuse
+ * without writing it into the repo.
+ */
+const REPO = process.argv[2]
+  ? resolve(process.argv[2])
+  : join(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** Repo-relative, POSIX-separated. Anything here may import the keystore. */
 const ALLOWED = [
@@ -75,8 +82,97 @@ const IMPORT_RE = /^(?:import|export)\b[\s\S]*?["']([^"']+)["']/gm;
  * author who is deliberately hiding. That author is what code review is for.
  */
 const DYNAMIC_RE = /\b(?:import|require)\s*\(\s*["']([^"']+)["']/g;
-/** Any spelling of the keystore path: `@/lib/keystore`, `../keystore/vault`, … */
-const KEYSTORE_RE = /(^|\/)lib\/keystore(\/|$)|(^|\/)keystore\/(vault|derive|signer|session|storage|mnemonic)$/;
+
+/**
+ * Where an import specifier lands, decided by resolving it — not by what it
+ * looks like.
+ *
+ * This used to be a pattern over the specifier's text, and a pattern over text
+ * only knows the spellings its author thought of. Measured against it: a panel
+ * one directory over importing `../keystore`, and one importing a module of the
+ * keystore the pattern did not list, were both reported OK. Every relative
+ * spelling of the same directory is a different string and the same folder;
+ * resolving the specifier against the importing file collapses them all into
+ * the one question that matters — is this path inside `src/lib/keystore`?
+ *
+ * Aliases come from `tsconfig.json` (`paths`, and `baseUrl` for bare paths like
+ * `src/lib/keystore`), read rather than copied, so a new alias is covered the
+ * day it is added. The comparison runs on real paths and ignores case: a
+ * symlinked directory, or `../Keystore` on a case-insensitive disk, reaches the
+ * same files under a name that is not `keystore`.
+ */
+const KEYSTORE = canonical(join(REPO, "src", "lib", "keystore"));
+
+/** `tsconfig.json`'s module resolution, or a failure — never a silent default. */
+function loadTsconfig() {
+  const file = join(REPO, "tsconfig.json");
+  if (!existsSync(file)) return { baseUrl: REPO, paths: [] };
+  const text = readFileSync(file, "utf8");
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    try {
+      // tsconfig is JSONC. Drop comments and trailing commas, outside strings.
+      json = JSON.parse(
+        text
+          .replace(/("(?:[^"\\]|\\.)*")|\/\/[^\n]*|\/\*[\s\S]*?\*\//g, (m, str) => str ?? "")
+          .replace(/("(?:[^"\\]|\\.)*")|,(\s*[}\]])/g, (m, str, close) => str ?? close),
+      );
+    } catch (e) {
+      // An alias this gate cannot read is an import it cannot resolve: fail, so
+      // the gate does not go on reporting OK about a map it never saw.
+      console.error(`Keystore boundary FAILED — cannot parse tsconfig.json: ${e.message}`);
+      process.exit(1);
+    }
+  }
+  const options = json.compilerOptions ?? {};
+  const baseUrl = resolve(REPO, options.baseUrl ?? ".");
+  return { baseUrl, paths: Object.entries(options.paths ?? {}) };
+}
+
+const TSCONFIG = loadTsconfig();
+
+/**
+ * The real path of what `p` names, trying the extensions the bundler tries.
+ * A path that does not exist is compared as written: it cannot build, and
+ * comparing it lexically still catches a typo'd spelling of the keystore.
+ */
+function canonical(p) {
+  for (const c of [p, `${p}.ts`, `${p}.tsx`, `${p}.js`, `${p}.mjs`]) {
+    if (existsSync(c)) return realpathSync(c);
+  }
+  return resolve(p);
+}
+
+/** Every path a specifier written in `fromFile` can resolve to. */
+function candidates(spec, fromFile) {
+  // `…/vault?raw` is still the vault. Not from the first character: a leading
+  // `#` is a subpath-import alias, not a fragment.
+  const s = spec.replace(/(.)[?#].*$/, "$1");
+  if (s === "." || s === ".." || s.startsWith("./") || s.startsWith("../")) return [resolve(dirname(fromFile), s)];
+  if (isAbsolute(s)) return [s];
+  const out = [];
+  for (const [pattern, targets] of TSCONFIG.paths) {
+    const star = pattern.indexOf("*");
+    const head = star < 0 ? pattern : pattern.slice(0, star);
+    const tail = star < 0 ? "" : pattern.slice(star + 1);
+    const hit = star < 0 ? s === pattern : s.startsWith(head) && s.endsWith(tail) && s.length >= head.length + tail.length;
+    if (!hit) continue;
+    const middle = star < 0 ? "" : s.slice(head.length, s.length - tail.length);
+    for (const t of targets) out.push(resolve(TSCONFIG.baseUrl, t.replace("*", middle)));
+  }
+  // `baseUrl` makes every bare path a path from that directory as well.
+  out.push(resolve(TSCONFIG.baseUrl, s));
+  return out;
+}
+
+const inside = (p, dir) => {
+  const a = p.toLowerCase();
+  const b = dir.toLowerCase();
+  return a === b || a.startsWith(b + sep);
+};
+const reachesKeystore = (spec, fromFile) => candidates(spec, fromFile).some((c) => inside(canonical(c), KEYSTORE));
 
 function* walk(dir) {
   for (const name of readdirSync(dir).sort()) {
@@ -101,7 +197,7 @@ for (const file of SCAN.flatMap((d) => [...walk(join(REPO, d))])) {
     re.lastIndex = 0; // these are /g and shared across files
     for (const m of text.matchAll(re)) {
       const spec = m[1];
-      if (!KEYSTORE_RE.test(spec.replace(/^@\//, "src/").replace(/^\.\.?\//, ""))) continue;
+      if (!reachesKeystore(spec, file)) continue;
       const line = lineOf(text, m.index);
       // A static import can match both patterns; report the site once.
       const at = `${r}:${line}`;
