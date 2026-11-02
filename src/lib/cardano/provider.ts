@@ -270,27 +270,56 @@ function checked(name: keyof typeof PARAM_CEILING, raw: string | number): BigNum
 }
 
 /**
- * Current protocol parameters in typhon's `ProtocolParams` shape. Koios
- * `/epoch_params` returns the latest epoch first.
+ * The newest row of Koios `/epoch_params`, and only that row.
+ *
+ * Asking for the whole table and reading `rows[0]` worked while a network had
+ * fewer than 1000 epochs. Preview passed that on its way to 1470 (measured
+ * 2026-11-02: `content-range: 0-0/1470` for `limit=1`), so the unbounded read came back cut
+ * at 1000 rows, the truncation guard in `koios` refused it, and every
+ * transaction on Preview — send, delegation, governance — failed before a fee
+ * could be computed. Mainnet reaches the same wall in a few years. One row,
+ * ordered newest first, is the question every caller is actually asking.
  */
+export async function fetchLatestEpochParams<T>(network: PhoenixNetwork): Promise<T | undefined> {
+  const rows = await koios<T[]>(network, "/epoch_params", undefined, {
+    limit: 1,
+    order: "epoch_no.desc",
+  });
+  return rows[0];
+}
+
+/**
+ * The current governance deposit, in lovelace: `drep_deposit` for registering a
+ * DRep, `gov_action_deposit` for submitting a proposal. Read from the newest
+ * epoch row like every other protocol parameter, so it cannot fall back to a
+ * full-table read that Koios cuts at 1000 rows. `undefined` when the newest row
+ * carries no such field (a network before Conway).
+ */
+export async function fetchGovDeposit(
+  network: PhoenixNetwork,
+  kind: "drep_deposit" | "gov_action_deposit",
+): Promise<BigNumber | undefined> {
+  const row = await fetchLatestEpochParams<Record<typeof kind, string | number | null>>(network);
+  const raw = row?.[kind];
+  return raw == null ? undefined : new BigNumber(raw);
+}
+
+/** Current protocol parameters in typhon's `ProtocolParams` shape. */
 export async function fetchProtocolParams(network: PhoenixNetwork): Promise<ProtocolParams> {
   const src = getChainSource(network);
   if (src.kind === "blockfrost") return bfProtocolParams(src);
-  const rows = await koios<
-    Array<{
-      min_fee_a: number;
-      min_fee_b: number;
-      key_deposit: string | number;
-      coins_per_utxo_size: string | number;
-      collateral_percent: number;
-      price_step: number;
-      price_mem: number;
-      max_tx_size: number;
-      max_val_size: string | number;
-      min_fee_ref_script_cost_per_byte?: number;
-    }>
-  >(network, "/epoch_params");
-  const p = rows[0];
+  const p = await fetchLatestEpochParams<{
+    min_fee_a: number;
+    min_fee_b: number;
+    key_deposit: string | number;
+    coins_per_utxo_size: string | number;
+    collateral_percent: number;
+    price_step: number;
+    price_mem: number;
+    max_tx_size: number;
+    max_val_size: string | number;
+    min_fee_ref_script_cost_per_byte?: number;
+  }>(network);
   if (!p) throw new Error("Koios returned no protocol params");
   return {
     minFeeA: checked("minFeeA", p.min_fee_a),
