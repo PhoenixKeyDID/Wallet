@@ -143,15 +143,52 @@ function openDb(): Promise<IDBDatabase> {
   });
 }
 
+/**
+ * One request in one transaction, settled by the TRANSACTION, not the request.
+ *
+ * A request's `success` only means the store accepted it into a transaction
+ * that has not committed yet. The commit can still fail — quota exceeded, the
+ * disk full, the browser closing the database — and arrives as `abort` after
+ * `success` has already fired. Resolving on `success` told the create-wallet
+ * screen the encrypted seed was saved when the browser then threw it away, and
+ * that screen is what lets a person close the tab believing they are done.
+ *
+ * So: the result is read on `success` but handed out on `complete`; `abort`
+ * and `error` reject; and the database closes on every path, not only the
+ * happy one, so a failed write does not leave a connection blocking the next
+ * version upgrade.
+ */
 function tx<T>(mode: IDBTransactionMode, run: (s: IDBObjectStore) => IDBRequest<T>): Promise<T> {
   return openDb().then(
     (db) =>
       new Promise<T>((resolve, reject) => {
-        const t = db.transaction(STORE, mode);
-        const req = run(t.objectStore(STORE));
-        req.onsuccess = () => resolve(req.result);
-        req.onerror = () => reject(req.error ?? new Error("indexeddb_request_failed"));
-        t.oncomplete = () => db.close();
+        let result: T;
+        let t: IDBTransaction;
+        try {
+          t = db.transaction(STORE, mode);
+          const req = run(t.objectStore(STORE));
+          req.onsuccess = () => {
+            result = req.result;
+          };
+        } catch (err) {
+          db.close();
+          reject(err);
+          return;
+        }
+        t.oncomplete = () => {
+          db.close();
+          resolve(result);
+        };
+        t.onabort = () => {
+          db.close();
+          reject(t.error ?? new Error("indexeddb_transaction_aborted"));
+        };
+        // `error` bubbles from the request to the transaction and is followed
+        // by `abort`; rejecting here as well is harmless (a promise settles
+        // once) and does not depend on that ordering.
+        t.onerror = () => {
+          reject(t.error ?? new Error("indexeddb_request_failed"));
+        };
       }),
   );
 }
