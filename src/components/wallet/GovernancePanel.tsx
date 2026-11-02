@@ -38,7 +38,7 @@ import {
   fetchProtocolParams,
   fetchTipSlot,
   formatAda,
-  fetchLatestEpochParams,
+  fetchGovDeposit,
   blake2b224,
   fromHex,
   toHex,
@@ -649,10 +649,9 @@ function BecomeSection({
   const [metaHash, setMetaHash] = useState("");
 
   const depositLovelace = useCallback(async (): Promise<BigNumber> => {
-    const dep = (await fetchLatestEpochParams<{ drep_deposit: string | number }>(network))
-      ?.drep_deposit;
+    const dep = await fetchGovDeposit(network, "drep_deposit");
     if (dep == null) throw new Error(t("gov_deposit_unknown"));
-    return new BigNumber(dep);
+    return dep;
   }, [network, t]);
 
   const register = () =>
@@ -769,11 +768,9 @@ function SubmitSection({
   const [wTarget, setWTarget] = useState(""); // stake address receiving the withdrawal
 
   const govDeposit = useCallback(async (): Promise<BigNumber> => {
-    const dep = (
-      await fetchLatestEpochParams<{ gov_action_deposit: string | number }>(network)
-    )?.gov_action_deposit;
+    const dep = await fetchGovDeposit(network, "gov_action_deposit");
     if (dep == null) throw new Error(t("gov_deposit_unknown"));
-    return new BigNumber(dep);
+    return dep;
   }, [network, t]);
 
   const submit = () =>

@@ -274,7 +274,7 @@ function checked(name: keyof typeof PARAM_CEILING, raw: string | number): BigNum
  *
  * Asking for the whole table and reading `rows[0]` worked while a network had
  * fewer than 1000 epochs. Preview passed that on its way to 1470 (measured
- * 2026-11-02: `content-range: 0-1/1470`), so the unbounded read came back cut
+ * 2026-11-02: `content-range: 0-0/1470` for `limit=1`), so the unbounded read came back cut
  * at 1000 rows, the truncation guard in `koios` refused it, and every
  * transaction on Preview — send, delegation, governance — failed before a fee
  * could be computed. Mainnet reaches the same wall in a few years. One row,
@@ -286,6 +286,22 @@ export async function fetchLatestEpochParams<T>(network: PhoenixNetwork): Promis
     order: "epoch_no.desc",
   });
   return rows[0];
+}
+
+/**
+ * The current governance deposit, in lovelace: `drep_deposit` for registering a
+ * DRep, `gov_action_deposit` for submitting a proposal. Read from the newest
+ * epoch row like every other protocol parameter, so it cannot fall back to a
+ * full-table read that Koios cuts at 1000 rows. `undefined` when the newest row
+ * carries no such field (a network before Conway).
+ */
+export async function fetchGovDeposit(
+  network: PhoenixNetwork,
+  kind: "drep_deposit" | "gov_action_deposit",
+): Promise<BigNumber | undefined> {
+  const row = await fetchLatestEpochParams<Record<typeof kind, string | number | null>>(network);
+  const raw = row?.[kind];
+  return raw == null ? undefined : new BigNumber(raw);
 }
 
 /** Current protocol parameters in typhon's `ProtocolParams` shape. */
