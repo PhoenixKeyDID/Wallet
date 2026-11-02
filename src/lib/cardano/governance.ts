@@ -608,15 +608,17 @@ type KoiosProposalRow = {
  * CIP-108 anchor metadata Koios already resolved into `meta_json.body`.
  *
  * Read page by page: the list outgrows one response (Preview, measured
- * 2026-11-02: 1583 rows), and a still-open action may sit on any page.
+ * 2026-11-02: 1583 rows), and a still-open action may sit on any page. Read
+ * oldest first so an action submitted mid-read cannot repeat a row across a
+ * page boundary (see `koiosAll`), then reversed so the newest comes first.
  */
 export async function listGovActions(network: PhoenixNetwork): Promise<GovActionSummary[]> {
   const rows = await koiosAll<KoiosProposalRow>(
     network,
     "/proposal_list",
-    "block_time.desc,proposal_id.asc",
+    "block_time.asc,proposal_id.asc",
   );
-  return rows.map((r) => {
+  return rows.reverse().map((r) => {
     const isOpen =
       r.ratified_epoch == null &&
       r.enacted_epoch == null &&

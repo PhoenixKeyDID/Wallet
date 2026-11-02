@@ -157,7 +157,7 @@
   "gov_none": "无",
   "gov_abstain": "弃权",
   "gov_no_confidence": "不信任",
-  "gov_search_drep": "按 dRep 名称或 ID 搜索",
+  "gov_search_drep": "按 dRep ID（drep1…）搜索",
   "gov_searching": "搜索中…",
   "gov_search": "搜索",
   "gov_voting_power": "投票权",

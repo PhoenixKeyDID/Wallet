@@ -265,11 +265,16 @@ export async function koios<T>(
  * match every row and present the list's first page as search results. Text
  * that is nothing but wildcards is refused for the same reason — callers drop
  * an empty query before they get here.
+ *
+ * `_` is ILIKE's single-character wildcard, so it is escaped rather than
+ * dropped: measured 2026-11-02 on Preview, `pool_list?ticker=ilike.*___*`
+ * matched 472 pools, `ilike.*\_*` matched the one ticker holding a `_`.
+ * `\` is escaped first so a typed backslash cannot escape what follows it.
  */
 export function koiosContains(text: string): string {
   const literal = text.replace(/[*%]/g, "");
   if (!literal) throw new Error("koiosContains: nothing to match once wildcards are removed");
-  return `ilike.*${literal}*`;
+  return `ilike.*${literal.replace(/[\\_]/g, "\\$&")}*`;
 }
 
 /**
@@ -278,11 +283,14 @@ export function koiosContains(text: string): string {
  * For lists that must be complete and can outgrow `KOIOS_ROW_CAP` — measured
  * 2026-11-02 on Preview: `/proposal_list` 1583 rows. `order` is required and
  * should end on a unique column, so that consecutive pages neither repeat nor
- * skip a row that ties with its neighbour.
+ * skip a row that ties with its neighbour. For a list that only grows, read it
+ * oldest first: a row added between two pages then lands after the last page
+ * instead of pushing an already-read row onto the next one.
  *
  * `maxRows` is a ceiling, not a cut: a list that is still going when it is
  * reached is refused with `KoiosTruncatedError`, the same answer a short page
- * gets, instead of being returned as if it had ended there.
+ * gets, instead of being returned as if it had ended there. One row past the
+ * ceiling is asked for, so a list of exactly `maxRows` rows is not refused.
  */
 export async function koiosAll<T>(
   network: PhoenixNetwork,
@@ -293,16 +301,17 @@ export async function koiosAll<T>(
 ): Promise<T[]> {
   const rows: T[] = [];
   for (;;) {
+    const limit = Math.min(KOIOS_ROW_CAP, maxRows + 1 - rows.length);
     const page = await koios<T[]>(network, path, undefined, {
-      limit: KOIOS_ROW_CAP,
+      limit,
       order,
       offset: rows.length,
       filters,
     });
     if (!Array.isArray(page)) throw new Error(`Koios ${path} → expected an array of rows`);
     rows.push(...page);
-    if (page.length < KOIOS_ROW_CAP) return rows;
-    if (rows.length >= maxRows) throw new KoiosTruncatedError(path, rows.length, null);
+    if (rows.length > maxRows) throw new KoiosTruncatedError(path, maxRows, null);
+    if (page.length < limit) return rows;
   }
 }
 

@@ -157,7 +157,7 @@
   "gov_none": "なし",
   "gov_abstain": "棄権",
   "gov_no_confidence": "不信任",
-  "gov_search_drep": "dRep 名または ID で検索",
+  "gov_search_drep": "dRep ID（drep1…）で検索",
   "gov_searching": "検索中…",
   "gov_search": "検索",
   "gov_voting_power": "投票権",

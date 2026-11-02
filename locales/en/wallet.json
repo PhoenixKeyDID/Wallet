@@ -157,7 +157,7 @@
   "gov_none": "None",
   "gov_abstain": "Abstain",
   "gov_no_confidence": "No Confidence",
-  "gov_search_drep": "Search by dRep name or ID",
+  "gov_search_drep": "Search by dRep ID (drep1…)",
   "gov_searching": "Searching…",
   "gov_search": "Search",
   "gov_voting_power": "Voting power",

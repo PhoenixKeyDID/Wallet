@@ -25,14 +25,49 @@ function matches(row: Row, column: string, op: string): boolean {
   const value = String(row[column] ?? "");
   if (op.startsWith("eq.")) return value === op.slice(3);
   if (op.startsWith("ilike.")) {
-    const pattern = op.slice(6).replace(/\*/g, "");
-    return value.toLowerCase().includes(pattern.toLowerCase());
+    // PostgREST turns `*` into `%`; ILIKE then reads `%` as any run, `_` as any
+    // one character, and `\` as "the next character is literal".
+    let re = "";
+    const p = op.slice(6).replace(/\*/g, "%");
+    for (let i = 0; i < p.length; i++) {
+      const c = p[i];
+      if (c === "\\") re += (p[++i] ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      else if (c === "%") re += ".*";
+      else if (c === "_") re += ".";
+      else re += c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }
+    return new RegExp(`^${re}$`, "is").test(value);
   }
   throw new Error(`fake PostgREST: unsupported filter ${column}=${op}`);
 }
 
-/** Serves `lists[path]` for GET and `posts[path]` for POST; records every URL. */
-function fakeKoios(lists: Record<string, Row[]>, posts: Record<string, (body: any) => Row[]> = {}) {
+/** Applies a PostgREST `order` such as `block_time.asc,proposal_id.asc`. */
+function sortRows(rows: Row[], order: string | null): Row[] {
+  if (!order) return rows;
+  const keys = order.split(",").map((k) => {
+    const [col, dir] = k.split(".");
+    return { col, sign: dir === "desc" ? -1 : 1 };
+  });
+  return [...rows].sort((a, b) => {
+    for (const { col, sign } of keys) {
+      const x = a[col] as number | string;
+      const y = b[col] as number | string;
+      if (x < y) return -sign;
+      if (x > y) return sign;
+    }
+    return 0;
+  });
+}
+
+/**
+ * Serves `lists[path]` for GET and `posts[path]` for POST; records every URL.
+ * `afterGet` runs after each GET has been answered — a list that grows mid-read.
+ */
+function fakeKoios(
+  lists: Record<string, Row[]>,
+  posts: Record<string, (body: any) => Row[]> = {},
+  afterGet?: (path: string) => void,
+) {
   const urls: string[] = [];
   vi.stubGlobal(
     "fetch",
@@ -52,10 +87,12 @@ function fakeKoios(lists: Record<string, Row[]>, posts: Record<string, (body: an
         if (k === "limit" || k === "offset" || k === "order") continue;
         rows = rows.filter((r) => matches(r, k, v));
       }
+      rows = sortRows(rows, url.searchParams.get("order"));
       const offset = Number(url.searchParams.get("offset") ?? 0);
       const limit = Math.min(Number(url.searchParams.get("limit") ?? CAP), CAP);
       const page = rows.slice(offset, offset + limit);
       const range = page.length ? `${offset}-${offset + page.length - 1}/${rows.length}` : `*/${rows.length}`;
+      afterGet?.(path);
       return new Response(JSON.stringify(page), {
         status: page.length < rows.length ? 206 : 200,
         headers: { "content-type": "application/json", "content-range": range },
@@ -111,6 +148,15 @@ describe("searchPools — the pool past row 1000 is found", () => {
     expect(new URL(urls[0]).searchParams.get("pool_id_bech32")).toBe(`ilike.*${GST}*`);
   });
 
+  it("reads `_` as a character, not as ILIKE's any-one-character", async () => {
+    const rows = poolList();
+    rows[1250] = { pool_id_bech32: "pool1underscore", ticker: "A_B", pool_status: "registered" };
+    fakeKoios({ "/pool_list": rows }, { "/pool_info": poolInfo });
+    const found = await searchPools(PREVIEW, "_");
+    expect(found.map((p) => p.poolId)).toEqual(["pool1underscore"]);
+    expect(koiosContains("a\\_")).toBe("ilike.*a\\\\\\_*");
+  });
+
   it("treats a query of only wildcards as empty and asks nothing", async () => {
     const urls = fakeKoios({ "/pool_list": poolList() });
     await expect(searchPools(PREVIEW, " *% ")).resolves.toEqual([]);
@@ -153,6 +199,7 @@ describe("listGovActions — every page, not the first", () => {
       proposal_type: "InfoAction",
       expiration: 100,
       meta_json: null,
+      block_time: 1_700_000_000 + i,
       ...(i === 1500 ? open : closed),
     }));
     const urls = fakeKoios({ "/proposal_list": rows });
@@ -160,7 +207,33 @@ describe("listGovActions — every page, not the first", () => {
     expect(all).toHaveLength(1583);
     expect(all.filter((a) => a.isOpen).map((a) => a.proposalId)).toEqual(["gov_action1x1500"]);
     expect(urls.map((u) => new URL(u).searchParams.get("offset"))).toEqual([null, "1000"]);
-    for (const u of urls) expect(new URL(u).searchParams.get("order")).toBeTruthy();
+    expect(all[0].proposalId).toBe("gov_action1x1582");
+  });
+
+  it("neither repeats nor drops a row when an action is submitted between two pages", async () => {
+    const rows: Row[] = Array.from({ length: 1500 }, (_, i) => ({
+      proposal_id: `gov_action1x${String(i).padStart(5, "0")}`,
+      proposal_tx_hash: i.toString(16).padStart(64, "0"),
+      proposal_index: 0,
+      proposal_type: "InfoAction",
+      expiration: 100,
+      meta_json: null,
+      block_time: 1_700_000_000 + i,
+      ratified_epoch: null,
+      enacted_epoch: 10,
+      dropped_epoch: null,
+      expired_epoch: null,
+    }));
+    let grown = false;
+    fakeKoios({ "/proposal_list": rows }, {}, () => {
+      if (grown) return;
+      grown = true;
+      rows.push({ ...rows[0], proposal_id: "gov_action1xnew", proposal_tx_hash: "ff".repeat(32), block_time: 1_800_000_000 });
+    });
+    const all = await listGovActions(PREVIEW);
+    const ids = all.map((a) => a.proposalId);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids).toHaveLength(1501);
   });
 });
 
@@ -192,6 +265,11 @@ describe("koios / koiosAll — paging contract", () => {
     await expect(koiosAll(PREVIEW, "/drep_list", "i.asc", undefined, 2000)).rejects.toBeInstanceOf(
       KoiosTruncatedError,
     );
+  });
+
+  it("returns a list of exactly its ceiling instead of refusing it", async () => {
+    fakeKoios({ "/drep_list": Array.from({ length: 2000 }, (_, i) => ({ i })) });
+    await expect(koiosAll(PREVIEW, "/drep_list", "i.asc", undefined, 2000)).resolves.toHaveLength(2000);
   });
 
   it("strips wildcards from a contains filter, and refuses one that is only wildcards", () => {
