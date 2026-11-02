@@ -59,6 +59,7 @@ import { fetchAddressBalance, type PhoenixNetwork } from "@/lib/cardano";
 import { BalanceView, type DisplayAsset } from "./BalanceView";
 import type { BalanceState } from "./moneyNotice";
 import { WalletTabs } from "./WalletTabs";
+import { nextAccountIndex } from "./delegationFeedback";
 
 type Step = "list" | "words" | "confirm" | "password" | "restore" | "unlock" | "open";
 
@@ -818,7 +819,7 @@ export function LocalWalletPanel() {
               {switchTo === null && (
                 <button
                   className="text-text-hint underline hover:text-text-dim"
-                  onClick={() => setSwitchTo(accountIndex)}
+                  onClick={() => setSwitchTo(nextAccountIndex(accountIndex))}
                 >
                   {t("local_account_switch")}
                 </button>

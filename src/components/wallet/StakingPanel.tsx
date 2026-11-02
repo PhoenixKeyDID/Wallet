@@ -32,6 +32,24 @@ import {
   type PoolSummary,
   type StakeAccountState,
 } from "@/lib/cardano/staking";
+import {
+  DELEGATION_WATCH_LIMIT_MS,
+  delegationWatch,
+  type SentDelegation,
+} from "@/components/wallet/delegationFeedback";
+
+/**
+ * Held by the parent, above the tab switch: this panel unmounts whenever
+ * another tab is opened, and the waiting line must still be there on return.
+ */
+export type DelegationSentProps = {
+  sentDelegation: SentDelegation | null;
+  onDelegationSent: (sent: SentDelegation) => void;
+  onDelegationSettled: () => void;
+};
+
+/** How often the account is re-read while a delegation waits to be recorded. */
+const PENDING_POLL_MS = 20_000;
 
 type PoolReview = { pool: PoolSummary; needsRegistration: boolean; built: BuiltTx };
 type WithdrawReview = { amount: bigint; built: BuiltTx };
@@ -54,11 +72,15 @@ export function StakingPanel({
   changeAddress,
   uncertainHash,
   onUncertain,
+  sentDelegation,
+  onDelegationSent,
+  onDelegationSettled,
 }: {
   port: WalletPort;
   network: PhoenixNetwork;
   changeAddress: string;
-} & UncertainLock) {
+} & UncertainLock &
+  DelegationSentProps) {
   const { t } = useTranslation("wallet");
 
   const [rewardAddressHex, setRewardAddressHex] = useState<string | null>(null);
@@ -81,6 +103,17 @@ export function StakingPanel({
   const [withdrawReview, setWithdrawReview] = useState<WithdrawReview | null>(null);
   const [checked, setChecked] = useState(false);
   const [busy, setBusy] = useState(false);
+  // A sent delegation is kept until the chain shows it, so the screen says
+  // "waiting" instead of the stale "Not delegated". `now` moves with the poll,
+  // which is what lets "waiting" turn into "not seen" when it has gone on too long.
+  const [now, setNow] = useState(() => Date.now());
+  const watch = delegationWatch(
+    sentDelegation,
+    rewardAddressBech32,
+    network,
+    accountState?.delegatedPoolId,
+    now,
+  );
 
   // Read the wallet's own reward address + its on-chain state once on mount.
   // `getRewardAddresses()` is the only source of a stake key here — a wallet
@@ -123,6 +156,42 @@ export function StakingPanel({
       toastApiError(err);
     }
   };
+
+  // The chain shows it: nothing left to wait for.
+  useEffect(() => {
+    if (watch.kind === "settled") onDelegationSettled();
+    // The callback is the parent's setter wrapper; re-running on its identity
+    // would add nothing the kind does not already say.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [watch.kind]);
+
+  // Re-read the account while the delegation can still land: through "pending"
+  // and on through "unseen", so a late block clears the warning by itself, and
+  // stop once its validity window has surely closed. A failed read leaves the
+  // line up, which is true: it is still waiting. A read that works after a
+  // failed one clears the error box.
+  const waiting =
+    (watch.kind === "pending" || watch.kind === "unseen") &&
+    sentDelegation !== null &&
+    now - sentDelegation.sentAt < DELEGATION_WATCH_LIMIT_MS;
+  useEffect(() => {
+    if (!waiting || !rewardAddressBech32) return;
+    let cancelled = false;
+    const timer = setInterval(() => {
+      setNow(Date.now());
+      getStakeAccountState(network, rewardAddressBech32)
+        .then((state) => {
+          if (cancelled) return;
+          setAccountState(state);
+          setLoadError(false);
+        })
+        .catch(() => {});
+    }, PENDING_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [waiting, network, rewardAddressBech32]);
 
   const runSearch = async () => {
     setSearching(true);
@@ -187,6 +256,11 @@ export function StakingPanel({
     try {
       const hash = await port.signAndSubmit(poolReview.built, network);
       toastSuccess("delegate_submitted", { hash: hash.slice(0, 12) });
+      if (rewardAddressBech32) {
+        const sentAt = Date.now();
+        setNow(sentAt);
+        onDelegationSent({ poolId: poolReview.pool.poolId, account: rewardAddressBech32, network, sentAt });
+      }
       setPoolReview(null);
       setChecked(false);
       setPools([]);
@@ -424,9 +498,13 @@ export function StakingPanel({
             <div className="flex justify-between">
               <span className="text-text-hint">{t("current_delegation_label")}</span>
               <span className="font-medium">
-                {accountState?.delegatedPoolId
-                  ? shortPoolId(accountState.delegatedPoolId)
-                  : t("not_delegated")}
+                {/* While pending the chain's answer is known to be stale; once
+                    "unseen", it is the best guess there is, so show it again. */}
+                {watch.kind === "pending"
+                  ? t("delegation_waiting")
+                  : accountState?.delegatedPoolId
+                    ? shortPoolId(accountState.delegatedPoolId)
+                    : t("not_delegated")}
               </span>
             </div>
             <div className="flex justify-between border-t border-border-soft pt-2">
@@ -436,6 +514,18 @@ export function StakingPanel({
               </span>
             </div>
           </div>
+        )}
+        {/* Outside the error branch: a failed re-read must not hide that a
+            delegation is out there, or the next press sends a second one. */}
+        {watch.kind === "pending" && (
+          <p className="text-xs text-amber-brand">
+            {t("stake_delegate_pending", { pool: shortPoolId(watch.poolId) })}
+          </p>
+        )}
+        {watch.kind === "unseen" && (
+          <p className="text-xs text-amber-brand">
+            {t("stake_delegate_unseen", { pool: shortPoolId(watch.poolId) })}
+          </p>
         )}
         {!loadingAccount && !loadError && accountState && accountState.rewardsAvailable > BigInt("0") && (
           <button
