@@ -32,6 +32,10 @@ import {
   type PoolSummary,
   type StakeAccountState,
 } from "@/lib/cardano/staking";
+import { pendingPoolId } from "@/components/wallet/delegationFeedback";
+
+/** How often the account is re-read while a delegation waits to be recorded. */
+const PENDING_POLL_MS = 20_000;
 
 type PoolReview = { pool: PoolSummary; needsRegistration: boolean; built: BuiltTx };
 type WithdrawReview = { amount: bigint; built: BuiltTx };
@@ -81,6 +85,10 @@ export function StakingPanel({
   const [withdrawReview, setWithdrawReview] = useState<WithdrawReview | null>(null);
   const [checked, setChecked] = useState(false);
   const [busy, setBusy] = useState(false);
+  // The pool a delegation was just sent to. Kept until the chain shows it, so
+  // the screen says "waiting" instead of the stale "Not delegated".
+  const [submittedPool, setSubmittedPool] = useState<string | null>(null);
+  const pendingPool = pendingPoolId(submittedPool, accountState?.delegatedPoolId);
 
   // Read the wallet's own reward address + its on-chain state once on mount.
   // `getRewardAddresses()` is the only source of a stake key here — a wallet
@@ -123,6 +131,23 @@ export function StakingPanel({
       toastApiError(err);
     }
   };
+
+  // Re-read the account until the chain records the delegation, then let go.
+  // A failed read leaves the waiting line up, which is true: it is still waiting.
+  useEffect(() => {
+    if (submittedPool === null) return;
+    if (pendingPool === null) {
+      setSubmittedPool(null);
+      return;
+    }
+    if (!rewardAddressBech32) return;
+    const timer = setInterval(() => {
+      getStakeAccountState(network, rewardAddressBech32)
+        .then(setAccountState)
+        .catch(() => {});
+    }, PENDING_POLL_MS);
+    return () => clearInterval(timer);
+  }, [submittedPool, pendingPool, network, rewardAddressBech32]);
 
   const runSearch = async () => {
     setSearching(true);
@@ -187,6 +212,7 @@ export function StakingPanel({
     try {
       const hash = await port.signAndSubmit(poolReview.built, network);
       toastSuccess("delegate_submitted", { hash: hash.slice(0, 12) });
+      setSubmittedPool(poolReview.pool.poolId);
       setPoolReview(null);
       setChecked(false);
       setPools([]);
@@ -435,6 +461,11 @@ export function StakingPanel({
                 {formatAda(accountState?.rewardsAvailable ?? BigInt("0"))} ADA
               </span>
             </div>
+            {pendingPool && (
+              <p className="border-t border-border-soft pt-2 text-xs text-amber-brand">
+                {t("stake_delegate_pending", { pool: shortPoolId(pendingPool) })}
+              </p>
+            )}
           </div>
         )}
         {!loadingAccount && !loadError && accountState && accountState.rewardsAvailable > BigInt("0") && (

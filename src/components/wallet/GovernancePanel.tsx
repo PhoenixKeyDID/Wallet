@@ -85,6 +85,13 @@ type Pending = {
   warn?: string;
   onDone?: () => void;
   /**
+   * Toast shown once the tx reaches the network. Defaults to "governance action
+   * submitted", which is wrong for a vote delegation: a delegation locks no
+   * deposit and creates no action, and calling it one sends the user to look
+   * for a proposal that does not exist.
+   */
+  submittedKey?: string;
+  /**
    * The cryptographic destination of this action, in full — the dRep id, the
    * pool id, the governance action id, the withdrawal address. `ConfirmGate`
    * challenges its tail.
@@ -203,7 +210,7 @@ export function GovernancePanel({
     setBusy(true);
     try {
       const hash = await port.signAndSubmit(pending.built, network);
-      toastSuccess("gov_submitted", { hash: hash.slice(0, 12) });
+      toastSuccess(pending.submittedKey ?? "gov_submitted", { hash: hash.slice(0, 12) });
       pending.onDone?.();
       resetReview();
     } catch (err) {
@@ -443,6 +450,7 @@ function DelegateSection({
           },
           feeRow(built),
         ],
+        submittedKey: "gov_delegation_submitted",
         onDone: () => {
           setJustDelegated(true);
           reloadCurrent();
