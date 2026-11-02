@@ -123,7 +123,7 @@
   "not_delegated": "未委任",
   "rewards_available_label": "受け取り可能な報酬",
   "withdraw_rewards": "報酬を引き出す",
-  "search_pools_placeholder": "プール名またはティッカーで検索",
+  "search_pools_placeholder": "ティッカーまたはプールID（pool1…）で検索",
   "searching_pools": "検索中…",
   "search_pools_button": "検索",
   "no_pools_found": "プールが見つかりません。別のキーワードでお試しください。",

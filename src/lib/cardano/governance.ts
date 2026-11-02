@@ -31,7 +31,7 @@ import {
   address as tyAddress,
 } from "@stricahq/typhonjs";
 import type { PhoenixNetwork } from "./address";
-import { koios } from "./provider";
+import { koios, koiosAll, koiosContains } from "./provider";
 import type { BuiltTx } from "./tx";
 
 type Input = tyTypes.Input;
@@ -532,20 +532,26 @@ type KoiosDRepInfoRow = KoiosDRepListRow & {
 };
 
 /**
- * List dReps. Fetches `/drep_list`, optionally filters by id substring, then
- * enriches up to `limit` matches with `/drep_info` (voting power + anchor).
- * The two special options (Abstain / No-Confidence) are UI-only, not returned.
+ * List dReps. Asks `/drep_list` for the first `limit` registered dReps whose id
+ * contains the query, then enriches them with `/drep_info` (voting power +
+ * anchor). The two special options (Abstain / No-Confidence) are UI-only, not
+ * returned.
+ *
+ * The filter runs on the server. Fetching the whole list to filter here is not
+ * possible: it is past the 1000-row cap (Preview, measured 2026-11-02: 15566
+ * rows, 9379 registered), so the unfiltered read was refused as truncated.
  */
 export async function listDReps(
   network: PhoenixNetwork,
   query?: string,
   limit = 20,
 ): Promise<DRepSummary[]> {
-  const list = await koios<KoiosDRepListRow[]>(network, "/drep_list");
-  const q = query?.trim().toLowerCase();
-  const filtered = (q ? list.filter((d) => d.drep_id.toLowerCase().includes(q)) : list)
-    .filter((d) => d.registered)
-    .slice(0, limit);
+  const q = query?.trim().toLowerCase().replace(/[*%]/g, "");
+  const filtered = await koios<KoiosDRepListRow[]>(network, "/drep_list", undefined, {
+    limit,
+    order: "drep_id.asc",
+    filters: { registered: "eq.true", ...(q ? { drep_id: koiosContains(q) } : {}) },
+  });
   if (filtered.length === 0) return [];
 
   // Throws on failure rather than falling back to `[]`. An empty info set makes
@@ -600,9 +606,16 @@ type KoiosProposalRow = {
  * List governance actions from `/proposal_list`. `isOpen` = not yet ratified /
  * enacted / dropped / expired (i.e. still votable). Title/abstract come from the
  * CIP-108 anchor metadata Koios already resolved into `meta_json.body`.
+ *
+ * Read page by page: the list outgrows one response (Preview, measured
+ * 2026-11-02: 1583 rows), and a still-open action may sit on any page.
  */
 export async function listGovActions(network: PhoenixNetwork): Promise<GovActionSummary[]> {
-  const rows = await koios<KoiosProposalRow[]>(network, "/proposal_list");
+  const rows = await koiosAll<KoiosProposalRow>(
+    network,
+    "/proposal_list",
+    "block_time.desc,proposal_id.asc",
+  );
   return rows.map((r) => {
     const isOpen =
       r.ratified_epoch == null &&

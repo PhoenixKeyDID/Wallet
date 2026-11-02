@@ -99,8 +99,10 @@ function koiosBase(network: PhoenixNetwork): string {
  * person reads as "my money is gone".
  */
 export class KoiosTruncatedError extends Error {
-  constructor(path: string, got: number, total: number) {
-    super(`Koios ${path} returned ${got} of ${total} rows`);
+  /** `total` is `null` when the server never said — the caller only knows
+   *  that the list kept going past `got`. */
+  constructor(path: string, got: number, total: number | null) {
+    super(`Koios ${path} returned ${got} of ${total ?? `more than ${got}`} rows`);
     this.name = "KoiosTruncatedError";
   }
 }
@@ -163,6 +165,12 @@ export type KoiosPage = {
   /** PostgREST ordering, e.g. `block_height.desc`. Ask explicitly: a page of
    *  "some rows" is only the newest ones if the server was told to sort. */
   order?: string;
+  /** Rows to skip. Only meaningful together with `order`: without a sort the
+   *  server is free to hand back a different "first N" on every request. */
+  offset?: number;
+  /** PostgREST column filters, e.g. `{ ticker: "ilike.*gst*" }`. Applied by the
+   *  server, so the count in `content-range` is the count of matching rows. */
+  filters?: Record<string, string>;
 };
 
 export async function koios<T>(
@@ -179,9 +187,20 @@ export async function koios<T>(
     // that could never have been answered.
     throw new Error(`Koios ${path} → a page must be 1..${KOIOS_ROW_CAP} rows, not ${page.limit}`);
   }
+  const offset = page?.offset ?? 0;
+  if (!Number.isInteger(offset) || offset < 0) {
+    throw new Error(`Koios ${path} → offset must be a whole number ≥ 0, not ${offset}`);
+  }
   const query = page
-    ? `?limit=${encodeURIComponent(String(page.limit))}` +
-      (page.order ? `&order=${encodeURIComponent(page.order)}` : "")
+    ? "?" +
+      [
+        ...Object.entries(page.filters ?? {}).map(
+          ([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`,
+        ),
+        `limit=${encodeURIComponent(String(page.limit))}`,
+        ...(page.order ? [`order=${encodeURIComponent(page.order)}`] : []),
+        ...(offset ? [`offset=${offset}`] : []),
+      ].join("&")
     : "";
   // `fetch` rejects with a bare `TypeError` for everything that stops a reply
   // from reaching this code, and that class of failure says nothing about the
@@ -224,17 +243,67 @@ export async function koios<T>(
   // matter what: measured 2026-09-08, `/pool_list?limit=2000` answered
   // `206 content-range: 0-999/6163`. So the bar moves rather than disappears —
   // the answer must reach whichever is smaller, the total or what was asked.
+  // A page that starts at `offset` can only owe what lies past it, and the
+  // rows it did return are counted from where the range starts, not from 0.
   const range = res.headers?.get("content-range");
   if (range) {
     const m = /^(\d+)-(\d+)\/(\d+)$/.exec(range.trim());
     if (m) {
-      const end = Number(m[2]);
+      const got = Number(m[2]) - Number(m[1]) + 1;
       const total = Number(m[3]);
-      const wanted = page ? Math.min(total, page.limit) : total;
-      if (end + 1 < wanted) throw new KoiosTruncatedError(path, end + 1, wanted);
+      const wanted = page ? Math.min(Math.max(total - offset, 0), page.limit) : total;
+      if (got < wanted) throw new KoiosTruncatedError(path, got, wanted);
     }
   }
   return (await res.json()) as T;
+}
+
+/**
+ * A case-insensitive "contains" filter for `KoiosPage.filters`.
+ *
+ * `*` is PostgREST's wildcard and `%` is SQL's; left in, a query of `*` would
+ * match every row and present the list's first page as search results. Text
+ * that is nothing but wildcards is refused for the same reason — callers drop
+ * an empty query before they get here.
+ */
+export function koiosContains(text: string): string {
+  const literal = text.replace(/[*%]/g, "");
+  if (!literal) throw new Error("koiosContains: nothing to match once wildcards are removed");
+  return `ilike.*${literal}*`;
+}
+
+/**
+ * Every row of a list endpoint, one capped page at a time.
+ *
+ * For lists that must be complete and can outgrow `KOIOS_ROW_CAP` — measured
+ * 2026-11-02 on Preview: `/proposal_list` 1583 rows. `order` is required and
+ * should end on a unique column, so that consecutive pages neither repeat nor
+ * skip a row that ties with its neighbour.
+ *
+ * `maxRows` is a ceiling, not a cut: a list that is still going when it is
+ * reached is refused with `KoiosTruncatedError`, the same answer a short page
+ * gets, instead of being returned as if it had ended there.
+ */
+export async function koiosAll<T>(
+  network: PhoenixNetwork,
+  path: string,
+  order: string,
+  filters?: Record<string, string>,
+  maxRows = 10 * KOIOS_ROW_CAP,
+): Promise<T[]> {
+  const rows: T[] = [];
+  for (;;) {
+    const page = await koios<T[]>(network, path, undefined, {
+      limit: KOIOS_ROW_CAP,
+      order,
+      offset: rows.length,
+      filters,
+    });
+    if (!Array.isArray(page)) throw new Error(`Koios ${path} → expected an array of rows`);
+    rows.push(...page);
+    if (page.length < KOIOS_ROW_CAP) return rows;
+    if (rows.length >= maxRows) throw new KoiosTruncatedError(path, rows.length, null);
+  }
 }
 
 /**

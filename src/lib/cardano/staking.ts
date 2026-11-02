@@ -15,7 +15,7 @@ import "../node-globals";
 import { Buffer } from "buffer";
 import BigNumber from "bignumber.js";
 import { Transaction, address as tyAddress, types as tyTypes, utils as tyUtils } from "@stricahq/typhonjs";
-import { koios, type PhoenixNetwork, type BuiltTx } from "@/lib/cardano";
+import { koios, koiosContains, type PhoenixNetwork, type BuiltTx } from "@/lib/cardano";
 
 type RewardAddress = InstanceType<typeof tyAddress.RewardAddress>;
 
@@ -68,18 +68,20 @@ type PoolInfoRow = {
   pledge?: string | null;
 };
 
-const POOL_INFO_CHUNK = 50;
-// Cap how many candidate pools we fetch full detail for per search — Koios
-// serves 1000s of pools and this module has no server-side index to filter
-// by ticker/name before calling /pool_info. Good enough for "find a pool by
-// ticker/name substring"; a backend search index is future work.
-const MAX_CANDIDATES = 800;
+/** Most matches one search shows — one `/pool_info` request's worth. */
+const MAX_RESULTS = 50;
 
 /**
- * Search registered pools by ticker/name substring. Koios `/pool_list` has no
- * ticker field, so this fetches candidate ids, then `/pool_info` in batches
- * for the metadata to filter on. Empty query → no results (avoid fetching
+ * Search registered pools by ticker, or by pool id when the query is one
+ * (`pool1…`). The match runs on the server — `/pool_list` carries `ticker` and
+ * PostgREST filters on it — and `/pool_info` then fills in stake, margin and
+ * name for the matches only. Empty query → no results (avoid fetching
  * everything just to show it unfiltered).
+ *
+ * Not by name: the name lives only in `/pool_info`, which takes ids, and the
+ * list is past the 1000-row cap (Preview 1295, mainnet 6171, measured
+ * 2026-11-02), so the old "fetch the list, filter here" read was refused as
+ * truncated and searched nothing at all.
  *
  * THROWS on indexer failure — deliberately. Returning `[]` reads as "no such
  * pool", so a 503 would tell the user their pool does not exist and they would
@@ -87,43 +89,34 @@ const MAX_CANDIDATES = 800;
  * "could not look".
  */
 export async function searchPools(network: PhoenixNetwork, query: string): Promise<PoolSummary[]> {
-  const q = query.trim().toLowerCase();
+  const q = query.trim().toLowerCase().replace(/[*%]/g, "");
   if (!q) return [];
 
-  const list = await koios<PoolListRow[]>(network, "/pool_list");
-  const ids = list
-    .filter((p) => !p.pool_status || p.pool_status === "registered")
-    .map((p) => p.pool_id_bech32)
-    .filter((id): id is string => Boolean(id))
-    .slice(0, MAX_CANDIDATES);
+  const list = await koios<PoolListRow[]>(network, "/pool_list", undefined, {
+    limit: MAX_RESULTS,
+    order: "ticker.asc,pool_id_bech32.asc",
+    filters: {
+      pool_status: "eq.registered",
+      ...(q.startsWith("pool1") ? { pool_id_bech32: koiosContains(q) } : { ticker: koiosContains(q) }),
+    },
+  });
+  const ids = list.map((p) => p.pool_id_bech32).filter((id): id is string => Boolean(id));
   if (ids.length === 0) return [];
 
+  const rows = await koios<PoolInfoRow[]>(network, "/pool_info", { _pool_bech32_ids: ids });
   const results: PoolSummary[] = [];
-  for (let i = 0; i < ids.length; i += POOL_INFO_CHUNK) {
-    const batch = ids.slice(i, i + POOL_INFO_CHUNK);
-    // A failed batch used to `continue`, on the reasoning that one flaky chunk
-    // should not blank the whole search. But the pool the user is looking for
-    // may be exactly the one in that chunk, and dropping it silently shows a
-    // result list that looks complete and is not. Fail loudly; let them retry.
-    const rows = await koios<PoolInfoRow[]>(network, "/pool_info", {
-      _pool_bech32_ids: batch,
+  for (const r of rows) {
+    if (r.pool_status && r.pool_status !== "registered") continue;
+    results.push({
+      poolId: r.pool_id_bech32,
+      ticker: r.ticker ?? r.meta_json?.ticker ?? "",
+      name: r.meta_json?.name ?? "",
+      liveStakeLovelace: BigInt(r.live_stake ?? "0"),
+      saturationPct: Number(r.live_saturation ?? 0) * 100,
+      marginPct: Number(r.margin ?? 0) * 100,
+      fixedCostLovelace: BigInt(r.fixed_cost ?? "0"),
+      pledgeLovelace: BigInt(r.pledge ?? "0"),
     });
-    for (const r of rows) {
-      if (r.pool_status && r.pool_status !== "registered") continue;
-      const ticker = r.ticker ?? r.meta_json?.ticker ?? "";
-      const name = r.meta_json?.name ?? "";
-      if (!ticker.toLowerCase().includes(q) && !name.toLowerCase().includes(q)) continue;
-      results.push({
-        poolId: r.pool_id_bech32,
-        ticker,
-        name,
-        liveStakeLovelace: BigInt(r.live_stake ?? "0"),
-        saturationPct: Number(r.live_saturation ?? 0) * 100,
-        marginPct: Number(r.margin ?? 0) * 100,
-        fixedCostLovelace: BigInt(r.fixed_cost ?? "0"),
-        pledgeLovelace: BigInt(r.pledge ?? "0"),
-      });
-    }
   }
   return results;
 }

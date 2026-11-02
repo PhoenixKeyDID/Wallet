@@ -123,7 +123,7 @@
   "not_delegated": "尚未委托",
   "rewards_available_label": "可领取奖励",
   "withdraw_rewards": "提取奖励",
-  "search_pools_placeholder": "按质押池名称或代号搜索",
+  "search_pools_placeholder": "按代号或质押池 ID（pool1…）搜索",
   "searching_pools": "搜索中…",
   "search_pools_button": "搜索",
   "no_pools_found": "未找到质押池，请尝试其他搜索词。",
