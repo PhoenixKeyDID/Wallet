@@ -3,17 +3,52 @@ name: CI
 on:
   push:
     branches: [main]
+  # `pull_request`, never `pull_request_target`: the latter runs a fork's code
+  # with this repo's token and secrets, which is the one thing a public repo's
+  # CI must not do.
   pull_request:
 
-jobs:
-  check:
-    runs-on: [self-hosted, tiger, isolated]
-    steps:
-      - uses: actions/checkout@v4
+# Nothing in this workflow writes to the repo. A token that can only read is a
+# token a compromised dependency cannot push with.
+permissions:
+  contents: read
 
-      - uses: oven-sh/setup-bun@v2
+# A new push to a PR makes the run for the previous head worthless; letting it
+# finish only holds the runner. Pushes to main are never cancelled, so every
+# commit on main keeps its own result.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # The job id is the status check `main` requires. Renaming it, or splitting it
+  # into one job per runner, would leave the required check waiting forever on a
+  # name nothing reports — so the runner is chosen by an expression instead.
+  check:
+    # The self-hosted runner is persistent and lives on a production machine.
+    # Code from a fork is code from anyone: running it there would let a
+    # drive-by pull request execute on that machine and leave something behind
+    # for the next job. Fork PRs therefore run on a throwaway GitHub-hosted VM.
+    # Pushes and PRs from branches of this repo — which only people with write
+    # access can create — keep the self-hosted runner. A PR whose head repo is
+    # gone reads as `null` here, which is not this repo, so it also goes to the
+    # hosted VM: the unknown case falls to the side that cannot hurt the host.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","tiger","isolated"]') || 'ubuntu-latest' }}
+    # The whole suite takes a few minutes; a hung step should not hold the
+    # runner for GitHub's six-hour default.
+    timeout-minutes: 30
+    steps:
+      # Actions are pinned to a commit, not a tag: a tag can be moved to point at
+      # different code after it was reviewed, a commit hash cannot.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: latest
+          # `latest` made the toolchain a moving part: the same commit could
+          # pass today and fail tomorrow with no diff to point at. This is the
+          # version the lockfile is maintained with locally; bump it in a
+          # reviewed diff, together with `bun.lock` if the format changes.
+          bun-version: 1.3.14
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
