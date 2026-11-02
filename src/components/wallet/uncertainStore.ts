@@ -77,6 +77,7 @@
  */
 
 import "../../lib/node-globals";
+import { Buffer } from "buffer";
 import { utils as tyUtils } from "@stricahq/typhonjs";
 
 /** The part of `Storage` this needs. Lets a test pass a plain object. */

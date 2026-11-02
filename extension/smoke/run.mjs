@@ -10,13 +10,17 @@
  * `ReferenceError: process is not defined` and rendered a blank page, with
  * every unit test and this very check green.
  *
- * So before importing the bundle we delete `process`, `global` and
- * `setImmediate` — the three Node globals a browser does not have. What is left
+ * So before importing the bundle we delete `process`, `global`, `setImmediate`
+ * and `Buffer` — the Node globals a browser does not have. `Buffer` joined the
+ * list after the same shape of failure one step later: `@stricahq/typhonjs`
+ * calls a bare `Buffer.from` while building a transaction, so the popup rendered
+ * and Review failed with `Buffer is not defined`, while this check — which only
+ * derived and sealed — stayed green. It now builds a payment too. What is left
  * is close enough to a browser that the failure happens here instead of on a
  * user's machine, while Node still gives us somewhere to run it without pulling
  * a headless browser into CI.
  *
- * The shim in `src/lib/node-globals.ts` is what puts `process` back, and this
+ * The shim in `src/lib/node-globals.ts` is what puts them back, and this
  * check is the only thing that proves the shim is loaded early enough.
  */
 import { execFileSync } from "node:child_process";
@@ -38,10 +42,16 @@ const fail = (msg) => {
 execFileSync(node, [vite, "build", "--config", config], { stdio: "inherit" });
 
 const realProcess = process;
-for (const name of ["process", "global", "setImmediate"]) {
+for (const name of ["process", "global", "setImmediate", "Buffer"]) {
   if (!(name in globalThis)) continue;
   delete globalThis[name];
   if (name in globalThis) fail(`could not remove the Node global \`${name}\`; this check would not prove anything`);
+}
+// Spelled out a second time, not derived from the list above: dropping a name
+// from that list would otherwise leave this check green while it no longer
+// takes the global away.
+if (typeof process !== "undefined" || typeof global !== "undefined" || typeof setImmediate !== "undefined" || typeof Buffer !== "undefined") {
+  fail("a Node global is still present before the bundle loads; this check would not prove anything");
 }
 
 await import(bundle);
@@ -51,4 +61,5 @@ console.log(JSON.stringify(result, null, 2));
 if (!result.addressMatches) fail("browser build derives a different address than the golden vector");
 if (!result.entropyRoundTrips) fail("vault does not round-trip in the browser build");
 if (!result.popupGraphLoads) fail("the popup's own module graph does not evaluate in the browser build");
-console.log("Extension bundle OK — golden address and vault round-trip hold with no Node globals present");
+if (!/^[1-9][0-9]{4,}$/.test(String(result.paymentFee))) fail("the browser build could not build a payment transaction");
+console.log("Extension bundle OK — golden address, vault round-trip and a built payment hold with no Node globals present");

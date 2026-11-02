@@ -21,6 +21,43 @@ import { LocalWalletPanel } from "../../src/components/wallet/LocalWalletPanel";
 import { i18n } from "../src/i18n";
 import { accountFromEntropy, primaryAddress } from "../../src/lib/keystore/derive";
 import { sealVault, openVault } from "../../src/lib/keystore/vault";
+import BigNumber from "bignumber.js";
+import { utils as tyUtils, types as tyTypes } from "@stricahq/typhonjs";
+import { buildMultiSend, buildSendOutputs } from "../../src/lib/cardano/send";
+
+// Building a payment is the step that reached a bare `Buffer` inside typhonjs's
+// `transactionBuilder`: every screen rendered and then Review failed. Deriving
+// and sealing never touch that code, so they could not catch it.
+const PARAMS: tyTypes.ProtocolParams = {
+  minFeeA: new BigNumber(44),
+  minFeeB: new BigNumber(155381),
+  stakeKeyDeposit: new BigNumber(2_000_000),
+  utxoCostPerByte: new BigNumber(4310),
+  collateralPercent: new BigNumber(150),
+  priceSteps: new BigNumber(0),
+  priceMem: new BigNumber(0),
+  maxTxSize: 16384,
+  maxValueSize: 5000,
+  minFeeRefScriptCostPerByte: new BigNumber(15),
+};
+
+function buildPayment(address: string): string {
+  const shelley = tyUtils.getAddressFromString(address) as tyTypes.ShelleyAddress;
+  const input = {
+    txId: "11".repeat(32),
+    index: 0,
+    amount: new BigNumber(10_000_000),
+    tokens: [],
+    address: shelley,
+  } as unknown as tyTypes.Input;
+  return buildMultiSend({
+    outputs: buildSendOutputs([{ address, ada: "2", tokens: [] }], 0),
+    inputs: [input],
+    changeAddress: shelley,
+    protocolParams: PARAMS,
+    ttl: 50_000_000,
+  }).fee;
+}
 
 /** cardano-serialization-lib `tests/address.rs`, root_key_12. */
 const ENTROPY_HEX = "df9ed25ed146bf43336a5d7cf7395994";
@@ -50,5 +87,6 @@ function toHex(b: Uint8Array): string {
     addressMatches: address === EXPECT_ADDR,
     entropyRoundTrips: toHex(reopened) === ENTROPY_HEX,
     popupGraphLoads: typeof LocalWalletPanel === "function" && typeof i18n.t === "function",
+    paymentFee: buildPayment(address),
   };
 };

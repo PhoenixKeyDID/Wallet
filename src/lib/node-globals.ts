@@ -25,6 +25,13 @@
  * - `nextTick` goes through `queueMicrotask`, which has the ordering these
  *   libraries expect (before the next task, after the current one).
  *
+ * - `Buffer` is the `buffer` package's own class. `@stricahq/typhonjs` calls a
+ *   bare `Buffer.from` inside `transactionBuilder` — the step every payment,
+ *   delegation and vote goes through — without importing it. The web app's
+ *   bundler happened to provide the global; the extension's does not, so the
+ *   popup built every screen and then failed at Review with `Buffer is not
+ *   defined`. Measured on Preview in the built extension, 2026-11-02.
+ *
  * `??=` means a real Node process — or another shim that got there first — is
  * left alone. Importing this module twice does nothing the second time.
  *
@@ -33,9 +40,13 @@
  * check:node-globals` enforces that; it is not left to memory.
  */
 
+import { Buffer } from "buffer";
+
 const g = globalThis as Record<string, unknown>;
 
 g.global ??= globalThis;
+
+g.Buffer ??= Buffer;
 
 g.process ??= {
   browser: true,
