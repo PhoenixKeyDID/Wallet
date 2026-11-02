@@ -741,6 +741,170 @@ const MUTANTS = [
       "  const m = new Map<string, string>();\n  m.set('k', secret);\n  return <CopyBtn value={m.get('k') ?? ''} />;",
       "m.get('k') ?? ''",
     ],
+    [
+      "set through the useState tuple",
+      '  const st = useState("");\n  useEffect(() => {\n    st[1](secret);\n  }, [secret]);\n  return <CopyBtn value={st[0]} />;',
+      "st[0]",
+    ],
+    [
+      "set through an object pattern on useState",
+      '  const { 0: shown, 1: setShown } = useState("");\n  useEffect(() => {\n    setShown(secret);\n  }, [secret]);\n  return <CopyBtn value={shown} />;',
+      "shown",
+    ],
+    ["kept by Reflect.set", '  const box = { v: "" };\n  Reflect.set(box, "v", secret);\n  return <CopyBtn value={box.v} />;', "box.v"],
+    [
+      "kept by Object.defineProperty",
+      '  const box = { v: "" };\n  Object.defineProperty(box, "v", { value: secret });\n  return <CopyBtn value={box.v} />;',
+      "box.v",
+    ],
+    ['kept by Object["assign"]', '  const box = { v: "" };\n  Object["assign"](box, { v: secret });\n  return <CopyBtn value={box.v} />;', "box.v"],
+    ["kept by push.call", "  const kept: string[] = [];\n  Array.prototype.push.call(kept, secret);\n  return <CopyBtn value={kept[0]} />;", "kept[0]"],
+    ["kept by push on an alias", "  const kept: string[] = [];\n  const alias = kept;\n  alias.push(secret);\n  return <CopyBtn value={kept[0]} />;", "kept[0]"],
+    ["kept by assigning through an alias", '  const box = { v: "" };\n  const ref = box;\n  ref.v = secret;\n  return <CopyBtn value={box.v} />;', "box.v"],
+    ["held by a class field", "  class K {\n    v = secret;\n  }\n  return <CopyBtn value={new K().v} />;", "new K().v"],
+    ["returned by a class method", "  class K {\n    get() {\n      return secret;\n    }\n  }\n  return <CopyBtn value={new K().get()} />;", "new K().get()"],
+    [
+      "kept by Object.assign into an object cast to a string",
+      '  const box = { v: "" };\n  Object.assign(box as unknown as string, { v: secret });\n  return <CopyBtn value={box.v} />;',
+      "box.v",
+    ],
+    ["thrown and caught", '  let v = "";\n  try {\n    throw secret;\n  } catch (e) {\n    v = e as string;\n  }\n  return <CopyBtn value={v} />;', "v"],
+    ["as a default in a destructured declaration", "  const { a = secret } = {} as { a?: string };\n  return <CopyBtn value={a} />;", "a"],
+    ["as a default in a destructuring assignment", '  let v = "";\n  ({ v = secret } = {} as { v?: string });\n  return <CopyBtn value={v} />;', "v"],
+    ["written through a comma expression", '  const box = { v: "" };\n  (0, box).v = secret;\n  return <CopyBtn value={box.v} />;', "box.v"],
+    ["written through what a local function returns", '  const box = { v: "" };\n  const me = () => box;\n  me().v = secret;\n  return <CopyBtn value={box.v} />;', "box.v"],
+    [
+      "written through an alias picked by a conditional",
+      '  const box = { v: "" };\n  const alias = Date.now() > 0 ? box : box;\n  alias.v = secret;\n  return <CopyBtn value={box.v} />;',
+      "box.v",
+    ],
+    [
+      "read back from arguments",
+      "  function row() {\n    // eslint-disable-next-line prefer-rest-params\n    return <CopyBtn value={arguments[0]} />;\n  }\n  return <div>{row.apply(null, [secret] as unknown as [])}</div>;",
+      "arguments[0]",
+    ],
+    [
+      "written into import.meta.env",
+      "  (import.meta.env as Record<string, string>).VITE_SHOWN = secret;\n  return <CopyBtn value={import.meta.env.VITE_SHOWN} />;",
+      "import.meta.env.VITE_SHOWN",
+    ],
+    [
+      "kept by Object.assign into an untyped value declared a string",
+      "  const box: string = JSON.parse('{\"v\":\"\"}');\n  Object.assign(box, { v: secret });\n  return <CopyBtn value={Object.values(box).join()} />;",
+      "Object.values(box).join()",
+    ],
+    [
+      "kept by Object.assign into an object a type predicate calls a string",
+      "  const isText = (x: unknown): x is string => x !== null;\n  const box: { v: string } | string = Date.now() > 0 ? { v: \"\" } : \"\";\n  if (isText(box)) Object.assign(box, { v: secret });\n  return <CopyBtn value={typeof box === 'string' ? box : box.v} />;",
+      "typeof box === 'string' ? box : box.v",
+    ],
+    [
+      "kept by Object.assign into an array read as a string through a wider alias",
+      '  const box: string[] = [];\n  const outer: string[] = [];\n  const wide: (string | string[])[] = outer;\n  wide.push(box);\n  const s: string = outer[0];\n  Object.assign(s, [secret]);\n  return <CopyBtn value={box.join()} />;',
+      "box.join()",
+    ],
+    [
+      "kept by Object.assign into an array an overload calls a string",
+      '  function asText(x: string[]): string;\n  function asText(x: unknown) {\n    return x;\n  }\n  const box: string[] = [];\n  const s: string = asText(box);\n  Object.assign(s, [secret]);\n  return <CopyBtn value={box.join()} />;',
+      "box.join()",
+    ],
+    [
+      "kept by Object.assign into an array a typed pattern over an untyped value calls a string",
+      '  const box: string[] = [];\n  const key: string = "w";\n  const { s }: { s: string } = Reflect.get({ w: { s: box } }, key);\n  Object.assign(s, [secret]);\n  return <CopyBtn value={box.join()} />;',
+      "box.join()",
+    ],
+    // Nothing below hands the phrase on as a value: each rebuilds it from what
+    // a test on it decided, or puts it where any other code can read it back.
+    [
+      "rebuilt letter by letter under an if",
+      '  let out = "";\n  for (let i = 0; i < secret.length; i++)\n    for (const c of "abcdefghijklmnopqrstuvwxyz ") if (secret[i] === c) out += c;\n  return <CopyBtn value={out} />;',
+      "out",
+    ],
+    [
+      "rebuilt letter by letter behind &&",
+      '  let out = "";\n  for (let i = 0; i < secret.length; i++)\n    for (const c of "abcdefghijklmnopqrstuvwxyz ") void (secret.charAt(i) === c && (out = out.concat(c)));\n  return <CopyBtn value={out} />;',
+      "out",
+    ],
+    [
+      "rebuilt letter by letter in a catch a test throws into",
+      '  let out = "";\n  for (let i = 0; i < secret.length; i++)\n    for (const c of "abcdefghijklmnopqrstuvwxyz ")\n      try {\n        if (secret[i] === c) throw 0;\n      } catch {\n        out += c;\n      }\n  return <CopyBtn value={out} />;',
+      "out",
+    ],
+    [
+      "rebuilt letter by letter from where a loop breaks",
+      '  let out = "";\n  for (let i = 0; i < secret.length; i++) {\n    let hit = "";\n    for (const c of "abcdefghijklmnopqrstuvwxyz ") {\n      hit = c;\n      if (secret[i] === c) break;\n    }\n    out += hit;\n  }\n  return <CopyBtn value={out} />;',
+      "out",
+    ],
+    [
+      "kept as the key of an object",
+      "  const keys: Record<string, true> = {};\n  keys[secret] = true;\n  return <CopyBtn value={Object.keys(keys)[0]} />;",
+      "Object.keys(keys)[0]",
+    ],
+    [
+      "rebuilt through a computed key in a pattern",
+      '  const table: Record<string, string> = {};\n  for (const c of "abcdefghijklmnopqrstuvwxyz ") table[c] = c;\n  let out = "";\n  for (const ch of secret) {\n    const { [ch]: hit = "" } = table;\n    out += hit;\n  }\n  return <CopyBtn value={out} />;',
+      "out",
+    ],
+    [
+      "kept in sessionStorage",
+      "  sessionStorage.setItem('k', secret);\n  return <CopyBtn value={sessionStorage.getItem('k') ?? ''} />;",
+      "sessionStorage.getItem('k') ?? ''",
+    ],
+    [
+      "kept in an attribute of a hidden element",
+      "  return (\n    <>\n      <span id='shown-k' data-k={secret} hidden />\n      <CopyBtn value={document.getElementById('shown-k')?.dataset.k ?? ''} />\n    </>\n  );",
+      "document.getElementById('shown-k')?.dataset.k ?? ''",
+    ],
+    [
+      "kept in localStorage from inside an effect",
+      "  useEffect(() => {\n    window.localStorage.setItem('k', secret);\n  }, [secret]);\n  return <CopyBtn value={window.localStorage.getItem('k') ?? ''} />;",
+      "window.localStorage.getItem('k') ?? ''",
+    ],
+    [
+      "rebuilt by picking which function to call",
+      '  let out = "";\n  const table: Record<string, () => void> = {};\n  for (const ch of "abcdefghijklmnopqrstuvwxyz ") table[ch] = () => {\n    out += ch;\n  };\n  for (const c of secret) table[c]?.();\n  return <CopyBtn value={out} />;',
+      "out",
+    ],
+    [
+      "rebuilt by counting up to each letter",
+      '  const A = "abcdefghijklmnopqrstuvwxyz ";\n  let out = "";\n  for (let i = 0; i < 64; i++) {\n    let n = 0;\n    while (n < A.length && A[n] !== secret[i]) n++;\n    out += A.charAt(n);\n  }\n  return <CopyBtn value={out} />;',
+      "out",
+    ],
+    [
+      "kept as a property of sessionStorage",
+      "  (sessionStorage as unknown as Record<string, string>).k = secret;\n  return <CopyBtn value={window.sessionStorage.getItem('k') ?? ''} />;",
+      "window.sessionStorage.getItem('k') ?? ''",
+    ],
+    [
+      "kept in the document title",
+      "  document.title = secret;\n  return <CopyBtn value={window.document.title} />;",
+      "window.document.title",
+    ],
+    [
+      "kept on Math through Reflect",
+      "  Reflect.set(Math, 'leak', secret);\n  return <CopyBtn value={String(Reflect.get(Math, 'leak'))} />;",
+      "String(Reflect.get(Math, 'leak'))",
+    ],
+    [
+      "kept in a fragment the page reads back",
+      "  return (\n    <>\n      {secret}\n      <CopyBtn value={document.body.textContent ?? ''} />\n    </>\n  );",
+      "document.body.textContent ?? ''",
+    ],
+    [
+      "rebuilt by a call each letter decides, handed nothing tainted",
+      '  const A = "abcdefghijklmnopqrstuvwxyz ";\n  let out = "";\n  for (let i = 0; i < 64; i++) {\n    const k: number[] = [];\n    while (k.length < A.length && A[k.length] !== secret[i]) k.push(0);\n    out += A.charAt(k.length);\n  }\n  return <CopyBtn value={out} />;',
+      "out",
+    ],
+    [
+      "kept in sessionStorage under another name",
+      "  const s = window.sessionStorage;\n  s.setItem('k', secret);\n  return <CopyBtn value={window.sessionStorage.getItem('k') ?? ''} />;",
+      "window.sessionStorage.getItem('k') ?? ''",
+    ],
+    [
+      "kept on a global function through Reflect",
+      "  Reflect.set(parseInt, 'leak', secret);\n  return <CopyBtn value={String(Reflect.get(parseInt, 'leak'))} />;",
+      "String(Reflect.get(parseInt, 'leak'))",
+    ],
   ].map(([what, body, value]) => ({
     name: `a copy button fed from a prop ${what}, declared only as copyable`,
     edits: [
@@ -755,6 +919,119 @@ const MUTANTS = [
         to: 'import { FiatValue } from "./FiatValue";\nimport { useEffect, useState } from "react";',
       },
       { file: COPY_GUARD_TEST, from: COPYABLE_ANCHOR, to: `${COPYABLE_ANCHOR}\n    "${BALANCE}#Shown: ${value}",` },
+    ],
+  })),
+  // A parameter the component defaults or writes holds its own functions, not
+  // the caller's: picking one by the phrase rebuilds the phrase.
+  ...[
+    ["a second parameter with a default", "{ secret }: { secret: string }, table: Record<string, () => void> = {}"],
+    [
+      "a prop with a default",
+      "{ secret, table = {} }: { secret: string; table?: Record<string, () => void> }",
+    ],
+  ].map(([what, params]) => ({
+    name: `a copy button fed from a prop rebuilt by picking which function in ${what} to call, declared only as copyable`,
+    edits: [
+      {
+        file: BALANCE,
+        from: "export function BalanceView({",
+        to: `export function Shown(${params}) {\n  let out = "";\n  for (const ch of "abcdefghijklmnopqrstuvwxyz ") table[ch] = () => {\n    out += ch;\n  };\n  for (const c of secret) table[c]?.();\n  return <CopyBtn value={out} />;\n}\n\nexport function BalanceView({`,
+      },
+      { file: COPY_GUARD_TEST, from: COPYABLE_ANCHOR, to: `${COPYABLE_ANCHOR}\n    "${BALANCE}#Shown: out",` },
+    ],
+  })),
+  {
+    name: "a copy button reading back the page through a module-level alias of document, declared only as copyable",
+    edits: [
+      {
+        file: BALANCE,
+        from: "export function BalanceView({",
+        to: "const doc = globalThis.document;\n\nexport function Shown({ secret }: { secret: string }) {\n  return (\n    <>\n      <span>{secret}</span>\n      <CopyBtn value={doc.body.textContent ?? ''} />\n    </>\n  );\n}\n\nexport function BalanceView({",
+      },
+      { file: COPY_GUARD_TEST, from: COPYABLE_ANCHOR, to: `${COPYABLE_ANCHOR}\n    "${BALANCE}#Shown: doc.body.textContent ?? ''",` },
+    ],
+  },
+  // What code outside the component keeps, or what decides that a line inside
+  // it runs: a helper, a store reached through a helper, a context, a throw, an
+  // optional chain, a default. Declaring the copied value alone is not enough.
+  ...[
+    [
+      "kept by a module helper",
+      'let box = "";\nfunction keep(v: string) {\n  box = v;\n}\nfunction give() {\n  return box;\n}',
+      "Shown",
+      "  keep(secret);\n  return <CopyBtn value={give()} />;",
+      "give()",
+    ],
+    [
+      "kept in sessionStorage reached through a module helper",
+      "const ss = () => sessionStorage;",
+      "Shown",
+      '  ss().setItem("k", secret);\n  return <CopyBtn value={ss().getItem("k")} />;',
+      'ss().getItem("k")',
+    ],
+    [
+      "handed on through a context",
+      'const Ctx = createContext("");\nfunction Inner() {\n  const v = useContext(Ctx);\n  return <CopyBtn value={v} />;\n}',
+      "Inner",
+      "  return (\n    <Ctx.Provider value={secret}>\n      <Inner />\n    </Ctx.Provider>\n  );",
+      "v",
+    ],
+    [
+      "rebuilt by which letters a built-in lets through without throwing",
+      "",
+      "Shown",
+      '  const A = "abcdefghijklmnopqrstuvwxyz ";\n  let out = "";\n  for (let i = 0; i < 64; i++)\n    for (const c of A) {\n      try {\n        "".repeat(secret[i] === c ? 1 : -1);\n        out += c;\n      } catch {}\n    }\n  return <CopyBtn value={out} />;',
+      "out",
+    ],
+    [
+      "rebuilt by which letters a module helper lets through without throwing",
+      'const A = "abcdefghijklmnopqrstuvwxyz ";\nconst must = (b: boolean) => {\n  if (!b) throw 0;\n};',
+      "Shown",
+      '  let out = "";\n  for (let i = 0; i < 64; i++)\n    for (const c of A) {\n      try {\n        must(secret[i] === c);\n        out += c;\n      } catch {}\n    }\n  return <CopyBtn value={out} />;',
+      "out",
+    ],
+    [
+      "rebuilt by which letters a local helper lets through without throwing",
+      "",
+      "Shown",
+      '  const A = "abcdefghijklmnopqrstuvwxyz ";\n  const must = (b: boolean) => {\n    if (!b) throw 0;\n  };\n  let out = "";\n  for (let i = 0; i < 64; i++)\n    for (const c of A) {\n      try {\n        must(secret[i] === c);\n        out += c;\n      } catch {}\n    }\n  return <CopyBtn value={out} />;',
+      "out",
+    ],
+    [
+      "rebuilt by which optional chains go on",
+      "",
+      "Shown",
+      '  const A = "abcdefghijklmnopqrstuvwxyz ";\n  let out = "";\n  for (let i = 0; i < 64; i++)\n    for (const c of A) (secret[i] === c ? "" : undefined)?.charAt((out += c, 0));\n  return <CopyBtn value={out} />;',
+      "out",
+    ],
+    [
+      "rebuilt by which parameter defaults run",
+      "",
+      "Shown",
+      '  const A = "abcdefghijklmnopqrstuvwxyz ";\n  let out = "";\n  for (let i = 0; i < 64; i++)\n    for (const c of A) {\n      const g = (x: string | undefined = (out += c)) => x;\n      g(secret[i] === c ? undefined : "");\n    }\n  return <CopyBtn value={out} />;',
+      "out",
+    ],
+    [
+      "rebuilt by which destructuring defaults run",
+      "",
+      "Shown",
+      '  const A = "abcdefghijklmnopqrstuvwxyz ";\n  let out = "";\n  for (let i = 0; i < 64; i++)\n    for (const c of A) {\n      const { z = (out += c) }: { z?: string } = secret[i] === c ? {} : { z: "" };\n      void z;\n    }\n  return <CopyBtn value={out} />;',
+      "out",
+    ],
+  ].map(([what, prelude, at, body, value]) => ({
+    name: `a copy button fed from a prop ${what}, declared only as copyable`,
+    edits: [
+      {
+        file: BALANCE,
+        from: "export function BalanceView({",
+        to: `${prelude}\n\nexport function Shown({ secret }: { secret: string }) {\n${body}\n}\n\nexport function BalanceView({`,
+      },
+      {
+        file: BALANCE,
+        from: 'import { FiatValue } from "./FiatValue";',
+        to: 'import { FiatValue } from "./FiatValue";\nimport { createContext, useContext } from "react";',
+      },
+      { file: COPY_GUARD_TEST, from: COPYABLE_ANCHOR, to: `${COPYABLE_ANCHOR}\n    "${BALANCE}#${at}: ${value}",` },
     ],
   })),
   // In a file with no copy button yet, so nothing else it already holds goes
@@ -775,6 +1052,35 @@ const MUTANTS = [
       { file: COPY_GUARD_TEST, from: COPYABLE_ANCHOR, to: `${COPYABLE_ANCHOR}\n    "${TESTNET_BADGE}#Shown: secret",` },
     ],
   },
+  // A held import.meta exported, so the write to it sits in a file whose own
+  // uses of the holder the check never sees.
+  {
+    name: "a copy button fed from import.meta.env written through an exported holder, declared only as copyable",
+    edits: [
+      {
+        file: TESTNET_BADGE,
+        from: 'import type { PhoenixNetwork } from "@/lib/cardano";',
+        to:
+          'import type { PhoenixNetwork } from "@/lib/cardano";\n\n' +
+          "export const held = import.meta as unknown as { env: Record<string, string> };",
+      },
+      {
+        file: BALANCE,
+        from: "export function BalanceView({",
+        to:
+          "export function Shown({ secret }: { secret: string }) {\n" +
+          "  held.env.VITE_SHOWN = secret;\n" +
+          '  return <CopyBtn value={import.meta.env.VITE_SHOWN ?? ""} />;\n' +
+          "}\n\nexport function BalanceView({",
+      },
+      {
+        file: BALANCE,
+        from: 'import { FiatValue } from "./FiatValue";',
+        to: 'import { FiatValue } from "./FiatValue";\nimport { held } from "./TestnetBadge";',
+      },
+      { file: COPY_GUARD_TEST, from: COPYABLE_ANCHOR, to: `${COPYABLE_ANCHOR}\n    "${BALANCE}#Shown: import.meta.env.VITE_SHOWN ?? \\"\\"",` },
+    ],
+  },
   // Needs no line in the list at all: the button arrives under a name the
   // value list never reads, from a path no import spells out.
   {
@@ -790,6 +1096,65 @@ const MUTANTS = [
           "const Lazy = lazy(() => import(`../${part}.tsx`).then((m) => ({ default: m[part] })));\n\n" +
           "export function Shown({ secret }: { secret: string }) {\n" +
           "  return <Lazy value={secret} />;\n" +
+          "}",
+      },
+    ],
+  },
+  // The state hook under another name: its setter is one the value list never
+  // follows, so the state reads as a constant.
+  {
+    name: "a copy button fed from a prop through a renamed useState, declared only as copyable",
+    edits: [
+      {
+        file: BALANCE,
+        from: "export function BalanceView({",
+        to:
+          "export function Shown({ secret }: { secret: string }) {\n" +
+          '  const [shown, setShown] = useLater("");\n' +
+          "  useEffect(() => {\n    setShown(secret);\n  }, [secret]);\n" +
+          "  return <CopyBtn value={shown} />;\n}\n\nexport function BalanceView({",
+      },
+      {
+        file: BALANCE,
+        from: 'import { FiatValue } from "./FiatValue";',
+        to: 'import { FiatValue } from "./FiatValue";\nimport { useEffect, useState as useLater } from "react";',
+      },
+      { file: COPY_GUARD_TEST, from: COPYABLE_ANCHOR, to: `${COPYABLE_ANCHOR}\n    "${BALANCE}#Shown: shown",` },
+    ],
+  },
+  // Needs no line in the list: `import.meta.glob` loads the button by a
+  // pattern, and here the pattern does not even spell the file's name.
+  {
+    name: "a copy button loaded by import.meta.glob",
+    edits: [
+      {
+        file: TESTNET_BADGE,
+        from: 'import type { PhoenixNetwork } from "@/lib/cardano";',
+        to:
+          'import type { PhoenixNetwork } from "@/lib/cardano";\n\n' +
+          "type Mods = Record<string, Record<string, (p: { value: string }) => JSX.Element>>;\n" +
+          'const mods = (import.meta as unknown as { glob: (p: string, o: { eager: true }) => Mods }).glob("../C*.tsx", { eager: true });\n' +
+          "const Btn = Object.values(Object.values(mods)[0])[0];\n\n" +
+          "export function Shown({ secret }: { secret: string }) {\n" +
+          "  return <Btn value={secret} />;\n" +
+          "}",
+      },
+    ],
+  },
+  {
+    name: "a copy button loaded by import.meta.glob through a variable cast to look like env",
+    edits: [
+      {
+        file: TESTNET_BADGE,
+        from: 'import type { PhoenixNetwork } from "@/lib/cardano";',
+        to:
+          'import type { PhoenixNetwork } from "@/lib/cardano";\n\n' +
+          "type Mods = Record<string, Record<string, (p: { value: string }) => JSX.Element>>;\n" +
+          "const meta = import.meta as unknown as { env?: unknown };\n" +
+          'const mods = (meta as unknown as { glob: (p: string, o: { eager: true }) => Mods }).glob("../C*.tsx", { eager: true });\n' +
+          "const Btn = Object.values(Object.values(mods)[0])[0];\n\n" +
+          "export function Shown({ secret }: { secret: string }) {\n" +
+          "  return <Btn value={secret} />;\n" +
           "}",
       },
     ],

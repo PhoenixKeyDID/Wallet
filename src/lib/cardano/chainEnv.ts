@@ -139,8 +139,10 @@ export function readBuildEnv(): BuildEnv {
   try {
     // Vite (the extension, and `vitest`). The wholesale object is read too,
     // because in dev it is the only place a stubbed variable appears.
+    // Read through `meta` and never held further: the copy-button test allows
+    // a held `import.meta` only when every use is a read like these.
     const meta = import.meta as unknown as { env?: BuildEnv };
-    if (meta && typeof meta.env === "object" && meta.env) Object.assign(out, meta.env);
+    if (typeof meta.env === "object") Object.assign(out, meta.env);
     keep("VITE_BLOCKFROST_PROJECT_ID_MAINNET", import.meta.env.VITE_BLOCKFROST_PROJECT_ID_MAINNET);
     keep("VITE_BLOCKFROST_PROJECT_ID_PREPROD", import.meta.env.VITE_BLOCKFROST_PROJECT_ID_PREPROD);
     keep("VITE_BLOCKFROST_PROJECT_ID_PREVIEW", import.meta.env.VITE_BLOCKFROST_PROJECT_ID_PREVIEW);
