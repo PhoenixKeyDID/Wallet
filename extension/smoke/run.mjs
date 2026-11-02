@@ -47,6 +47,12 @@ for (const name of ["process", "global", "setImmediate", "Buffer"]) {
   delete globalThis[name];
   if (name in globalThis) fail(`could not remove the Node global \`${name}\`; this check would not prove anything`);
 }
+// Spelled out a second time, not derived from the list above: dropping a name
+// from that list would otherwise leave this check green while it no longer
+// takes the global away.
+if (typeof process !== "undefined" || typeof global !== "undefined" || typeof setImmediate !== "undefined" || typeof Buffer !== "undefined") {
+  fail("a Node global is still present before the bundle loads; this check would not prove anything");
+}
 
 await import(bundle);
 const result = await globalThis.__phoenixSmoke();
