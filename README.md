@@ -316,9 +316,14 @@ That package reads a bare `process` while it is still evaluating, and it imports
   very check all passed. The earlier version ran the browser bundle under plain
   Node, where `process` exists — so it proved the maths and missed the crash.
 
-`bun run check:bundle` now deletes `process`, `global` and `setImmediate` before
-importing the bundle, then asserts the golden-vector address and a vault
-round-trip. `src/lib/node-globals.ts` is what puts `process` back in a browser,
+The same thing happened one step later with `Buffer`: `@stricahq/typhonjs` calls a
+bare `Buffer.from` while building a transaction, so the extension popup rendered
+every screen and then failed at Review with `Buffer is not defined`.
+
+`bun run check:bundle` now deletes `process`, `global`, `setImmediate` and
+`Buffer` before importing the bundle, then asserts the golden-vector address, a
+vault round-trip and a built payment transaction. `src/lib/node-globals.ts` is
+what puts `process` and `Buffer` back in a browser,
 and `bun run check:node-globals` enforces that every module reaching `@stricahq`
 imports it *first* — ES modules evaluate imports in source order, so a shim
 imported second is a shim that never ran.
