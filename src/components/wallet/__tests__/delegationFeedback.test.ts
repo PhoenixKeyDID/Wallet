@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { nextAccountIndex, pendingPoolId } from "../delegationFeedback";
+import {
+  DELEGATION_UNSEEN_MS,
+  delegationWatch,
+  nextAccountIndex,
+  type SentDelegation,
+} from "../delegationFeedback";
 import en from "../../../../locales/en/wallet.json";
 import vi from "../../../../locales/vi/wallet.json";
 import ja from "../../../../locales/ja/wallet.json";
@@ -7,24 +12,37 @@ import zh from "../../../../locales/zh/wallet.json";
 
 const POOL_A = "pool1aaaa";
 const POOL_B = "pool1bbbb";
+const ACCOUNT = "stake_test1uqaccount";
+const OTHER = "stake_test1uqother";
+const T0 = 1_700_000_000_000;
+const sent: SentDelegation = { poolId: POOL_A, account: ACCOUNT, network: 2, sentAt: T0 };
 
-describe("pendingPoolId", () => {
-  it("is null when nothing was sent from this screen", () => {
-    expect(pendingPoolId(null, null)).toBeNull();
-    expect(pendingPoolId(null, POOL_A)).toBeNull();
+describe("delegationWatch", () => {
+  it("is none when nothing was sent", () => {
+    expect(delegationWatch(null, ACCOUNT, 2, null, T0)).toEqual({ kind: "none" });
   });
 
-  it("holds the sent pool while the chain still shows no delegation", () => {
-    expect(pendingPoolId(POOL_A, null)).toBe(POOL_A);
-    expect(pendingPoolId(POOL_A, undefined)).toBe(POOL_A);
+  it("is none under another account or another network", () => {
+    expect(delegationWatch(sent, OTHER, 2, null, T0)).toEqual({ kind: "none" });
+    expect(delegationWatch(sent, null, 2, null, T0)).toEqual({ kind: "none" });
+    expect(delegationWatch(sent, ACCOUNT, 0, null, T0)).toEqual({ kind: "none" });
   });
 
-  it("holds the sent pool while the chain still shows the previous pool", () => {
-    expect(pendingPoolId(POOL_B, POOL_A)).toBe(POOL_B);
+  it("is pending while the chain shows no delegation or the previous pool", () => {
+    expect(delegationWatch(sent, ACCOUNT, 2, null, T0)).toEqual({ kind: "pending", poolId: POOL_A });
+    expect(delegationWatch(sent, ACCOUNT, 2, undefined, T0 + 1000)).toEqual({ kind: "pending", poolId: POOL_A });
+    expect(delegationWatch(sent, ACCOUNT, 2, POOL_B, T0 + 1000)).toEqual({ kind: "pending", poolId: POOL_A });
   });
 
-  it("clears once the chain shows the pool that was sent", () => {
-    expect(pendingPoolId(POOL_A, POOL_A)).toBeNull();
+  it("is settled once the chain shows the pool that was sent, however late", () => {
+    expect(delegationWatch(sent, ACCOUNT, 2, POOL_A, T0)).toEqual({ kind: "settled" });
+    expect(delegationWatch(sent, ACCOUNT, 2, POOL_A, T0 + 3 * DELEGATION_UNSEEN_MS)).toEqual({ kind: "settled" });
+  });
+
+  it("stops saying pending after the unseen limit", () => {
+    expect(delegationWatch(sent, ACCOUNT, 2, null, T0 + DELEGATION_UNSEEN_MS)).toEqual({ kind: "pending", poolId: POOL_A });
+    expect(delegationWatch(sent, ACCOUNT, 2, null, T0 + DELEGATION_UNSEEN_MS + 1)).toEqual({ kind: "unseen", poolId: POOL_A });
+    expect(DELEGATION_UNSEEN_MS).toBe(10 * 60_000);
   });
 });
 
@@ -50,9 +68,11 @@ describe("wording", () => {
     }
   });
 
-  it("stake delegation has a pending line that names the pool", () => {
+  it("stake delegation has a pending line and an unseen line, both naming the pool", () => {
     for (const [lng, l] of Object.entries(locales)) {
       expect(l.stake_delegate_pending, lng).toContain("{{pool}}");
+      expect(l.stake_delegate_unseen, lng).toContain("{{pool}}");
+      expect(l.stake_delegate_unseen, lng).not.toBe(l.stake_delegate_pending);
     }
   });
 

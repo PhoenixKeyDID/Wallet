@@ -8,15 +8,56 @@
  * failed and delegates again, paying a second fee.
  */
 
+import type { PhoenixNetwork } from "@/lib/cardano";
+
 /**
- * The pool a delegation was sent to, for as long as the chain does not show it
- * yet. `null` once the chain agrees, or when nothing was sent from this screen.
+ * A delegation this wallet sent and the chain has not shown yet. Held above
+ * the tab switch, so leaving the Staking tab and coming back does not drop it,
+ * and tied to the account and network it was sent from, so it never shows
+ * under another one.
  */
-export function pendingPoolId(
-  submitted: string | null,
+export type SentDelegation = {
+  poolId: string;
+  /** Reward address (bech32) that signed the certificate. */
+  account: string;
+  network: PhoenixNetwork;
+  /** `Date.now()` at submit. */
+  sentAt: number;
+};
+
+/**
+ * How long "waiting" stays an honest word. A delegation lands in a block or
+ * two; ten minutes with no sign of it means it most likely never got in, and
+ * the screen has to stop promising that it will.
+ */
+export const DELEGATION_UNSEEN_MS = 10 * 60_000;
+
+export type DelegationWatch =
+  | { kind: "none" }
+  | { kind: "settled" }
+  | { kind: "pending"; poolId: string }
+  | { kind: "unseen"; poolId: string };
+
+/**
+ * What the screen should say about a sent delegation, given what the chain
+ * shows for this account now.
+ *
+ * - `none`: nothing sent, or it was sent from another account or network.
+ * - `settled`: the chain shows the pool that was sent.
+ * - `pending`: not on chain yet, still within {@link DELEGATION_UNSEEN_MS}.
+ * - `unseen`: past that limit and still not on chain.
+ */
+export function delegationWatch(
+  sent: SentDelegation | null,
+  account: string | null,
+  network: PhoenixNetwork,
   onChain: string | null | undefined,
-): string | null {
-  return submitted !== null && submitted !== onChain ? submitted : null;
+  now: number,
+): DelegationWatch {
+  if (sent === null || sent.account !== account || sent.network !== network) return { kind: "none" };
+  if (onChain === sent.poolId) return { kind: "settled" };
+  if (now - sent.sentAt > DELEGATION_UNSEEN_MS) return { kind: "unseen", poolId: sent.poolId };
+  return { kind: "pending", poolId: sent.poolId };
 }
 
 /** Hardened account indexes stop below 2^31. */

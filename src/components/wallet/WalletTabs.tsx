@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { PhoenixNetwork, WalletPort } from "@/lib/cardano";
 import { SendPanel } from "./SendPanel";
 import { ReceivePanel } from "./ReceivePanel";
 import { StakingPanel } from "./StakingPanel";
+import type { SentDelegation } from "./delegationFeedback";
 import { GovernancePanel } from "./GovernancePanel";
 import { ConnectPanel } from "./ConnectPanel";
 import { HistoryPanel } from "./HistoryPanel";
@@ -210,6 +211,16 @@ export function WalletTabs({
     setDurable(true);
   };
 
+  /**
+   * A stake delegation sent and not yet on chain. Here rather than in the
+   * Staking panel because only the active tab is mounted: kept there, a trip to
+   * History and back would drop the waiting line and bring back the stale "Not
+   * delegated" — the screen that makes people pay for a second delegation.
+   * It carries its own account and network, so it never shows under another.
+   */
+  const [sentDelegation, setSentDelegation] = useState<SentDelegation | null>(null);
+  const clearSentDelegation = useCallback(() => setSentDelegation(null), []);
+
   const panelProps = { port, network, changeAddress };
   const moneyProps = { ...panelProps, uncertainHash, onUncertain: rememberUncertain };
 
@@ -274,7 +285,14 @@ export function WalletTabs({
       {activeTab === "send" && <SendPanel {...moneyProps} />}
       {activeTab === "receive" && <ReceivePanel {...panelProps} />}
       {activeTab === "history" && <HistoryPanel {...panelProps} />}
-      {activeTab === "staking" && <StakingPanel {...moneyProps} />}
+      {activeTab === "staking" && (
+        <StakingPanel
+          {...moneyProps}
+          sentDelegation={sentDelegation}
+          onDelegationSent={setSentDelegation}
+          onDelegationSettled={clearSentDelegation}
+        />
+      )}
       {activeTab === "governance" && <GovernancePanel {...moneyProps} />}
       {activeTab === "connect" && <ConnectPanel network={network} changeAddress={changeAddress} />}
     </div>

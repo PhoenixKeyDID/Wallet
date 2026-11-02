@@ -55,6 +55,7 @@
   "send_submitted": "Submitted — {{hash}}…",
   "delegate_submitted": "Delegation submitted — {{hash}}…",
   "stake_delegate_pending": "Delegation to {{pool}} sent. The network needs a minute or two to record it — the line above may still show the old state. Do not delegate again in the meantime.",
+  "stake_delegate_unseen": "Delegation to {{pool}} was sent more than 10 minutes ago and the chain still does not show it, so it most likely did not get in. Check the History tab before doing anything. A delegation can still land until its validity window closes, about 2 hours after sending; delegating again before then may pay a second fee.",
   "withdraw_submitted": "Withdrawal submitted — {{hash}}…",
   "gov_submitted": "Governance action submitted — {{hash}}…",
   "gov_delegation_submitted": "Vote delegation submitted — {{hash}}…",

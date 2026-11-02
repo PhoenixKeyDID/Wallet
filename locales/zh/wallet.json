@@ -55,6 +55,7 @@
   "send_submitted": "已提交 — {{hash}}…",
   "delegate_submitted": "已提交委托 — {{hash}}…",
   "stake_delegate_pending": "已向 {{pool}} 发送委托。网络需要一两分钟才能记录 — 上面一行可能仍显示旧的状态。在此期间请不要重复委托。",
+  "stake_delegate_unseen": "向 {{pool}} 的委托已发送超过 10 分钟，链上仍未显示，很可能没有被打包。请先查看“历史”标签再做任何操作。在有效期结束前（发送后约 2 小时）委托仍可能上链；在此之前再次委托可能会多付一次手续费。",
   "withdraw_submitted": "已提交提取奖励 — {{hash}}…",
   "gov_submitted": "已提交治理操作 — {{hash}}…",
   "gov_delegation_submitted": "已提交投票权委托 — {{hash}}…",
