@@ -10,7 +10,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { vaultStore, type StoredWallet } from "../storage";
 
-type Outcome = "complete" | "abort" | "request-error";
+type Outcome = "complete" | "abort" | "request-error" | "throw";
 
 type FakeReq = {
   result?: unknown;
@@ -40,7 +40,11 @@ function fakeIndexedDB(outcome: Outcome) {
           } = {
             error: null,
             objectStore: () => ({
-              put: (w: StoredWallet) => request(() => (data.set(w.id, w), w.id)),
+              put: (w: StoredWallet) => {
+                // structured clone runs synchronously inside put()
+                if (outcome === "throw") throw new Error("DataCloneError");
+                return request(() => (data.set(w.id, w), w.id));
+              },
               get: (k: string) => request(() => data.get(k)),
               getAll: () => request(() => [...data.values()]),
               delete: (k: string) => request(() => (data.delete(k), undefined)),
@@ -50,10 +54,14 @@ function fakeIndexedDB(outcome: Outcome) {
             const r: FakeReq = {};
             setTimeout(() => {
               if (outcome === "request-error") {
+                // Spec order (IndexedDB §5.10 then §5.5): the error event
+                // reaches the request and bubbles to the transaction while
+                // `transaction.error` is still null; only the abort that
+                // follows sets it.
                 r.error = new Error("ConstraintError");
                 r.onerror?.();
-                t.error = r.error;
                 t.onerror?.();
+                t.error = r.error;
                 t.onabort?.();
                 return;
               }
@@ -107,6 +115,13 @@ describe("idb vault store", () => {
     const f = fakeIndexedDB("request-error");
     vi.stubGlobal("indexedDB", f.indexedDB);
     await expect(vaultStore().put(wallet)).rejects.toThrow("ConstraintError");
+    expect(f.closed).toEqual([1]);
+  });
+
+  it("a put that throws before any request exists rejects and still closes the database", async () => {
+    const f = fakeIndexedDB("throw");
+    vi.stubGlobal("indexedDB", f.indexedDB);
+    await expect(vaultStore().put(wallet)).rejects.toThrow("DataCloneError");
     expect(f.closed).toEqual([1]);
   });
 

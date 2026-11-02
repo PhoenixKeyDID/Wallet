@@ -164,9 +164,10 @@ function tx<T>(mode: IDBTransactionMode, run: (s: IDBObjectStore) => IDBRequest<
       new Promise<T>((resolve, reject) => {
         let result: T;
         let t: IDBTransaction;
+        let req: IDBRequest<T>;
         try {
           t = db.transaction(STORE, mode);
-          const req = run(t.objectStore(STORE));
+          req = run(t.objectStore(STORE));
           req.onsuccess = () => {
             result = req.result;
           };
@@ -183,11 +184,12 @@ function tx<T>(mode: IDBTransactionMode, run: (s: IDBObjectStore) => IDBRequest<
           db.close();
           reject(t.error ?? new Error("indexeddb_transaction_aborted"));
         };
-        // `error` bubbles from the request to the transaction and is followed
-        // by `abort`; rejecting here as well is harmless (a promise settles
-        // once) and does not depend on that ordering.
+        // A request's `error` bubbles here BEFORE the transaction aborts, and
+        // `t.error` is only set by that abort — so at this point it is still
+        // null and the real cause (ConstraintError, DataError…) lives on the
+        // request. This reject wins; the later one from `onabort` is ignored.
         t.onerror = () => {
-          reject(t.error ?? new Error("indexeddb_request_failed"));
+          reject(req.error ?? t.error ?? new Error("indexeddb_request_failed"));
         };
       }),
   );
