@@ -32,7 +32,11 @@ import {
   type PoolSummary,
   type StakeAccountState,
 } from "@/lib/cardano/staking";
-import { delegationWatch, type SentDelegation } from "@/components/wallet/delegationFeedback";
+import {
+  DELEGATION_WATCH_LIMIT_MS,
+  delegationWatch,
+  type SentDelegation,
+} from "@/components/wallet/delegationFeedback";
 
 /**
  * Held by the parent, above the tab switch: this panel unmounts whenever
@@ -161,10 +165,15 @@ export function StakingPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [watch.kind]);
 
-  // Re-read the account while waiting, and stop once waiting is no longer the
-  // honest word. A failed read leaves the line up, which is true: it is still
-  // waiting. A read that works after a failed one clears the error box.
-  const waiting = watch.kind === "pending";
+  // Re-read the account while the delegation can still land: through "pending"
+  // and on through "unseen", so a late block clears the warning by itself, and
+  // stop once its validity window has surely closed. A failed read leaves the
+  // line up, which is true: it is still waiting. A read that works after a
+  // failed one clears the error box.
+  const waiting =
+    (watch.kind === "pending" || watch.kind === "unseen") &&
+    sentDelegation !== null &&
+    now - sentDelegation.sentAt < DELEGATION_WATCH_LIMIT_MS;
   useEffect(() => {
     if (!waiting || !rewardAddressBech32) return;
     let cancelled = false;
@@ -489,9 +498,13 @@ export function StakingPanel({
             <div className="flex justify-between">
               <span className="text-text-hint">{t("current_delegation_label")}</span>
               <span className="font-medium">
-                {accountState?.delegatedPoolId
-                  ? shortPoolId(accountState.delegatedPoolId)
-                  : t("not_delegated")}
+                {/* While pending the chain's answer is known to be stale; once
+                    "unseen", it is the best guess there is, so show it again. */}
+                {watch.kind === "pending"
+                  ? t("delegation_waiting")
+                  : accountState?.delegatedPoolId
+                    ? shortPoolId(accountState.delegatedPoolId)
+                    : t("not_delegated")}
               </span>
             </div>
             <div className="flex justify-between border-t border-border-soft pt-2">

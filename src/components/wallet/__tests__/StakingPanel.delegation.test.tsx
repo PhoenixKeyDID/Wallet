@@ -17,7 +17,11 @@ import { I18nextProvider, initReactI18next } from "react-i18next";
 import type { ReactNode } from "react";
 import en from "../../../../locales/en/wallet.json";
 import type { WalletPort } from "@/lib/cardano";
-import { DELEGATION_UNSEEN_MS, type SentDelegation } from "../delegationFeedback";
+import {
+  DELEGATION_UNSEEN_MS,
+  DELEGATION_WATCH_LIMIT_MS,
+  type SentDelegation,
+} from "../delegationFeedback";
 
 const ACCOUNT = "stake_test1uqtestaccount";
 const POOL = "pool1testpoolxyz9"; // short enough that the screen prints it whole
@@ -188,6 +192,12 @@ describe("StakingPanel: the waiting line comes from the parent's record", () => 
     expect(screen.queryByText(unseenText())).toBeNull();
   });
 
+  it("the current-delegation cell says 'waiting', not the stale 'Not delegated'", async () => {
+    renderPanel({ sentDelegation: sentNow() });
+    expect(await screen.findByText(en.delegation_waiting)).toBeTruthy();
+    expect(screen.queryByText(en.not_delegated)).toBeNull();
+  });
+
   it("shows nothing for a delegation sent from another account", async () => {
     renderPanel({ sentDelegation: sentNow({ account: "stake_test1uqsomeoneelse" }) });
     await waitFor(() => expect(screen.getByText(en.not_delegated)).toBeTruthy());
@@ -199,6 +209,9 @@ describe("StakingPanel: the waiting line comes from the parent's record", () => 
     renderPanel({ sentDelegation: sentNow({ sentAt: Date.now() - DELEGATION_UNSEEN_MS - 60_000 }) });
     expect(await screen.findByText(unseenText())).toBeTruthy();
     expect(screen.queryByText(pendingText())).toBeNull();
+    // Past the limit the chain's answer is the best guess there is.
+    expect(screen.getByText(en.not_delegated)).toBeTruthy();
+    expect(screen.queryByText(en.delegation_waiting)).toBeNull();
   });
 
   it("tells the parent to let go once the chain shows the pool", async () => {
@@ -246,6 +259,66 @@ describe("StakingPanel: the re-read while waiting", () => {
     expect(m.getStakeAccountState).toHaveBeenCalledTimes(3);
   });
 
+  it("turns 'waiting' into 'not seen' on an open panel once the limit passes", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    renderPanel({ sentDelegation: sentNow() });
+    await screen.findByText(pendingText());
+    await act(async () => {
+      vi.advanceTimersByTime(DELEGATION_UNSEEN_MS + 20_000);
+    });
+    expect(await screen.findByText(unseenText())).toBeTruthy();
+    expect(screen.queryByText(pendingText())).toBeNull();
+  });
+
+  it("keeps re-reading through 'not seen', and a late block clears it", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    const onDelegationSettled = vi.fn();
+    renderPanel({
+      sentDelegation: sentNow({ sentAt: Date.now() - DELEGATION_UNSEEN_MS - 60_000 }),
+      onDelegationSettled,
+    });
+    await screen.findByText(unseenText());
+    expect(m.getStakeAccountState).toHaveBeenCalledTimes(1);
+
+    m.getStakeAccountState.mockResolvedValue({
+      registered: true,
+      delegatedPoolId: POOL,
+      rewardsAvailable: BigInt(0),
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(20_000);
+    });
+    expect(m.getStakeAccountState).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(onDelegationSettled).toHaveBeenCalledTimes(1));
+  });
+
+  it("stops re-reading once the delegation can no longer land", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    renderPanel({
+      sentDelegation: sentNow({ sentAt: Date.now() - DELEGATION_WATCH_LIMIT_MS - 1 }),
+    });
+    await screen.findByText(unseenText());
+    await act(async () => {
+      vi.advanceTimersByTime(120_000);
+    });
+    expect(m.getStakeAccountState).toHaveBeenCalledTimes(1);
+  });
+
+  it("a re-read that works after a failed mount read clears the error box", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    m.getStakeAccountState.mockRejectedValueOnce(new Error("koios down"));
+    renderPanel({ sentDelegation: sentNow() });
+    expect(await screen.findByText(en.stake_read_failed)).toBeTruthy();
+    // The waiting line stays up through the error: it is still true.
+    expect(screen.getByText(pendingText())).toBeTruthy();
+
+    await act(async () => {
+      vi.advanceTimersByTime(20_000);
+    });
+    await waitFor(() => expect(screen.queryByText(en.stake_read_failed)).toBeNull());
+    expect(screen.getByText(en.delegation_waiting)).toBeTruthy();
+  });
+
   it("does not poll when nothing is waiting", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
     renderPanel({ sentDelegation: null });
@@ -271,7 +344,9 @@ describe("WalletTabs: the waiting line survives a trip to another tab", () => {
     fireEvent.click(screen.getByRole("button", { name: new RegExp(en.tab_staking) }));
     expect(await screen.findByText(pendingText())).toBeTruthy();
     // The account was read again on return and still shows no delegation —
-    // exactly the moment the stale "Not delegated" used to stand alone.
-    expect(screen.getByText(en.not_delegated)).toBeTruthy();
+    // exactly the moment the stale "Not delegated" used to stand alone. The
+    // cell says "waiting" instead.
+    expect(screen.getByText(en.delegation_waiting)).toBeTruthy();
+    expect(screen.queryByText(en.not_delegated)).toBeNull();
   });
 });

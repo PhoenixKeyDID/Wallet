@@ -32,6 +32,14 @@ export type SentDelegation = {
  */
 export const DELEGATION_UNSEEN_MS = 10 * 60_000;
 
+/**
+ * How long the screen keeps asking the chain. A delegation can still land
+ * until its TTL (`tip + 7200` slots in `buildDelegation`, about 2 hours),
+ * so the "not seen" warning must be able to clear itself until then; the
+ * extra hour covers a slow tip read at build time.
+ */
+export const DELEGATION_WATCH_LIMIT_MS = 3 * 60 * 60_000;
+
 export type DelegationWatch =
   | { kind: "none" }
   | { kind: "settled" }
