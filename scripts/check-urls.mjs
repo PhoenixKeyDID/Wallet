@@ -17,9 +17,17 @@
  */
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, join, relative, sep } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 
-const REPO = join(dirname(fileURLToPath(import.meta.url)), "..");
+/**
+ * The repo this script lives in, unless a root is passed as the first argument.
+ * The argument exists for the tests: they stage a small tree containing exactly
+ * the input a rule must refuse, which is the only way to show the rule refuses
+ * it — writing that input into this repo would fail this very check.
+ */
+const REPO = process.argv[2]
+  ? resolve(process.argv[2])
+  : join(dirname(fileURLToPath(import.meta.url)), "..");
 /**
  * Directories that ship code. `src` was the only one when this guard was
  * written, and that was the flaw: the extension arrived later as a NEW
@@ -46,8 +54,22 @@ const CODEOWNERS = join(REPO, ".github", "CODEOWNERS");
  * An absolute URL with a plausible registrable host. Deliberately does NOT match
  * UI placeholders like `https://…/drep.jsonld`, whose "host" is an ellipsis —
  * those ship no destination and are not a phishing surface.
+ *
+ * The slashes are optional, and may be backslashes, because that is what a
+ * browser accepts. For the special schemes the WHATWG URL parser treats a
+ * missing `//`, a single slash and backslashes alike as the authority marker,
+ * so `https:` followed directly by a host is a working absolute URL — and a
+ * version of this pattern that insisted on two forward slashes passed it as
+ * text. `ws:`/`wss:` are here because a WebSocket reaches the network just as
+ * a fetch does.
  */
-const URL_RE = /https?:\/\/[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+/gi;
+const URL_RE = /(?:https?|wss?):[\/\\]*[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+/gi;
+
+/**
+ * A host with no scheme, at the very start of a decoded string. Used only on
+ * text recovered from base64, where there is no surrounding quote to anchor on.
+ */
+const PROTOCOL_RELATIVE_START = /^\s*(?:[\/\\]){2}[a-z0-9][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)+/i;
 
 /**
  * A URL whose host is not in the file — assembled at runtime instead.
@@ -87,18 +109,65 @@ const ASSEMBLED = [
   // A template literal starting with a scheme, interpolating anywhere in the
   // host — putting the placeholder after a subdomain hides the registrable part
   // just as well as putting it first.
-  [/`https?:\/\/[^`\n]*\$\{/, "a host interpolated into a template literal"],
+  // The scheme may be absent: a template starting with the two slashes is a
+  // protocol-relative URL whose host is filled in at runtime.
+  [/`(?:(?:https?|wss?):)?\/\/[^`\n]*\$\{/, "a host interpolated into a template literal"],
   // The scheme without its separator, glued to it afterwards. Only `+` here,
   // never a comma: a bare protocol literal is an ordinary argument — this repo
   // passes several to a test helper — and matching commas would flag every one.
-  [/["'`]https?:["'`][ \t]*\+/, "a scheme split across string literals"],
-  // Protocol-relative. `//host/path` inherits https on a page served over https,
-  // so it reaches the network exactly like an absolute URL while containing no
-  // scheme for anything above to find.
-  [/["'`]\/\/[a-z0-9][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)+\//i, "a protocol-relative URL"],
+  [/["'`](?:https?|wss?):["'`][ \t]*\+/, "a scheme split across string literals"],
+  // The separator on its own, as a whole literal. Every form above anchors on a
+  // scheme or a separator touching some other text; an array of scheme and host
+  // handed to `.join` with the separator as its argument touches neither, and
+  // passed. Nothing in this repo has a use for a string that is only the
+  // separator (or only its two slashes), so the literal itself is refused.
+  // A backquoted one counts only where an expression can start — after `=`,
+  // `(`, `,` or `[` — because prose in comments quotes the comment marker in
+  // backquotes all the time, and that is not code.
+  [
+    /["']:?(?:\\?\/){2}["']|(?:^|[=(,[])[ \t]*`:?(?:\\?\/){2}`/,
+    "a scheme separator as a string of its own",
+  ],
+  // A literal starting with the two slashes, appended after a `+`: a protocol
+  // read from somewhere (or a lone colon), then the start of a host, with the
+  // rest of the host in a further piece. No piece is a URL on its own, and a
+  // host torn before its dot is not protocol-relative to the rule below either.
+  [/\+[ \t]*(?:\r?\n[ \t]*)?["'`](?:\\?\/){2}[^\s"'`]/, "a scheme separator appended to something else"],
+  // Protocol-relative. `//host` inherits https on a page served over https, so
+  // it reaches the network exactly like an absolute URL while containing no
+  // scheme for anything above to find. A path after the host is not needed for
+  // that, so none is required here; backslashes and escaped slashes are the
+  // same two characters to the URL parser and to the JS lexer respectively.
+  [
+    /["'`](?:\\?\/|\\\\){2}[a-z0-9][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)+/i,
+    "a protocol-relative URL",
+  ],
   // Slashes spelled as escape sequences.
-  [/https?:(?:\\u002f|\\x2f){2}/i, "a scheme whose slashes are escape sequences"],
+  [/(?:https?|wss?):(?:\\u002f|\\x2f){2}/i, "a scheme whose slashes are escape sequences"],
 ];
+
+/**
+ * A URL hidden in base64 — `atob` of a literal, `Buffer.from(…, "base64")`, or a
+ * constant decoded somewhere else. The host is in the file, but in a form no
+ * reviewer reads and no pattern above matches.
+ *
+ * Every string literal made only of base64 (or base64url) characters is decoded
+ * and checked for a URL. This looks at the literal rather than at the call that
+ * decodes it, so moving the literal into a constant does not move it out of
+ * sight. It does not look INSIDE a longer literal: a `data:` URI carries base64
+ * that legitimately decodes to markup with an XML namespace URL in it, and that
+ * namespace is an identifier, not a request.
+ */
+const BASE64_LITERAL = /(["'`])([A-Za-z0-9+/_-]{8,}={0,2})\1/g;
+const URL_ONCE = new RegExp(URL_RE.source, "i");
+
+function hiddenInBase64(line) {
+  for (const m of line.matchAll(BASE64_LITERAL)) {
+    const decoded = Buffer.from(m[2].replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("latin1");
+    if (URL_ONCE.test(decoded) || PROTOCOL_RELATIVE_START.test(decoded)) return true;
+  }
+  return false;
+}
 
 /** Repo-relative, POSIX-separated paths that CODEOWNERS assigns to someone. */
 function gatedPaths() {
@@ -113,6 +182,12 @@ function gatedPaths() {
   return rules;
 }
 
+/**
+ * Patterns are matched as a literal path or a directory prefix, never as globs.
+ * That is what keeps CODEOWNERS' catch-all `*` line — a review floor for every
+ * file — from also reading as "every file may carry a URL", which would switch
+ * this guard off. Teaching this function globs means excluding that line first.
+ */
 function isGated(relPath, rules) {
   return rules.some((rule) =>
     rule.endsWith("/") ? relPath.startsWith(rule) : relPath === rule,
@@ -176,12 +251,15 @@ for (const file of [...rootFiles, ...SCAN_ROOTS.flatMap((root) => [...walk(join(
   const lines = text.split("\n");
   for (let i = 0; i < lines.length; i += 1) {
     const window = lines[i] + "\n" + (lines[i + 1] ?? "");
+    let hit = null;
     for (const [re, why] of ASSEMBLED) {
       if (re.test(window)) {
-        assembled.push(`${rel}:${i + 1}  ${why}\n      ${lines[i].trim()}`);
+        hit = why;
         break;
       }
     }
+    if (!hit && hiddenInBase64(lines[i])) hit = "a URL encoded in base64";
+    if (hit) assembled.push(`${rel}:${i + 1}  ${hit}\n      ${lines[i].trim()}`);
   }
 
   const found = new Set(text.match(URL_RE) ?? []);
