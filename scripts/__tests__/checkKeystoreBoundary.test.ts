@@ -76,6 +76,12 @@ describe("check:keystore-boundary — imports that used to print OK", () => {
     ["a module through the @/ alias", "src/components/Panel.tsx", `import { vault } from "@/lib/keystore/vault";`],
     ["a bare path through baseUrl", "src/components/Panel.tsx", `import { vault } from "src/lib/keystore";`],
     ["a dynamic import, indented", "src/components/Panel.tsx", `export function f() {\n  return import("../lib/keystore");\n}`],
+    ["a dynamic import in a template literal", "src/components/Panel.tsx", `export function f() {\n  return import(\`../lib/keystore\`);\n}`],
+    ["a second import on the same line as an innocent one", "src/components/Panel.tsx", `import { other } from "@/lib/other"; import { vault } from "../lib/keystore";`],
+    ["a Vite root-relative specifier", "src/components/Panel.tsx", `import { vault } from "/src/lib/keystore/vault";`],
+    ["a file inside a directory named out", "src/out/Panel.tsx", `import { vault } from "../lib/keystore";`],
+    ["a plain JavaScript file", "src/components/Panel.js", `import { vault } from "../lib/keystore";`],
+    ["a script-module file", "src/components/Panel.mjs", `import { vault } from "../lib/keystore";`],
   ];
 
   for (const [name, file, text] of cases) {

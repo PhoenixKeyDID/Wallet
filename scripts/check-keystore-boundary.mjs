@@ -54,14 +54,18 @@ const ALLOWED = [
 
 const SCAN = ["src", "extension"];
 /**
- * Static `import`/`export … from`, anchored at the start of a line.
+ * Static `import`/`export … from`, at the start of a line or after a
+ * statement-separating `;` — two statements on one line were invisible to a
+ * version anchored at column 0 alone, and the second one is where an import
+ * hides when the first is innocent.
  *
  * The anchor is why the second pattern below exists. This one only sees a
- * statement beginning in column 0, which is every *static* import — but a
- * module can also be pulled in from inside a function body, indented, and that
- * is the shape someone reaches for when the obvious spelling is rejected.
+ * statement beginning a line or following a `;`, which is every *static*
+ * import — but a module can also be pulled in from inside a function body,
+ * indented, and that is the shape someone reaches for when the obvious
+ * spelling is rejected.
  */
-const IMPORT_RE = /^(?:import|export)\b[\s\S]*?["']([^"']+)["']/gm;
+const IMPORT_RE = /(?:^|;)[ \t]*(?:import|export)\b[\s\S]*?["'`]([^"'`]+)["'`]/gm;
 /**
  * Dynamic `import("…")` and `require("…")`, anywhere, at any indentation.
  *
@@ -72,6 +76,11 @@ const IMPORT_RE = /^(?:import|export)\b[\s\S]*?["']([^"']+)["']/gm;
  * indented code, and its lazy body stops at the first quote it meets, which in
  * such a file is an unrelated string literal.
  *
+ * The quotes may be backticks: `` import(`…`) `` with no interpolation is a
+ * static specifier to the runtime and an invisible one to a pattern that only
+ * read `'` and `"`. A template that interpolates (`…${m}…`) resolves to a path
+ * this gate cannot spell, and stays a job for review.
+ *
  * An invariant a document asserts and a machine only half-checks is still a
  * wish; it is just a wish that prints OK.
  *
@@ -81,7 +90,7 @@ const IMPORT_RE = /^(?:import|export)\b[\s\S]*?["']([^"']+)["']/gm;
  * This is a textual check, so it catches the accident and the shortcut, not the
  * author who is deliberately hiding. That author is what code review is for.
  */
-const DYNAMIC_RE = /\b(?:import|require)\s*\(\s*["']([^"']+)["']/g;
+const DYNAMIC_RE = /\b(?:import|require)\s*\(\s*["'`]([^"'`]+)["'`]/g;
 
 /**
  * Where an import specifier lands, decided by resolving it — not by what it
@@ -151,7 +160,11 @@ function candidates(spec, fromFile) {
   // `#` is a subpath-import alias, not a fragment.
   const s = spec.replace(/(.)[?#].*$/, "$1");
   if (s === "." || s === ".." || s.startsWith("./") || s.startsWith("../")) return [resolve(dirname(fromFile), s)];
-  if (isAbsolute(s)) return [s];
+  // A leading `/` is absolute to the filesystem, and to Vite it is also
+  // project-root-relative — `/src/lib/keystore/vault` reaches the keystore
+  // through a spelling no filesystem resolves. Both readings are returned;
+  // whichever one lands inside the keystore is the one that counts.
+  if (isAbsolute(s)) return [s, join(REPO, s)];
   const out = [];
   for (const [pattern, targets] of TSCONFIG.paths) {
     const star = pattern.indexOf("*");
@@ -174,12 +187,21 @@ const inside = (p, dir) => {
 };
 const reachesKeystore = (spec, fromFile) => candidates(spec, fromFile).some((c) => inside(canonical(c), KEYSTORE));
 
+/**
+ * Source files, wherever they sit. This used to skip every directory named
+ * `out` — a rule wide enough to hide `src/out/P.ts` — and to read only
+ * `.ts`/`.tsx`, so `src/components/P.js` imported the keystore in a file the
+ * walk never handed to the patterns. Now only the built bundle under
+ * `extension/smoke/out` is skipped, and every spelling of JavaScript and
+ * TypeScript the bundler accepts is read.
+ */
 function* walk(dir) {
   for (const name of readdirSync(dir).sort()) {
-    if (name === "node_modules" || name === "out") continue;
+    if (name === "node_modules") continue;
     const full = join(dir, name);
+    if (relative(REPO, full).split(sep).join("/") === "extension/smoke/out") continue;
     if (statSync(full).isDirectory()) yield* walk(full);
-    else if (/\.tsx?$/.test(name)) yield full;
+    else if (/\.(m|c)?[jt]sx?$/.test(name)) yield full;
   }
 }
 
