@@ -21,7 +21,13 @@ import { fileURLToPath } from "node:url";
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "..", "check-urls.mjs");
 
 /** Turns a placeholder fixture into the text the guard will read. */
-const src = (t: string) => t.replace(/«C»/g, ":").replace(/«S»/g, "/");
+const src = (t: string) =>
+  t
+    .replace(/«C»/g, ":")
+    .replace(/«S»/g, "/")
+    .replace(/«(htt\w*)»/g, "$1")
+    .replace(/«X74»/g, "\\x74")
+    .replace(/«U003A»/g, "\\u003a");
 /** base64 of a placeholder fixture, computed here so no encoded URL sits in this file. */
 const b64 = (t: string) => Buffer.from(src(t)).toString("base64");
 
@@ -84,9 +90,37 @@ describe("check:urls — controls", () => {
     const r = check({ "extension/a.ts": `export const icon = "data:image/svg+xml;base64,${svg}";\n` }, ["/extension/"]);
     expect(r.status).toBe(0);
   });
+
+  it("leaves a template member access ending in ws alone", () => {
+    const r = check({ "src/a.ts": src(`export const x = "{rows«C»data.length}";\n`) });
+    expect(r.status).toBe(0);
+  });
+
+  it("leaves prose naming a usenet group alone", () => {
+    const r = check({ "src/a.ts": src(`// see news«C»example.org for the archive\n`) });
+    expect(r.status).toBe(0);
+  });
+
+  it("leaves a string taken apart on the two slashes alone", () => {
+    const r = check({ "src/a.ts": src(`export const parts = url.split("«S»«S»");\n`) });
+    expect(r.status).toBe(0);
+  });
+
+  it("leaves a list of bare protocol strings alone", () => {
+    const r = check({ "src/a.ts": src(`for (const proto of ["http«C»", "file«C»", "blob«C»", "data«C»"]) {}\n`) });
+    expect(r.status).toBe(0);
+  });
 });
 
 describe("check:urls — inputs that used to print OK", () => {
+  // Computed rather than written: this file sits under `scripts/`, which the
+  // guard scans, and the pieces joined below decode to a URL when read
+  // together — writing them out would fail the guard on this repo.
+  const tornB64 = (() => {
+    const b = b64(`https«C»«S»«S»evil.example`);
+    return `export const u = atob("${b.slice(0, 14)}" + "${b.slice(14)}");`;
+  })();
+
   const cases: [string, string, string][] = [
     ["a scheme with no slashes", `export const u = "https«C»evil.example";`, UNGATED],
     ["a scheme with one slash", `export const u = "https«C»«S»evil.example";`, UNGATED],
@@ -97,16 +131,25 @@ describe("check:urls — inputs that used to print OK", () => {
     ["a protocol-relative URL with backslashes", `export const u = "\\\\\\\\evil.example";`, RUNTIME],
     ["an array joined on the separator", `export const u = ["https", "evil.example"].join("«C»«S»«S»");`, RUNTIME],
     ["an array joined on the slashes", `export const u = ["https«C»", "evil.example"].join("«S»«S»");`, RUNTIME],
+    ["an array joined on the empty string", `export const u = ["https«C»", "evil.example"].join("");`, RUNTIME],
     ["the separator held in a constant", `const SEP = \`«C»«S»«S»\`;\nexport const u = ["https", "evil.example"].join(SEP);`, RUNTIME],
-    ["the separator torn into colon and slashes", `export const u = "https" + "«C»" + "«S»«S»evil.example";`, RUNTIME],
+    ["the separator torn into colon and slashes", `export const u = "«https»" + "«C»" + "«S»«S»evil.example";`, RUNTIME],
     ["the slashes appended to a protocol read elsewhere", `export const u = location.protocol + "«S»«S»evil.example";`, RUNTIME],
     ["the slashes and half a host appended, the rest after", `export const u = location.protocol + "«S»«S»evil" + ".example";`, RUNTIME],
     ["a WebSocket host interpolated into a template", `const h = "evil";\nexport const u = \`wss«C»«S»«S»\${h}.example\`;`, RUNTIME],
+    ["a host interpolated into a scheme-only template", `const h = "evil";\nexport const u = \`https«C»\${h}.example\`;`, RUNTIME],
     ["a protocol-relative template with the host interpolated", `const h = "evil";\nexport const u = \`«S»«S»\${h}.example\`;`, RUNTIME],
+    ["a scheme concatenated with concat", `export const u = "https«C»".concat("evil.example");`, RUNTIME],
+    ["an upper-case scheme split across literals", `export const u = "HTTPS«C»" + "evil.example";`, RUNTIME],
+    ["a scheme cut after its third letter", `export const u = "«htt»" + "ps«C»«S»«S»evil.example/x";`, RUNTIME],
+    ["a scheme cut after its fourth letter", `export const u = "«http»" + "s«C»«S»«S»evil.example/x";`, RUNTIME],
+    ["a scheme letter written as a hex escape", `export const u = "h«X74»tps«C»«S»«S»evil.example";`, RUNTIME],
+    ["a colon written as a unicode escape", `export const u = "https«U003A»«S»«S»evil.example";`, RUNTIME],
     ["atob of a literal that decodes to a URL", `export const u = atob("${b64("https«C»«S»«S»evil.example/x")}");`, RUNTIME],
     ["a base64 constant decoded elsewhere", `const K = '${b64("https«C»«S»«S»evil.example")}';\nexport const u = atob(K);`, RUNTIME],
     ["base64 of a protocol-relative URL", `export const u = atob("${b64("«S»«S»evil.example")}");`, RUNTIME],
     ["base64url of a URL, via Buffer", `export const u = Buffer.from("${Buffer.from(src("https«C»«S»«S»evil.example/?a=>>")).toString("base64url")}", "base64url");`, RUNTIME],
+    ["base64 torn in half across a plus", tornB64, RUNTIME],
   ];
 
   for (const [name, fixture, reason] of cases) {

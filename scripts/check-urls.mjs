@@ -62,8 +62,13 @@ const CODEOWNERS = join(REPO, ".github", "CODEOWNERS");
  * version of this pattern that insisted on two forward slashes passed it as
  * text. `ws:`/`wss:` are here because a WebSocket reaches the network just as
  * a fetch does.
+ *
+ * The lookbehind anchors the scheme at the start of a word. Without it the
+ * `ws` at the end of `rows` reads as the scheme of `rows:data.length`, and a
+ * type annotation in a plain source file failed the gate; `+` and `-` are
+ * excluded for the same reason — `foo-https://` is prose, not a URL.
  */
-const URL_RE = /(?:https?|wss?):[\/\\]*[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+/gi;
+const URL_RE = /(?<![a-z0-9+.-])(?:https?|wss?):[\/\\]*[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+/gi;
 
 /**
  * A host with no scheme, at the very start of a decoded string. Used only on
@@ -104,18 +109,49 @@ const ASSEMBLED = [
   ],
   // The array form of the same thing: a scheme string as the first element,
   // on its way to `.join`. Requiring the opening bracket is what separates it
-  // from a comma in a sentence.
-  [/\[[ \t]*["'`][^"'`\n]*:\/\/["'`][ \t]*,/, "a scheme string as an array element"],
+  // from a comma in a sentence. The separator inside the element is optional
+  // — a scheme-colon element with a host element after the comma builds the
+  // URL without it — but then the second element must look like a host (a dot
+  // in it), because a list of bare protocol strings (`["http:", "file:"]`,
+  // in the keystore tests) is an ordinary argument list, not a URL being
+  // assembled.
+  [
+    /\[[ \t]*["'`][^"'`\n]*(?::\/\/|(?:https?|wss?):(?:\\?\/){0,2})["'`][ \t]*,[ \t]*["'`][^"'`\n]*[a-z0-9]\.[a-z0-9][^"'`\n]*["'`]/i,
+    "a scheme string as an array element",
+  ],
   // A template literal starting with a scheme, interpolating anywhere in the
   // host — putting the placeholder after a subdomain hides the registrable part
-  // just as well as putting it first.
+  // just as well as putting it first. The slashes after the colon are optional
+  // for the same reason they are in URL_RE: a scheme, a colon and an
+  // interpolated host parses with none of them.
   // The scheme may be absent: a template starting with the two slashes is a
   // protocol-relative URL whose host is filled in at runtime.
-  [/`(?:(?:https?|wss?):)?\/\/[^`\n]*\$\{/, "a host interpolated into a template literal"],
-  // The scheme without its separator, glued to it afterwards. Only `+` here,
-  // never a comma: a bare protocol literal is an ordinary argument — this repo
-  // passes several to a test helper — and matching commas would flag every one.
-  [/["'`](?:https?|wss?):["'`][ \t]*\+/, "a scheme split across string literals"],
+  [
+    /`(?:(?:https?|wss?):[\/\\]*|(?:\\?\/|\\\\){2})[^`\n]*\$\{/i,
+    "a host interpolated into a template literal",
+  ],
+  // The scheme without its separator, glued to it afterwards. `+` and
+  // `.concat` both glue; a comma still does not, because a bare protocol
+  // literal is an ordinary argument — this repo passes several to a test
+  // helper — and matching commas would flag every one. Case-insensitive
+  // because an upper-case scheme glued to a host builds the same URL.
+  [
+    /["'`](?:https?|wss?):["'`][ \t]*(?:\+|\.concat\b)/i,
+    "a scheme split across string literals",
+  ],
+  // A piece of the scheme itself, as a whole literal, about to be glued to
+  // the rest of it: a scheme cut after its third or fourth letter, with the
+  // remainder and its separator in the next literal, spells a URL none of the
+  // rules above can see — no literal contains a scheme, and the separator
+  // rules below need the separator to touch other text. Pieces at least three
+  // letters long (`htt` and up on the http side, `ws` and `wss` on the
+  // WebSocket side) are refused; shorter ones — the first letter or two of a
+  // scheme alone — are indistinguishable from building an ordinary word out of
+  // pieces, and are left to review.
+  [
+    /["'`](?:https?|wss?|htt)["'`][ \t]*(?:\+|\.concat\b)/i,
+    "a scheme fragment split across string literals",
+  ],
   // The separator on its own, as a whole literal. Every form above anchors on a
   // scheme or a separator touching some other text; an array of scheme and host
   // handed to `.join` with the separator as its argument touches neither, and
@@ -123,9 +159,13 @@ const ASSEMBLED = [
   // separator (or only its two slashes), so the literal itself is refused.
   // A backquoted one counts only where an expression can start — after `=`,
   // `(`, `,` or `[` — because prose in comments quotes the comment marker in
-  // backquotes all the time, and that is not code.
+  // backquotes all the time, and that is not code. A quoted one counts only
+  // outside the string methods that take a separator as an argument — the
+  // ones named in the lookbehind take a string apart on its two slashes —
+  // while `join`, which is how a URL is assembled from one, is deliberately
+  // not among them.
   [
-    /["']:?(?:\\?\/){2}["']|(?:^|[=(,[])[ \t]*`:?(?:\\?\/){2}`/,
+    /(?<!\.(?:split|replace|replaceAll|includes|startsWith|endsWith|indexOf|lastIndexOf|match|matchAll|search|test|exec|at|slice|substring|substr)\(\s*)["']:?(?:\\?\/){2}["']|(?:^|[=(,[])[ \t]*`:?(?:\\?\/){2}`/,
     "a scheme separator as a string of its own",
   ],
   // A literal starting with the two slashes, appended after a `+`: a protocol
@@ -164,6 +204,48 @@ const URL_ONCE = new RegExp(URL_RE.source, "i");
 function hiddenInBase64(line) {
   for (const m of line.matchAll(BASE64_LITERAL)) {
     const decoded = Buffer.from(m[2].replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("latin1");
+    if (URL_ONCE.test(decoded) || PROTOCOL_RELATIVE_START.test(decoded)) return true;
+  }
+  return false;
+}
+
+/**
+ * A URL hidden behind escape sequences. `h\x74tps://…` is `https://…` to the
+ * JS lexer and to a browser; to every pattern above it is an `h`, then a `\`,
+ * then `x74`, and the scheme is gone. The colon hides just as well:
+ * `https\u003a//…`. Measured against this guard, in an ungated file: both
+ * printed OK.
+ *
+ * The window is decoded and read again, but only when reading it as written
+ * finds nothing — a URL that is already visible on the line is the URL_RE's
+ * business, and a gated file may keep it.
+ */
+const ESCAPE_HERE = /\\[xu][0-9a-f]/i;
+const ESCAPE_SEQ = /\\x([0-9a-f]{2})|\\u([0-9a-f]{4})/gi;
+function hiddenInEscapes(text) {
+  if (!ESCAPE_HERE.test(text) || URL_ONCE.test(text)) return false;
+  const decoded = text.replace(ESCAPE_SEQ, (_, x, u) => String.fromCharCode(parseInt(x ?? u, 16)));
+  return URL_ONCE.test(decoded) || PROTOCOL_RELATIVE_START.test(decoded);
+}
+
+/**
+ * A URL hidden in base64 torn across literals. One literal decodes to
+ * `https:/`, the other to `evil.com`, and `atob("…" + "…")` decodes the pair
+ * to a URL; measured against this guard, both halves printed OK, because
+ * neither half is a URL on its own.
+ *
+ * Only runs that actually decode to a URL are refused: two base64-looking
+ * literals joined by `+` are ordinary string-building most of the time, and
+ * text that does not decode to a URL is none of this gate's business.
+ */
+const JOINED_B64 = new RegExp(
+  `${BASE64_LITERAL.source}(?:[ \\t]*(?:\\r?\\n[ \\t]*)?\\+[ \\t]*(?:\\r?\\n[ \\t]*)?${BASE64_LITERAL.source})+`,
+  "g",
+);
+function hiddenInJoinedBase64(text) {
+  for (const m of text.matchAll(JOINED_B64)) {
+    const parts = [...m[0].matchAll(BASE64_LITERAL)].map((p) => p[2].replace(/-/g, "+").replace(/_/g, "/"));
+    const decoded = Buffer.from(parts.join(""), "base64").toString("latin1");
     if (URL_ONCE.test(decoded) || PROTOCOL_RELATIVE_START.test(decoded)) return true;
   }
   return false;
@@ -259,6 +341,8 @@ for (const file of [...rootFiles, ...SCAN_ROOTS.flatMap((root) => [...walk(join(
       }
     }
     if (!hit && hiddenInBase64(lines[i])) hit = "a URL encoded in base64";
+    if (!hit && hiddenInEscapes(window)) hit = "a URL written with escape sequences";
+    if (!hit && hiddenInJoinedBase64(window)) hit = "a URL encoded in base64";
     if (hit) assembled.push(`${rel}:${i + 1}  ${hit}\n      ${lines[i].trim()}`);
   }
 
