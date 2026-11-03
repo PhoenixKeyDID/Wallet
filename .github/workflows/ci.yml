@@ -14,10 +14,13 @@ permissions:
   contents: read
 
 # A new push to a PR makes the run for the previous head worthless; letting it
-# finish only holds the runner. Pushes to main are never cancelled, so every
-# commit on main keeps its own result.
+# finish only holds the runner. Pushes to main group per commit, not per ref:
+# GitHub also cancels a QUEUED run when a newer run joins its group — even with
+# `cancel-in-progress: false` — so a shared group for `refs/heads/main` would
+# stamp "cancelled" on the merge commit sitting between two PRs merged while a
+# run was still going. One group per commit means no run ever joins another's.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
