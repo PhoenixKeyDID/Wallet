@@ -326,4 +326,38 @@ describe("the screen shows text only when the text is what is signed", () => {
     expect(printableText(Buffer.from("abc\n\n", "utf8"))).toBeNull();
     expect(printableText(Buffer.from("\n\nabc", "utf8"))).toBeNull();
   });
+
+  // A "blank" line need not be spaces and tabs: NBSP, the ideographic space,
+  // the Braille blank and the Hangul filler all draw nothing, and a line of
+  // them pushes the real sentence below the fold just as well.
+  const INKLESS_CASES: [string, string][] = [
+    ["no-break space", "00A0"],
+    ["ideographic space", "3000"],
+    ["Braille pattern blank", "2800"],
+    ["Hangul filler", "3164"],
+  ];
+  it.each(INKLESS_CASES)("counts lines of %s (U+%s) as blank in the middle", (_name, cp) => {
+    const c = String.fromCodePoint(parseInt(cp, 16));
+    const msg = "Login to example.com\n" + `${c}\n`.repeat(40) + "I authorise transfer of all funds";
+    expect(printableText(Buffer.from(msg, "utf8"))).toBeNull();
+    // Three blank lines of it, the same threshold as plain newlines.
+    expect(printableText(Buffer.from(`a\n${c}\n${c}\n${c}\nb`, "utf8"))).toBeNull();
+  });
+  it.each(INKLESS_CASES)("counts %s (U+%s) as blank at the start and the end", (_name, cp) => {
+    const c = String.fromCodePoint(parseInt(cp, 16));
+    expect(printableText(Buffer.from("Login to example.com" + `\n${c}`.repeat(40), "utf8"))).toBeNull();
+    expect(printableText(Buffer.from(`${c}\n`.repeat(40) + "Login to example.com", "utf8"))).toBeNull();
+    expect(printableText(Buffer.from("abc" + c.repeat(17), "utf8"))).toBeNull();
+    expect(printableText(Buffer.from(c.repeat(17) + "abc", "utf8"))).toBeNull();
+    expect(printableText(Buffer.from(`abc${c}\n${c}\n`, "utf8"))).toBeNull(); // two line breaks at the end
+  });
+  it("still shows text with a no-break space or an ideographic space inside a sentence", () => {
+    const nbsp = "Pay 10\u00a0ADA to Alice";
+    expect(printableText(Buffer.from(nbsp, "utf8"))).toBe(nbsp);
+    const ideo = "ログイン\u3000確認";
+    expect(printableText(Buffer.from(ideo, "utf8"))).toBe(ideo);
+    // Under the edge limit, and one blank line of NBSP between two lines: still text.
+    const mild = "abc\n\u00a0\nde" + "\u00a0".repeat(16);
+    expect(printableText(Buffer.from(mild, "utf8"))).toBe(mild);
+  });
 });

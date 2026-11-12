@@ -1722,6 +1722,43 @@ const MUTANTS = [
     marker: "MUT_SIGNDATA_EDGE_WS",
   },
   {
+    name: "signData counts only spaces and tabs as blank between line breaks",
+    file: SIGN_DATA,
+    from: "const BLANK_LINES = new RegExp(String.raw`\\n${INKLESS}*\\n${INKLESS}*\\n${INKLESS}*\\n`, \"u\");",
+    to: "const BLANK_LINES = /* MUT_SIGNDATA_BLANK_SPACE_TAB */ /\\n[ \\t]*\\n[ \\t]*\\n[ \\t]*\\n/;",
+    marker: "MUT_SIGNDATA_BLANK_SPACE_TAB",
+  },
+  {
+    name: "signData's edge rule goes back to \\s, which has no Braille blank",
+    edits: [
+      {
+        file: SIGN_DATA,
+        from: "const LEADING_BLANK = new RegExp(String.raw`^(?:${INKLESS}|\\n)+`, \"u\");",
+        to: "const LEADING_BLANK = /* MUT_SIGNDATA_EDGE_BACKSLASH_S */ /^\\s+/;",
+      },
+      {
+        file: SIGN_DATA,
+        from: "const TRAILING_BLANK = new RegExp(String.raw`(?:${INKLESS}|\\n)+$`, \"u\");",
+        to: "const TRAILING_BLANK = /\\s+$/;",
+      },
+    ],
+    marker: "MUT_SIGNDATA_EDGE_BACKSLASH_S",
+  },
+  {
+    name: "signData's blank set drops the Braille blank U+2800",
+    file: SIGN_DATA,
+    from: "const INKLESS = String.raw`(?:(?!\\n)[\\p{White_Space}\\u2800\\u115f\\u1160\\u3164\\uffa0])`;",
+    to: "const INKLESS = String.raw`(?:(?!\\n)[\\p{White_Space}\\u115f\\u1160\\u3164\\uffa0])` /* MUT_SIGNDATA_NO_BRAILLE */;",
+    marker: "MUT_SIGNDATA_NO_BRAILLE",
+  },
+  {
+    name: "signData's blank set is only space and tab again",
+    file: SIGN_DATA,
+    from: "const INKLESS = String.raw`(?:(?!\\n)[\\p{White_Space}\\u2800\\u115f\\u1160\\u3164\\uffa0])`;",
+    to: "const INKLESS = String.raw`(?:[ \\t])` /* MUT_SIGNDATA_INKLESS_SPACE_TAB */;",
+    marker: "MUT_SIGNDATA_INKLESS_SPACE_TAB",
+  },
+  {
     name: "signData screen calls every key the stake key",
     file: DATA_SIGN_VIEW,
     from: "        {plan.kind === \"stake\" ? t(\"cip30_sign_data_key_stake\") : t(\"cip30_sign_data_key_payment\")}",

@@ -123,8 +123,11 @@ const hexOfBech32 = (a: string) => addressBytes(a)?.toString("hex") ?? "";
  *    "❤️" is a heart followed by U+FE0F, and refusing it would send ordinary
  *    messages to hex.
  * 5. **Blank space that pushes text out of sight**: three or more blank lines
- *    in a row, or a long run of whitespace at the start or the end (more than
- *    16 characters, or two or more line breaks). A message that ends after a
+ *    in a row, or a long blank run at the start or the end (more than 16
+ *    characters, or two or more line breaks). "Blank" is `INKLESS`: any
+ *    `\p{White_Space}` — NBSP and the ideographic space too, not only space
+ *    and tab — plus the Braille blank U+2800 and the Hangul fillers, so a
+ *    line of U+2800 counts as an empty line. A message that ends after a
  *    page of newlines reads as finished while the part that matters sits below
  *    — the screen also prints the byte and line count, so even what is shown
  *    as text has a size that can be checked.
@@ -144,7 +147,7 @@ export function printableText(bytes: Uint8Array): string | null {
   if (RIGHT_TO_LEFT.test(text)) return null;
   if (DRAWN_AS_NOTHING.test(text.replace(EMOJI_PRESENTATION, "$1"))) return null;
   if (BLANK_LINES.test(text)) return null;
-  const edges = [/^\s+/.exec(text)?.[0] ?? "", /\s+$/.exec(text)?.[0] ?? ""];
+  const edges = [LEADING_BLANK.exec(text)?.[0] ?? "", TRAILING_BLANK.exec(text)?.[0] ?? ""];
   if (edges.some((w) => w.length > MAX_EDGE_WHITESPACE || w.split("\n").length > 2)) return null;
   return text;
 }
@@ -153,8 +156,22 @@ export function printableText(bytes: Uint8Array): string | null {
 const DRAWN_AS_NOTHING = /\p{Default_Ignorable_Code_Point}/u;
 /** A text or emoji presentation selector straight after an emoji — the one ignorable use let through. */
 const EMOJI_PRESENTATION = /(\p{Extended_Pictographic})[\ufe0e\ufe0f]/gu;
-/** Three blank lines in a row: four line breaks with only spaces or tabs between them. */
-const BLANK_LINES = /\n[ \t]*\n[ \t]*\n[ \t]*\n/;
+/**
+ * One character drawn with no ink, other than the newline: every
+ * `\p{White_Space}` (space, tab, NBSP U+00A0, ideographic space U+3000, the
+ * U+2000–200A spaces, …), the Braille blank U+2800, and the Hangul fillers
+ * U+115F / U+1160 / U+3164 / U+FFA0. The fillers are already refused anywhere
+ * by `DRAWN_AS_NOTHING`; they are listed so this rule does not lean on that
+ * one. The other line breaks inside `\p{White_Space}` (CR, U+0085, U+2028,
+ * U+2029) never reach these rules — the control and `\p{Zl}`/`\p{Zp}` rules
+ * refuse them first — so the newline is the only line break counted here.
+ */
+const INKLESS = String.raw`(?:(?!\n)[\p{White_Space}\u2800\u115f\u1160\u3164\uffa0])`;
+/** Three blank lines in a row: four line breaks with only inkless characters between them. */
+const BLANK_LINES = new RegExp(String.raw`\n${INKLESS}*\n${INKLESS}*\n${INKLESS}*\n`, "u");
+/** The inkless run, newlines included, at the start and at the end of the text. */
+const LEADING_BLANK = new RegExp(String.raw`^(?:${INKLESS}|\n)+`, "u");
+const TRAILING_BLANK = new RegExp(String.raw`(?:${INKLESS}|\n)+$`, "u");
 const MAX_EDGE_WHITESPACE = 16;
 
 /** Format, line/paragraph separator, private-use and unassigned code points. */
