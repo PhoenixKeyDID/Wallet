@@ -2057,6 +2057,7 @@ let survived = 0;
 let unanchored = 0;
 let broken = 0;
 let uncompiled = 0;
+let staleUndeclared = 0;
 
 // The compile step, before any test: a misspelt name in a mutant's `to` is a
 // broken mutant even when the code under test catches the error it raises at
@@ -2105,6 +2106,17 @@ try {
     // `undeclared`: names a mutant uses on purpose without declaring them, for
     // a gate that reads source and never runs it (see the copy-guard entries).
     const typo = compiled.typo.filter((d) => !(m.undeclared ?? []).includes(d.name));
+    // A name listed there that no diagnostic names is stale: the mutant no
+    // longer does what the entry says, or the name now resolves. Either way
+    // the list is no longer what it claims, so it is reported, not ignored.
+    const named = new Set(compiled.typo.map((d) => d.name));
+    const stale = (m.undeclared ?? []).filter((n) => !named.has(n));
+    if (stale.length) {
+      console.error(`  UNDECLARED STALE  ← ${m.name}\n          (\`undeclared\` lists ${stale.map((n) => JSON.stringify(n)).join(", ")}, which no compile diagnostic names` +
+        (compiled.unchecked.length ? `; ${compiled.unchecked.join(", ")} is outside tsconfig.json, so nothing can name it` : "") + ")");
+      staleUndeclared += 1;
+      continue;
+    }
     if (compiled.unchecked.length) {
       if (typecheckOnly) console.log(`  UNCHECKED ← ${m.name}\n          (outside tsconfig.json: ${compiled.unchecked.join(", ")})`);
       uncompiled += 1;
@@ -2143,23 +2155,25 @@ try {
   restoreAll();
 }
 
-const bad = survived + unanchored + broken;
+const bad = survived + unanchored + broken + staleUndeclared;
 if (typecheckOnly) {
   // Nothing was graded: the line must not read as a pinned count.
   console.log(
-    `\ntype-check only, no test ran: ${RUN.length - broken - unanchored}/${RUN.length} compile` +
+    `\ntype-check only, no test ran: ${RUN.length - broken - unanchored - staleUndeclared}/${RUN.length} compile` +
       (only ? ` (filter ${JSON.stringify(only)}: ${RUN.length} of ${MUTANTS.length} mutants)` : "") +
       (broken ? ` · ${broken} MUTANT BROKEN (misspelt name)` : "") +
       (unanchored ? ` · ${unanchored} anchor(s) no longer match the source` : "") +
+      (staleUndeclared ? ` · ${staleUndeclared} UNDECLARED STALE (an \`undeclared\` name no diagnostic names)` : "") +
       (uncompiled ? ` · ${uncompiled} edit a file outside tsconfig.json (not type-checked)` : ""),
   );
-  process.exit(broken + unanchored === 0 ? 0 : 1);
+  process.exit(broken + unanchored + staleUndeclared === 0 ? 0 : 1);
 }
 console.log(
   `\n${RUN.length - bad}/${RUN.length} guards pinned` +
     (only ? ` (filter ${JSON.stringify(only)}: ${RUN.length} of ${MUTANTS.length} mutants)` : "") +
     (survived ? ` · ${survived} removable with every test still green` : "") +
     (unanchored ? ` · ${unanchored} anchor(s) no longer match the source` : "") +
-    (broken ? ` · ${broken} MUTANT BROKEN (did not run as a test failure)` : ""),
+    (broken ? ` · ${broken} MUTANT BROKEN (did not run as a test failure)` : "") +
+    (staleUndeclared ? ` · ${staleUndeclared} UNDECLARED STALE (an \`undeclared\` name no diagnostic names)` : ""),
 );
 process.exit(bad === 0 ? 0 : 1);
