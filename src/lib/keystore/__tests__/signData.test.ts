@@ -202,4 +202,33 @@ describe("the screen shows text only when the text is what is signed", () => {
     expect(printableText(Buffer.from("vault: mine\rvault: theirs", "utf8"))).toBeNull();
     expect(printableText(Buffer.from("pay \u202eevil", "utf8"))).toBeNull();
   });
+
+  // Each group alone, inside otherwise ordinary text, so a red case names the
+  // group that is missing from the list.
+  const hidden = (cp: number) => printableText(Buffer.from(`pay to vault${String.fromCodePoint(cp)}A`, "utf8"));
+  it("shows hex only for the Arabic letter mark U+061C", () => {
+    expect(hidden(0x061c)).toBeNull();
+  });
+  it("shows hex only for a zero-width space or joiner, U+200B–U+200D", () => {
+    for (const cp of [0x200b, 0x200c, 0x200d]) expect(hidden(cp)).toBeNull();
+  });
+  it("shows hex only for the word joiner and invisible operators, U+2060–U+2064", () => {
+    for (const cp of [0x2060, 0x2061, 0x2062, 0x2063, 0x2064]) expect(hidden(cp)).toBeNull();
+  });
+  it("shows hex only for a byte-order mark U+FEFF, at the start or inside", () => {
+    expect(hidden(0xfeff)).toBeNull();
+    expect(printableText(Buffer.from("\ufeffpay", "utf8"))).toBeNull();
+  });
+  it("shows hex only for text in a right-to-left script", () => {
+    expect(printableText(Buffer.from("pay שלום 10", "utf8"))).toBeNull(); // Hebrew
+    expect(printableText(Buffer.from("pay مرحبا 10", "utf8"))).toBeNull(); // Arabic
+    expect(printableText(Buffer.from("pay \ufb50", "utf8"))).toBeNull(); // Arabic presentation form
+    expect(printableText(Buffer.from("pay ܫܠܡܐ", "utf8"))).toBeNull(); // Syriac
+  });
+  it("still shows the neighbours of those ranges as text", () => {
+    // U+200A (hair space) sits just below the zero-width range.
+    for (const t of ["Ký thông điệp", "日本語のメッセージ", "Привет", "a\u200ab"]) {
+      expect(printableText(Buffer.from(t, "utf8"))).toBe(t);
+    }
+  });
 });

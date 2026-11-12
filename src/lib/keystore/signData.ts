@@ -84,19 +84,35 @@ const hexOfBech32 = (a: string) => addressBytes(a)?.toString("hex") ?? "";
  * UTF-8 text a person can read, or null. Control characters other than a
  * newline or tab are what a page would use to make the visible text differ from
  * what is signed — a carriage return that hides a line, a bidi override that
- * reverses one — so their presence means the screen shows hex alone.
+ * reverses one — so their presence means the screen shows hex alone. The same
+ * goes for the invisible format characters a page can hide inside a word: the
+ * Arabic letter mark (U+061C), zero-width space and joiners (U+200B–U+200D),
+ * the word joiner and invisible operators (U+2060–U+2064), and the byte-order
+ * mark (U+FEFF).
+ *
+ * Text in a strong right-to-left script (Hebrew, Arabic, Syriac, Thaana, N'Ko,
+ * Samaritan, Mandaic) is shown as hex too. Those letters reorder the
+ * characters around them without any control character at all, so the order
+ * on screen is not the order that is signed.
  */
 export function printableText(bytes: Uint8Array): string | null {
   let text: string;
   try {
-    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    // `ignoreBOM: true` keeps a leading U+FEFF in the string. The default
+    // strips it, and the bytes signed would then differ from the text shown.
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
   } catch {
     return null;
   }
   // eslint-disable-next-line no-control-regex
-  if (/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(text)) return null;
+  if (/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/.test(text)) return null;
+  if (RTL_SCRIPT.test(text)) return null;
   return text;
 }
+
+/** Letters of the scripts Unicode writes right to left. */
+const RTL_SCRIPT =
+  /[\p{Script=Hebrew}\p{Script=Arabic}\p{Script=Syriac}\p{Script=Thaana}\p{Script=Nko}\p{Script=Samaritan}\p{Script=Mandaic}]/u;
 
 /**
  * Decide, without signing, whether this account may answer `signData(addr, payload)`
