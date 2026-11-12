@@ -201,8 +201,29 @@ const MUTANTS = [
   {
     name: "css gate: a class list kept in a constant is no longer read",
     file: CSS_GATE,
-    from: "          pieces.push(...via);",
-    to: "          void via;",
+    from: "        pieces.push(...via);",
+    to: "        void via;",
+  },
+  {
+    name: "css gate: el.className = … outside JSX is no longer read",
+    file: CSS_GATE,
+    from: '      n.left.name.text === "className"\n',
+    to: '      n.left.name.text === "className /* MUT_CSS_GATE_NO_DOM_ASSIGN */"\n',
+    marker: "MUT_CSS_GATE_NO_DOM_ASSIGN",
+  },
+  {
+    name: "css gate: / no longer separates HTML attributes, so <body/class> is missed",
+    file: CSS_GATE,
+    from: '      if (WS.test(html[j]) || html[j] === "/") {',
+    to: '      if (WS.test(html[j]) /* MUT_CSS_GATE_HTML_SPLIT */) {',
+    marker: "MUT_CSS_GATE_HTML_SPLIT",
+  },
+  {
+    name: "css gate: a > inside a quoted HTML value ends the tag again",
+    file: CSS_GATE,
+    from: "          const close = html.indexOf(q, j + 1);",
+    to: "          const close = html.indexOf(q, j + 1);\n          if (html.slice(j + 1, close).includes(\">\")) break; // MUT_CSS_GATE_HTML_GT",
+    marker: "MUT_CSS_GATE_HTML_GT",
   },
   // ── Round five: the remaining text checks, and the half of the pair that
   // was never held to the same standard as the other half ──
