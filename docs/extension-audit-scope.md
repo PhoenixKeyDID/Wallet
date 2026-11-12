@@ -31,6 +31,8 @@ Paths are relative to the repository root. File sizes are not a measure of risk;
 - `extension/manifest.json`: permissions, `host_permissions`, `content_security_policy`, content-script matches, `all_frames`, `web_accessible_resources`.
 - `extension/vite.config.ts`, `extension/manifestForBuild.test.ts`: how the manifest is produced for a build, including the build-time refusal of endpoints the manifest cannot express.
 - `extension/popup.html`, `extension/approve.html`, `extension/src/popup.tsx`, `extension/src/approve.tsx`, `extension/src/hostStrings.ts`, `extension/src/i18n.ts`, `extension/src/toast.ts`, `extension/src/TxSummaryView.tsx`.
+- `extension/src/popup.css`, which the approval window loads as well as the popup. The approval-window block (the rules under the comment "The approval window", selectors `.approve-*` and `body.approve-page`) is in scope as security code, not as styling: the file itself states two rules there that a stylesheet can break without any script changing. Nothing that identifies the counterparty (the origin, every payee address) may be truncated, and Reject is never the harder button to hit. Check whether a CSS-only change can hide or shorten the origin, hide the refusal or error block, or make the approve button easier to reach than Reject, while `check:popup-css` and the tests stay green.
+- `locales/`, for the strings the approval window shows. A swapped translation can label Reject as Approve without touching code.
 
 ### 3.2 The dApp-facing path (CIP-30 provider)
 
@@ -43,7 +45,21 @@ Four pieces, each in a different trust zone:
 | Service worker | `extension/background/worker.ts` (origin, grants, approval-window bookkeeping) |
 | Shared message contract | `extension/src/rpc/protocol.ts` (method lists and permission tiers, request parsing, origin rules) |
 
-The surface a website can reach is every CIP-30 method named in `extension/src/rpc/protocol.ts`: `enable` and `isEnabled`; the read methods (`getNetworkId`, `getUtxos`, `getCollateral`, `getBalance`, `getUsedAddresses`, `getUnusedAddresses`, `getChangeAddress`, `getRewardAddresses`, `getExtensions`); and the per-use methods `signTx`, `signData` and `submitTx`. Review each for what it returns, what it asks the user, and what a hostile page can do with the answer.
+The surface a website can reach is every CIP-30 method named in `extension/src/rpc/protocol.ts`: `enable` and `isEnabled`; the read methods (`getNetworkId`, `getUtxos`, `getCollateral`, `getBalance`, `getUsedAddresses`, `getUnusedAddresses`, `getChangeAddress`, `getRewardAddresses`, `getExtensions`); and the per-use methods `signTx`, `signData` and `submitTx`. Naming a method in `protocol.ts` lets a request through the content script and service worker; it does not mean the wallet answers it. What each method gets is decided in the approval window (`serve` and the decide screen in `extension/src/approve.tsx`) and, for `isEnabled`, in `extension/background/worker.ts`.
+
+When this section was last revised, the 13 methods fell into two groups:
+
+| Group | Methods | What happens |
+|---|---|---|
+| Answered | `isEnabled` | The service worker answers from the stored grant, without opening a window. |
+| | `enable` | The connect screen of the approval window asks the user; only a completed "allow" creates the grant. |
+| | `getNetworkId`, `getUsedAddresses`, `getUnusedAddresses`, `getChangeAddress`, `getRewardAddresses`, `getExtensions` | Answered from the unlocked account, for an origin that holds a grant. Both address lists return the receiving chain; `getExtensions` returns an empty list. |
+| | `signTx` | Shown on the decide screen. The approve button is enabled only when `summariseTx` can describe the transaction. |
+| Refused | `getUtxos`, `getBalance` | Refused as unsupported. |
+| | `getCollateral` | Refused with a "no collateral" error rather than an empty list. |
+| | `signData`, `submitTx` | Opened on the decide screen with an "unsupported" line. The approve button stays disabled, so the only answer the user can give is a refusal. |
+
+A pull request that adds CIP-30 support is in preparation and moves methods from the refused group to the answered group. Measure the groups again in `approve.tsx` at the audited commit, not from this table. Review every answered method for what it returns, what it asks the user, and what a hostile page can do with the answer. Review every refused method for whether the refusal holds on every path, including a crafted message and a request sent while another is on screen.
 
 ### 3.3 Key handling and signing
 
@@ -75,6 +91,7 @@ The `scripts/check-*.mjs` gates and their tests are part of the system under rev
 | `scripts/check-extension-host.mjs` | the extension supplies what a host owes (`docs/host-contract.json`) |
 | `scripts/check-host-contract.mjs` | the host contract matches what the code imports |
 | `scripts/check-node-globals.mjs` | the Node-globals shim is imported before `@stricahq/*` |
+| `scripts/check-tiers-codeowners.mjs` | every path `.github/CODEOWNERS` gates is `forbidden` in `docs/contribution-tiers.json`, including a not-yet-existing file in each gated directory |
 | `scripts/check-popup-css.mjs`, `check-locales.mjs`, `check-i18n-keys.mjs`, `check-readme-claims.mjs` | consistency of popup styles, locales, translation keys and README claims |
 | `scripts/mutants.mjs` | a list of exact edits that remove a guard, to show a named test goes red; not run in CI |
 | `extension/smoke/` | the browser bundle runs with no Node globals |
@@ -119,7 +136,7 @@ Questions the audit should answer explicitly, in the report:
 - Attacks that require full control of the user's machine or of the browser process (malware reading process memory, a replaced browser binary), except where the audit can show the extension makes them worse than they need be.
 - Social engineering outside the extension's own screens.
 - The distribution channel (Chrome Web Store listing and review), and the optional air-gap QR co-sign path, whose signer is not in this repository.
-- Locale text quality, styling, and the `dist-extension/` build output as an artefact (the build is in scope; a previously built folder is not).
+- Locale text quality and the styling of screens other than the approval window, and the `dist-extension/` build output as an artefact (the build is in scope; a previously built folder is not). The approval-window CSS rules and the strings that window shows are in scope (section 3.1).
 
 ## 6. How to build and run the checks
 
@@ -135,6 +152,7 @@ bun run check:i18n-keys
 bun run check:host-contract
 bun run check:extension-host
 bun run check:urls
+bun run check:tiers-codeowners
 bun run check:node-globals
 bun run check:keystore-boundary
 bun run check:bundle
