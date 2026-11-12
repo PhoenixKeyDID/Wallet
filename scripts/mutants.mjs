@@ -65,6 +65,8 @@ const PENDING = "extension/background/pending.ts";
 const SIGN_FOREIGN = "src/lib/keystore/signForeign.ts";
 const UTXO_CBOR = "src/lib/cardano/utxoCbor.ts";
 const APPROVE = "extension/src/approve.tsx";
+const UTXO_SELECT = "src/lib/cardano/utxoSelect.ts";
+const SIGN_DATA = "src/lib/keystore/signData.ts";
 // A gate is worth mutating too. "Is this guard pinned" and "is the thing that
 // checks the guard pinned" are different questions, and the second one has gone
 // unanswered here before: two table rows named after a detector were going red
@@ -1394,6 +1396,50 @@ const MUTANTS = [
     from: "const partial = phase.req.params[1] === true;",
     to: "const partial = true; /* MUT_PARTIAL */",
     marker: "MUT_PARTIAL",
+  },
+  // ── Review round on the CIP-30 claim: what counts as change, what a coin
+  // offered as collateral may hold, and what the screen claims about money. ──
+  {
+    name: "screen: an output to this wallet under a datum is counted as change",
+    file: TX_SUMMARY,
+    from: "const mine = ownAddress && !datum;",
+    to: "const mine = ownAddress; /* MUT_TS_OWN_DATUM */",
+    marker: "MUT_TS_OWN_DATUM",
+  },
+  {
+    name: "screen: a collateral return carrying a datum is described",
+    file: TX_SUMMARY,
+    from: "if (r.datum) bad(\"this transaction's collateral return carries a datum",
+    to: "if (false /* MUT_TS_COLL_RET_DATUM */) bad(\"this transaction's collateral return carries a datum",
+    marker: "MUT_TS_COLL_RET_DATUM",
+  },
+  {
+    name: "getCollateral offers a single coin larger than the 5 ADA cap",
+    file: UTXO_SELECT,
+    from: "(i) => (i.tokens ?? []).length === 0 && lovelaceOf(i) <= COLLATERAL_CAP_LOVELACE,",
+    to: "(i) => (i.tokens ?? []).length === 0 /* MUT_COLL_COIN_CAP */,",
+    marker: "MUT_COLL_COIN_CAP",
+  },
+  {
+    name: "getCollateral combines coins whose sum is over the 5 ADA cap",
+    file: UTXO_SELECT,
+    from: "if (sum + lovelaceOf(i) > COLLATERAL_CAP_LOVELACE) continue;",
+    to: "if (false /* MUT_COLL_SUM_CAP */) continue;",
+    marker: "MUT_COLL_SUM_CAP",
+  },
+  {
+    name: "screen: a withdrawal from someone else's reward account reads as 'your staking rewards'",
+    file: TX_SUMMARY_VIEW,
+    from: "{summary.withdrawals - summary.foreignWithdrawals > 0 && (",
+    to: "{summary.withdrawals /* MUT_VIEW_OWN_WD */ > 0 && (",
+    marker: "MUT_VIEW_OWN_WD",
+  },
+  {
+    name: "signData shows right-to-left text as text",
+    file: SIGN_DATA,
+    from: "if (RTL_SCRIPT.test(text)) return null;",
+    to: "if (false /* MUT_SD_RTL */) return null;",
+    marker: "MUT_SD_RTL",
   },
 ];
 
