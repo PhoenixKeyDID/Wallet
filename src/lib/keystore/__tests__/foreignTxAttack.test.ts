@@ -160,3 +160,38 @@ describe("khoá stake của khoản rút thưởng thì phải ký, không cần
     expect(() => signForeignTx(tx(body), a, NO_VIEW, false)).not.toThrow();
   });
 });
+
+/**
+ * Vòng soát 3, đòn 1: tài sản thế chấp không trần ở đường KÝ. Trường 13 là một
+ * UTxO 10.000 ADA của ví, không có trường 16; trang tự quyết script có lỗi hay
+ * không, nên 10.000 ADA đó là tiền trang lấy được. Trước bản vá, màn hình in
+ * con số và hàm ký vẫn ký.
+ */
+describe("tài sản thế chấp 10.000 ADA không có phần trả lại", () => {
+  const OWN_BIG = "aa".repeat(32);
+  const OWN_SMALL = "bb".repeat(32);
+
+  it("cả màn hình lẫn hàm ký đều từ chối, cùng một khoá lỗi", async () => {
+    const a = await acct();
+    const mine = a.external[0]!.address;
+    const view: WalletView = {
+      ownAddressesHex: a.external.map((d) => addrHex(d.address)),
+      held: new Map([
+        [`${OWN_BIG}#0`, { address: mine, lovelace: BigInt(10_000_000_000), assets: new Map() }],
+        [`${OWN_SMALL}#0`, { address: mine, lovelace: BigInt(3_000_000), assets: new Map() }],
+      ]),
+    };
+    const body = new Map<number, unknown>([
+      [0, [[Buffer.from(OWN_SMALL, "hex"), 0], [Buffer.from(THEIR_TXID, "hex"), 0]]],
+      [1, [[Buffer.from(addrHex(mine), "hex"), 2_800_000]]],
+      [2, 200_000],
+      [11, Buffer.alloc(32, 1)],
+      [13, [[Buffer.from(OWN_BIG, "hex"), 0]]],
+    ]);
+    expect(() => summariseTx(tx(body), view.ownAddressesHex, view.held, 0)).toThrow(
+      expect.objectContaining({ key: "sign_foreign_collateral_over_cap" }),
+    );
+    expect(() => signForeignTx(tx(body), a, view, false)).toThrow(/^sign_foreign_collateral_over_cap: /);
+    expect(() => signForeignTx(tx(body), a, view, true)).toThrow(/^sign_foreign_collateral_over_cap: /);
+  });
+});

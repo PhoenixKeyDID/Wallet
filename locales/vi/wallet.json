@@ -354,6 +354,8 @@
   "sign_foreign_mint": "Giao dịch này tạo token. Ví này chỉ ký giao dịch huỷ token. Chưa ký gì.",
   "sign_foreign_collateral_not_own": "Giao dịch này đặt tài sản thế chấp không thuộc ví này. Chưa ký gì.",
   "sign_foreign_undescribable": "Giao dịch này làm một việc mà màn duyệt từ chối mô tả. Chưa ký gì.",
+  "sign_foreign_collateral_over_cap": "Giao dịch này có thể lấy hơn 5 ADA tài sản thế chấp của bạn nếu script của nó lỗi. Trang web dựng giao dịch là bên quyết định script có lỗi hay không, nên ví này không bao giờ đặt quá 5 ADA. Chưa ký gì.",
+  "sign_foreign_collateral_tokens": "Giao dịch này đặt token của bạn làm tài sản thế chấp và không trả lại nếu script của nó lỗi. Chưa ký gì.",
   "sign_foreign_unreadable_own_utxo": "Không đọc được một đồng tiền của ví này. Chưa ký gì.",
   "sign_foreign_declared_invalid": "Giao dịch tự khai script của nó thất bại, nghĩa là chỉ mất tài sản thế chấp. Chưa ký gì.",
   "sign_foreign_unreadable_own_address": "Không đọc được một địa chỉ của chính ví này. Chưa ký gì.",

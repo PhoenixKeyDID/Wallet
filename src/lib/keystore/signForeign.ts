@@ -199,14 +199,15 @@ export function requiredKeysFor(
   if (!(decoded instanceof Map)) throw new LocalSignError("sign_foreign_not_a_tx");
   const b = decoded as Map<number, unknown>;
 
-  // `is_valid = false` is the transaction declaring its own script fails, which
-  // makes the ledger take the collateral and do nothing else. The screen refuses
-  // it (`summariseTx`) and so does this function. Read from the whole
-  // transaction, since the flag sits beside the body, not in it — which is also
-  // why this refusal is not a protection: the witness signs the body hash only,
-  // so a page can have the `true` version signed and submit the same body with
-  // `false`. The collateral is protected by the approval screen printing the
-  // ADA it can lose, not by this check.
+  // `is_valid = false` is the transaction declaring its own script fails; if
+  // one does, the ledger takes the collateral and does nothing else. The
+  // screen refuses it (`summariseTx`) and so does this function. Read from the
+  // whole transaction, since the flag sits beside the body, not in it — which
+  // is also why this refusal is not a protection: the witness signs the body
+  // hash only, so a page can have the `true` version signed and submit the
+  // same body with `false`, or attach a script that fails. The collateral is
+  // protected by the 5 ADA cap `summariseTx` applies (run at the end of this
+  // function), not by this check.
   let whole: unknown;
   try {
     whole = Decoder.decode(txBytes).value;
@@ -358,7 +359,9 @@ export function requiredKeysFor(
   try {
     summariseTx(txCborHex, view.ownAddressesHex, view.held, ledgerNetworkId);
   } catch (e) {
-    if (e instanceof UndescribableTxError) throw new LocalSignError("sign_foreign_undescribable", e.message);
+    // A refusal the screen names by key (the collateral cap, tokens in the
+    // collateral) is refused here under the same key.
+    if (e instanceof UndescribableTxError) throw new LocalSignError(e.key ?? "sign_foreign_undescribable", e.message);
     throw e;
   }
 

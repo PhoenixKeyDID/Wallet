@@ -354,6 +354,8 @@
   "sign_foreign_mint": "该交易会铸造代币。此钱包只签署销毁代币的交易。未签名。",
   "sign_foreign_collateral_not_own": "该交易使用了不属于此钱包的抵押品。未签名。",
   "sign_foreign_undescribable": "该交易包含审批界面拒绝描述的内容。未签名。",
+  "sign_foreign_collateral_over_cap": "如果该交易的脚本失败，可能会拿走您超过 5 ADA 的抵押品。脚本是否失败由构建该交易的网站决定，因此此钱包绝不提供超过 5 ADA 的抵押品。未签名。",
+  "sign_foreign_collateral_tokens": "该交易将您的代币用作抵押品，且在脚本失败时不予退还。未签名。",
   "sign_foreign_unreadable_own_utxo": "无法读取此钱包的一个 UTxO。未签名。",
   "sign_foreign_declared_invalid": "该交易声明其自身脚本失败,结果只会失去抵押品。未签名。",
   "sign_foreign_unreadable_own_address": "无法读取此钱包自身的某个地址。未签名。",

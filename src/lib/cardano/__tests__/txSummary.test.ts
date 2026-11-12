@@ -263,10 +263,13 @@ describe("summariseTx — what it refuses", () => {
       expect(summariseTx(cbor, own.addresses, withBig(), 0).collateral!.riskLovelace).toBe(BigInt(5_000_000));
     });
 
-    it("reports the whole input as at risk when there is no return", () => {
+    // With no return the whole 1000 ADA input is at risk, and the page that
+    // built the transaction decides whether its script fails. Printing the
+    // number was the old answer; the cap refuses it.
+    it("refuses the whole 1000 ADA input at risk when there is no return: above the 5 ADA cap", () => {
       const cbor = encodeBody([...ordinary, collateralFromWallet]);
-      expect(summariseTx(cbor, own.addresses, withBig(), 0).collateral!.riskLovelace).toBe(
-        BigInt(1_000_000_000),
+      expect(() => summariseTx(cbor, own.addresses, withBig(), 0)).toThrow(
+        expect.objectContaining({ key: "sign_foreign_collateral_over_cap" }),
       );
     });
 

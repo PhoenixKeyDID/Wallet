@@ -422,7 +422,7 @@ export function Approve() {
         if (!cancelled) setPhase((cur) => (cur.at === "decide" ? { ...cur, summary, view } : cur));
       } catch (e) {
         const why =
-          e instanceof UndescribableTxError ? e.message : t("cip30_cannot_read_tx");
+          e instanceof UndescribableTxError ? (e.key ? t(e.key) : e.message) : t("cip30_cannot_read_tx");
         if (!cancelled) setPhase((cur) => (cur.at === "decide" ? { ...cur, undescribable: why } : cur));
       }
     })();

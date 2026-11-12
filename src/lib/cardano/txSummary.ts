@@ -33,6 +33,7 @@ import { Buffer } from "buffer";
 import { Decoder } from "@stricahq/cbors";
 import { utils as tyUtils } from "@stricahq/typhonjs";
 import { walletOwnsOutput } from "./ownUtxo";
+import { COLLATERAL_CAP_LOVELACE } from "./utxoSelect";
 
 /** One asset's movement, from the wallet's point of view. Negative = incoming. */
 export type NetChange = {
@@ -123,9 +124,17 @@ export type TxSummary = {
 
 /** Thrown when the transaction cannot be described. Never a partial answer. */
 export class UndescribableTxError extends Error {
-  constructor(reason: string) {
+  /**
+   * An i18n key (`sign_foreign_*`) for the refusals a person is meant to read
+   * in their own language, set on the ones that guard money directly. The
+   * screen shows it translated, and the signer refuses under the same key, so
+   * the two layers name the same reason. Absent: `message` is the reason.
+   */
+  readonly key: string | undefined;
+  constructor(reason: string, key?: string) {
     super(reason);
     this.name = "UndescribableTxError";
+    this.key = key;
   }
 }
 
@@ -136,8 +145,8 @@ export class UndescribableTxError extends Error {
  * `return` in front — which is the kind of noise that gets "simplified" away
  * later, taking the refusal with it.
  */
-function bad(why: string): never {
-  throw new UndescribableTxError(why);
+function bad(why: string, key?: string): never {
+  throw new UndescribableTxError(why, key);
 }
 
 const ADA: NetChange = { unit: "", policyId: "", assetNameHex: "", amount: BigInt(0) };
@@ -307,13 +316,16 @@ const KNOWN_BODY_KEYS = new Set([
  *   collateral is at risk, and "minus the return" would understate it;
  * - tokens in the collateral that the return does not give back in full, or a
  *   return naming tokens the collateral never held;
- * - a declared total that disagrees with inputs minus return.
+ * - a declared total that disagrees with inputs minus return;
+ * - an amount at risk above `COLLATERAL_CAP_LOVELACE` (5 ADA).
  *
- * The amount shown is the protection, because it is the worst case whatever
- * the page does after signing. A transaction that declares its own script fails
- * (`is_valid = false`) is refused as well, but that refusal guards nothing: the
- * flag is outside the signed body, so a page can get a signature on the `true`
- * version and submit `false` with the same witness.
+ * The cap is the protection, and the printed amount is the worst case under
+ * it. The collateral is taken when a script in the transaction fails, and the
+ * page built the transaction, so the page decides whether one does. A
+ * transaction that declares its own script fails (`is_valid = false`) is
+ * refused as well, but that refusal guards little: the flag is outside the
+ * signed body, so a page can get a signature on the `true` version and submit
+ * `false` with the same witness — or simply attach a script that fails.
  */
 function readCollateral(
   b: Map<number, unknown>,
@@ -360,7 +372,10 @@ function readCollateral(
 
   for (const [unit, qty] of inAssets) {
     if ((retAssets.get(unit) ?? BigInt(0)) < qty) {
-      bad("this transaction puts up tokens as collateral and does not give them back — if the script fails, they are lost");
+      bad(
+        "this transaction puts up tokens as collateral and does not give them back — if the script fails, they are lost",
+        "sign_foreign_collateral_tokens",
+      );
     }
   }
   for (const [unit, qty] of retAssets) {
@@ -371,6 +386,18 @@ function readCollateral(
   const risk = inLovelace - retLovelace;
   if (b.has(17) && asBigInt(b.get(17), "the collateral total") !== risk) {
     bad("this transaction declares a collateral total that does not match its collateral and return");
+  }
+  // The cap. Printing the amount at risk is not enough on its own: the page
+  // that built the transaction also decides whether its script fails, so a
+  // 10 000 ADA coin in field 13 with no return is 10 000 ADA the page can
+  // burn, under a screen that says so in one line beneath a 0.2 ADA cost.
+  // The wallet never offers more than `COLLATERAL_CAP_LOVELACE` from
+  // `getCollateral`, and it does not sign for more either.
+  if (risk > COLLATERAL_CAP_LOVELACE) {
+    bad(
+      "this transaction can lose more than 5 ADA of this wallet's collateral if its script fails — this wallet does not put up that much",
+      "sign_foreign_collateral_over_cap",
+    );
   }
   return { riskLovelace: risk, inputs: list.length };
 }
@@ -436,14 +463,15 @@ export function summariseTx(
     bad(`this transaction is for another network (network id ${String(declaredNetwork)}, this wallet is on ${networkId})`);
   }
 
-  // `is_valid = false` is the transaction saying its own script fails: the
-  // ledger then takes the collateral and nothing else happens. Refusing it here
-  // only stops the honest-looking case. The flag sits beside the body, not in
-  // it, so the signature does not cover it: a page can have the `true` version
-  // signed and submit the same body with `false`, and the witness is still
-  // valid. This is not what protects the collateral. What does is that the
-  // screen prints the ADA the collateral can lose (`readCollateral`), and that
-  // number is what the person agrees to.
+  // `is_valid = false` is the transaction saying its own script fails. If a
+  // script does fail, the ledger takes the collateral and nothing else happens
+  // (if none fails, the ledger rejects the mismatch). Refusing it here only
+  // stops the honest-looking case. The flag sits beside the body, not in it,
+  // so the signature does not cover it — and the page that built the
+  // transaction can as easily attach a script that fails. This is not what
+  // protects the collateral. What does is the cap in `readCollateral`: this
+  // wallet signs no transaction that can lose more than 5 ADA of collateral,
+  // and the screen prints the amount under that cap.
   if (decoded.length >= 3 && decoded[2] === false) {
     bad("this transaction declares that its own script fails — signing it gives up its collateral");
   }

@@ -29,6 +29,12 @@ import {
 const NETWORK = 0 as const;
 const FEE_IN = { txId: "61".repeat(32), index: 1 };
 const COLL_IN = { txId: "62".repeat(32), index: 0, lovelace: BigInt(5_000_000) };
+/** A large coin of this wallet: 10 000 ADA. */
+const BIG_COLL = { txId: "64".repeat(32), index: 0, lovelace: BigInt(10_000_000_000) };
+/** A 3 ADA coin of this wallet carrying 500 tokens. */
+const TOKEN_COLL = { txId: "65".repeat(32), index: 0, lovelace: BigInt(3_000_000) };
+const COLL_TOKEN_POLICY = "e7".repeat(28);
+const COLL_TOKEN_UNIT = COLL_TOKEN_POLICY + "41";
 
 let account: Account;
 let walletHex: string;
@@ -49,12 +55,16 @@ beforeAll(async () => {
   held = new Map([
     [`${FEE_IN.txId}#${FEE_IN.index}`, { lovelace: BigInt(5_000_000), assets: new Map() }],
     [`${COLL_IN.txId}#${COLL_IN.index}`, { lovelace: COLL_IN.lovelace, assets: new Map() }],
+    [`${BIG_COLL.txId}#${BIG_COLL.index}`, { lovelace: BIG_COLL.lovelace, assets: new Map() }],
+    [`${TOKEN_COLL.txId}#${TOKEN_COLL.index}`, { lovelace: TOKEN_COLL.lovelace, assets: new Map([[COLL_TOKEN_UNIT, BigInt(500)]]) }],
   ]);
   view = {
     ownAddressesHex: ownAddrs,
     held: new Map([
       [`${FEE_IN.txId}#${FEE_IN.index}`, { address: account.external[0]!.address, ...held.get(`${FEE_IN.txId}#${FEE_IN.index}`)! }],
       [`${COLL_IN.txId}#${COLL_IN.index}`, { address: account.external[1]!.address, ...held.get(`${COLL_IN.txId}#${COLL_IN.index}`)! }],
+      [`${BIG_COLL.txId}#${BIG_COLL.index}`, { address: account.external[1]!.address, ...held.get(`${BIG_COLL.txId}#${BIG_COLL.index}`)! }],
+      [`${TOKEN_COLL.txId}#${TOKEN_COLL.index}`, { address: account.external[1]!.address, ...held.get(`${TOKEN_COLL.txId}#${TOKEN_COLL.index}`)! }],
     ]),
   };
 });
@@ -246,5 +256,76 @@ describe("drip-pot claim with one thing added: both layers refuse", () => {
     }
     expect(err).toBeInstanceOf(UndescribableTxError);
     expect((err as Error).message).toMatch(screen);
+  });
+});
+
+/**
+ * The collateral cap on the signing path. The page that builds a transaction
+ * also decides whether its script fails, so whatever the collateral can lose
+ * is money the page can take. Both layers refuse more than 5 ADA at risk —
+ * collateral minus return — and tokens the return does not give back, under
+ * one i18n key each, so the screen and the signer name the same reason.
+ */
+describe("drip-pot claim: the collateral at risk is capped at 5 ADA on both layers", () => {
+  const ref = (c: { txId: string; index: number }) => [Buffer.from(c.txId, "hex"), c.index];
+  /** Put `coin` up as collateral, returning `ret` lovelace (and `retAssets`) to the wallet; `undefined` drops the return. */
+  const collateral = (coin: { txId: string; index: number }, ret: bigint | undefined, total?: bigint, retAssets?: Map<Buffer, Map<Buffer, bigint>>) =>
+    claim({
+      extra: (b) => {
+        b.set(13, [ref(coin)]);
+        if (ret === undefined) b.delete(16);
+        else b.set(16, new Map<number, unknown>([[0, Buffer.from(walletHex, "hex")], [1, retAssets ? [ret, retAssets] : ret]]));
+        if (total === undefined) b.delete(17);
+        else b.set(17, total);
+      },
+    });
+  const refusedBoth = (hex: string, key: string) => {
+    expect(() => sign(hex)).toThrow(new RegExp(`^${key}: `));
+    let err: unknown;
+    try {
+      summary(hex);
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(UndescribableTxError);
+    expect((err as UndescribableTxError).key).toBe(key);
+  };
+
+  it("refuses a 10 000 ADA coin as collateral with no return (the page fails its script and the ledger takes it all)", () => {
+    refusedBoth(collateral(BIG_COLL, undefined), "sign_foreign_collateral_over_cap");
+  });
+
+  it("signs the same 10 000 ADA coin when the return gives back all but 1.5 ADA", () => {
+    const hex = collateral(BIG_COLL, BIG_COLL.lovelace - BigInt(1_500_000), BigInt(1_500_000));
+    expect(summary(hex).collateral).toEqual({ riskLovelace: BigInt(1_500_000), inputs: 1 });
+    expect(() => sign(hex)).not.toThrow();
+  });
+
+  it("signs a risk of exactly 5 ADA", () => {
+    const hex = collateral(BIG_COLL, BIG_COLL.lovelace - BigInt(5_000_000), BigInt(5_000_000));
+    expect(summary(hex).collateral).toEqual({ riskLovelace: BigInt(5_000_000), inputs: 1 });
+    expect(() => sign(hex)).not.toThrow();
+  });
+
+  it("refuses a risk of 5 ADA and one lovelace", () => {
+    refusedBoth(
+      collateral(BIG_COLL, BIG_COLL.lovelace - BigInt(5_000_001), BigInt(5_000_001)),
+      "sign_foreign_collateral_over_cap",
+    );
+  });
+
+  it("refuses the over-cap risk with no declared total too (field 17 absent)", () => {
+    refusedBoth(collateral(BIG_COLL, BIG_COLL.lovelace - BigInt(5_000_001)), "sign_foreign_collateral_over_cap");
+  });
+
+  it("refuses tokens put up as collateral that the return does not give back, even with 1 ADA at risk", () => {
+    refusedBoth(collateral(TOKEN_COLL, BigInt(2_000_000), BigInt(1_000_000)), "sign_foreign_collateral_tokens");
+  });
+
+  it("signs the token coin as collateral when the return gives every token back", () => {
+    const tokens = new Map([[Buffer.from(COLL_TOKEN_POLICY, "hex"), new Map([[Buffer.from("41", "hex"), BigInt(500)]])]]);
+    const hex = collateral(TOKEN_COLL, BigInt(2_000_000), BigInt(1_000_000), tokens);
+    expect(summary(hex).collateral).toEqual({ riskLovelace: BigInt(1_000_000), inputs: 1 });
+    expect(() => sign(hex)).not.toThrow();
   });
 });
