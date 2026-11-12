@@ -149,6 +149,31 @@ describe("check:tiers-codeowners", () => {
     expect(r.status).toBe(1);
   });
 
+  it("reads a bare `*` ahead of the anchored lines as a default reviewer, and still checks what follows", () => {
+    const ok = check({ files: { ".github/CODEOWNERS": "*  @owner\n/src/lib/guarded.ts  @owner\n/locales/  @owner\n" } });
+    expect(ok.out).toContain("(1 bare `*` default-reviewer line not counted as a guard)");
+    expect(ok.status).toBe(0);
+    // The anchored lines after it still guard their files.
+    const bad = check({
+      files: { ".github/CODEOWNERS": "*  @owner\n/src/lib/guarded.ts  @owner\n/locales/  @owner\n" },
+      tiers: { mid: ["src/ui/Badge.tsx", "src/lib/guarded.ts"], forbidden: ["locales/**", ".github/**", "docs/**"] },
+    });
+    expect(bad.out).toContain('src/lib/guarded.ts is guarded by .github/CODEOWNERS:2 but the tier table puts it in "mid"');
+    expect(bad.status).toBe(1);
+  });
+
+  it("reads each CODEOWNERS file's leading `*` on its own, not after another file's anchored lines", () => {
+    const r = check({ files: { "docs/CODEOWNERS": "*  @owner\n/src/lib/guarded.ts  @owner\n" } });
+    expect(r.out).toContain("(1 bare `*` default-reviewer line not counted as a guard)");
+    expect(r.status).toBe(0);
+  });
+
+  it("refuses a bare `*` after an anchored line, where it would take those files over", () => {
+    const r = check({ files: { ".github/CODEOWNERS": "/src/lib/guarded.ts  @owner\n/locales/  @owner\n*  @owner\n" } });
+    expect(r.out).toContain(".github/CODEOWNERS:3: CODEOWNERS pattern `*` is in a form this check does not parse");
+    expect(r.status).toBe(1);
+  });
+
   it("fails a CODEOWNERS line that names no tracked file", () => {
     const r = check({ files: { ".github/CODEOWNERS": "/src/lib/guarded.ts  @owner\n/src/lib/gaurded.ts  @owner\n" } });
     expect(r.out).toContain(".github/CODEOWNERS:2: CODEOWNERS pattern `/src/lib/gaurded.ts` names no file git tracks");
@@ -193,8 +218,12 @@ describe("check:tiers-codeowners", () => {
     const wild = check({ tiers: { forbidden: [...BASE_TIERS.forbidden, `**/${"*a".repeat(16)}`] } });
     expect(wild.out).toContain("has 17 wildcards; the table's reader stops at 16");
     expect(wild.status).toBe(2);
+    // `?` counts toward the same cap as `*`.
+    const marks = check({ tiers: { forbidden: [...BASE_TIERS.forbidden, `gen/${"?".repeat(17)}`] } });
+    expect(marks.out).toContain("has 17 wildcards; the table's reader stops at 16");
+    expect(marks.status).toBe(2);
     // At the caps exactly, the table is read.
-    const edge = check({ tiers: { forbidden: [...BASE_TIERS.forbidden, `gen/${"x".repeat(1020)}`, `**/${"*a".repeat(15)}`] } });
+    const edge = check({ tiers: { forbidden: [...BASE_TIERS.forbidden, `gen/${"x".repeat(1020)}`, `**/${"*a".repeat(15)}`, `gen/${"?".repeat(16)}`] } });
     expect(edge.out).not.toContain("the table's reader stops at");
     expect(edge.status).toBe(0);
   });
@@ -202,6 +231,12 @@ describe("check:tiers-codeowners", () => {
   it("refuses a tier that is not a list of non-empty strings", () => {
     const r = check({ tiers: { mid: ["src/ui/Badge.tsx", ""] } });
     expect(r.out).toContain('tier "mid" is not a list of non-empty strings');
+    expect(r.status).toBe(2);
+  });
+
+  it("refuses a tier set to null instead of reading it as empty", () => {
+    const r = check({ tiers: { low: null } as unknown as Partial<Tiers> });
+    expect(r.out).toContain('tier "low" is not a list of non-empty strings');
     expect(r.status).toBe(2);
   });
 

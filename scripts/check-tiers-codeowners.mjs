@@ -72,7 +72,10 @@
  * both ends, `**` as a whole segment). A pattern outside that dialect, or a
  * CODEOWNERS line in a form this script does not parse, fails the check rather
  * than being skipped: a gate that cannot read its input must not report that
- * the input is fine.
+ * the input is fine. One CODEOWNERS form is read rather than refused: a bare
+ * `*` ahead of every anchored line in its file sets a default reviewer and
+ * guards nothing, so it is counted apart and not as a guarded path. A `*`
+ * after an anchored line still fails.
  *
  * Usage: `node scripts/check-tiers-codeowners.mjs [repo-root]` — the root
  * defaults to the repository this script lives in; the tests pass a scratch one.
@@ -194,7 +197,9 @@ const patternCount = TIER_ORDER.reduce((n, t) => n + (Array.isArray(table.tiers[
 if (patternCount > MAX_TABLE_PATTERNS) cannotRun(`the tier table has ${patternCount} patterns, over the marketplace's ${MAX_TABLE_PATTERNS}`);
 const tiers = {};
 for (const tier of TIER_ORDER) {
-  const list = table.tiers[tier] ?? [];
+  // Only an absent key reads as an empty tier. A key set to null is a list the
+  // marketplace's reader rejects, so it must not pass here as "nothing listed".
+  const list = Object.hasOwn(table.tiers, tier) ? table.tiers[tier] : [];
   if (!Array.isArray(list) || list.some((g) => typeof g !== "string" || !g.length)) {
     cannotRun(`tier "${tier}" is not a list of non-empty strings`);
   }
@@ -235,8 +240,10 @@ if (!owners.length) cannotRun("no CODEOWNERS file found");
 
 const checked = new Map(); // path -> CODEOWNERS line that guards it
 let entries = 0;
+let defaults = 0; // bare `*` lines read as a default reviewer, not as a guard
 
 for (const file of owners) {
+  let anchoredSeen = false;
   readFileSync(join(REPO, file), "utf8").split("\n").forEach((line, i) => {
     const text = line.trim();
     if (!text || text.startsWith("#")) return;
@@ -245,6 +252,15 @@ for (const file of owners) {
     const raw = text.match(/^(?:\\.|[^\s\\])+/)?.[0] ?? "";
     const pattern = raw.replace(/\\(.)/g, "$1");
     const where = `${file}:${i + 1}`;
+    // A bare `*` ahead of every anchored line sets who reviews a file nobody
+    // named; it marks no file as dangerous, and check:urls reads it the same
+    // way. Every anchored line after it still wins for the files it names.
+    // After an anchored line, `*` would take those files over instead, so
+    // there it stays a form this check refuses.
+    if (pattern === "*" && !anchoredSeen) {
+      defaults += 1;
+      return;
+    }
     // Only the anchored forms this repo uses. Anything else is a form this
     // script would have to guess at, and a guess here is a silent pass.
     if (!pattern.startsWith("/") || /[*?[\]!]/.test(pattern)) {
@@ -252,6 +268,7 @@ for (const file of owners) {
       return;
     }
     entries += 1;
+    anchoredSeen = true;
     const rel = pattern.slice(1).replace(/\/+$/, "");
     const under = tracked.filter((p) => p.startsWith(rel + "/"));
     if (under.length) {
@@ -562,7 +579,9 @@ if (problems.length) {
 }
 
 console.log(
-  `Tier/CODEOWNERS OK — ${entries} CODEOWNERS entries, ${checked.size} guarded files, ` +
+  `Tier/CODEOWNERS OK — ${entries} CODEOWNERS entries` +
+    (defaults ? ` (${defaults} bare \`*\` default-reviewer line${defaults > 1 ? "s" : ""} not counted as a guard)` : "") +
+    `, ${checked.size} guarded files, ` +
     `${seeds.length} forbidden source files and ${edges} import edges followed ` +
     `(${leftOut} test and runner files left out of the graph), all forbidden in docs/contribution-tiers.json`,
 );
