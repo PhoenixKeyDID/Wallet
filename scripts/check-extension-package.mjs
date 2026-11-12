@@ -41,6 +41,7 @@
  * 4. **It loads at all.** Manifest parses, every file it names exists.
  */
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
+import vm from "node:vm";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -761,22 +762,60 @@ if (sw && !existsSync(join(DIST, sw))) fail(`background names "${sw}", which is 
  * a page-world file without any source line saying so. The claim is about the
  * shipped bytes, so it is checked on the shipped bytes.
  *
- * The check is the module graph, not a word search. `content.js` and
- * `inpage.js` run in a website's process, and each may import exactly one
- * chunk: `protocol.js`, which is pure rules and holds nothing. A keystore that
- * arrived any way at all — inlined, re-exported, or dragged in as a shared
- * chunk — has to show up as an import outside that set.
+ * ## Each file must run as a classic script
  *
- * Measured, because the obvious spelling of this check does not work: importing
- * the keystore into `content/bridge.ts` and rebuilding left `content.js` at
- * 1,426 bytes, because the bundler put the keystore in a *separate* chunk and
- * imported it. A size ceiling alone would have printed OK. The import graph is
- * the check; the ceiling below is only a backstop for the day a bundler inlines
- * instead of splitting.
+ * `content.js` is a manifest content script and `inpage.js` is loaded by a
+ * plain `<script src>`; both are classic scripts, and Chrome gives a content
+ * script no module mode. The previous version of this check *allowed* each to
+ * import a shared `protocol.js` chunk — and that import is a SyntaxError in a
+ * classic script. Measured in Chrome for Testing 142: the content script threw
+ * `Cannot use import statement outside a module`, nothing was injected, and
+ * `window.cardano.phoenix` was `undefined` on every page, with this gate
+ * printing OK. So the rule is now the one the browser applies: each file must
+ * compile as `new vm.Script(src)`, which refuses `import`/`export` declarations
+ * and `import.meta` exactly as a classic `<script>` does. A dynamic `import(…)`
+ * does parse in a classic script, and would fetch a module at run time, so it
+ * is refused by name.
+ *
+ * ## Which modules each file holds
+ *
+ * Built as one IIFE each, a keystore that reached a page-world file would no
+ * longer show up as an import — it would be inlined, more lines in the same
+ * file. Searching the text for keystore-looking words answers a different
+ * question (any string of the right shape counts). So the build writes down
+ * which source modules it put into each file (`.page-world-modules.json`, from
+ * the bundler's own chunk record) and this reads the statement: every module
+ * must be in `PAGE_WORLD_MAY_BUNDLE`, and a package with no statement is refused
+ * rather than read as "nothing extra" — the same stance as `.chain-origins.json`.
+ *
+ * The size ceiling stays as a backstop that does not trust the receipt: the
+ * keystore and its crypto are hundreds of kilobytes, a relay is a few.
  */
 const PAGE_WORLD = ["content.js", "inpage.js"];
-const PAGE_WORLD_MAY_IMPORT = new Set(["./protocol.js"]);
+const PAGE_WORLD_RECEIPT = ".page-world-modules.json";
+const PAGE_WORLD_MAY_BUNDLE = new Set([
+  "extension/content/bridge.ts",
+  "extension/inpage/provider.ts",
+  "extension/src/rpc/protocol.ts",
+]);
 const PAGE_WORLD_MAX_BYTES = 32 * 1024;
+let pageWorldModules = null;
+if (!existsSync(join(DIST, PAGE_WORLD_RECEIPT))) {
+  fail(
+    `dist-extension/${PAGE_WORLD_RECEIPT} is missing, so which modules run inside websites cannot be ` +
+      `determined — rebuild with \`bun run build:extension\` rather than packing the directory by hand`,
+  );
+} else {
+  try {
+    pageWorldModules = JSON.parse(readFileSync(join(DIST, PAGE_WORLD_RECEIPT), "utf8"));
+  } catch (err) {
+    fail(`dist-extension/${PAGE_WORLD_RECEIPT} does not parse: ${err.message}`);
+  }
+  if (pageWorldModules !== null && (typeof pageWorldModules !== "object" || Array.isArray(pageWorldModules))) {
+    fail(`dist-extension/${PAGE_WORLD_RECEIPT} must map each page-world file to the modules it holds`);
+    pageWorldModules = null;
+  }
+}
 for (const f of PAGE_WORLD) {
   const path = join(DIST, f);
   if (!existsSync(path)) {
@@ -784,12 +823,34 @@ for (const f of PAGE_WORLD) {
     continue;
   }
   const src = readFileSync(path, "utf8");
-  for (const [, spec] of src.matchAll(/(?:^|\s)import\s[^;]*?from\s*"([^"]+)"/g)) {
-    if (!PAGE_WORLD_MAY_IMPORT.has(spec)) {
-      fail(
-        `${f} runs inside every website and imports "${spec}" — page-world code may ` +
-          `import only ${[...PAGE_WORLD_MAY_IMPORT].join(", ")}, or the keystore can reach a page`,
-      );
+  let parses = true;
+  try {
+    new vm.Script(src, { filename: f });
+  } catch (err) {
+    parses = false;
+    fail(
+      `${f} does not compile as a classic script (${err.message}) — a content script and a ` +
+        `<script src> are never modules, so the browser throws before its first line and the wallet injects nothing`,
+    );
+  }
+  // Only once it parses: on a file that does not, the sentence above is the
+  // whole story, and a second one about the same `import` would be noise.
+  if (parses && /(?<![\w$.])import\s*\(/.test(src)) {
+    fail(`${f} calls import(…), which loads a module into a website at run time — page-world code must be self-contained`);
+  }
+  if (pageWorldModules !== null) {
+    const mods = pageWorldModules[f];
+    if (!Array.isArray(mods) || mods.length === 0) {
+      fail(`dist-extension/${PAGE_WORLD_RECEIPT} does not say which modules ${f} holds`);
+    } else {
+      for (const m of mods) {
+        if (!PAGE_WORLD_MAY_BUNDLE.has(m)) {
+          fail(
+            `${f} runs inside every website and holds "${m}" — page-world code may bundle only ` +
+              `${[...PAGE_WORLD_MAY_BUNDLE].join(", ")}, or the keystore can reach a page`,
+          );
+        }
+      }
     }
   }
   // A relay is small. Anything approaching the keystore's size got there somehow.
@@ -1092,6 +1153,6 @@ const backing =
       `(${buildOnly.join(", ")}) — reviewed only by whoever set the build variable`;
 console.log(
   `Extension package OK — manifest v3 loads, no manifest key or permission outside ` +
-    `the reviewed set, CSP allows no remote code, page-world code imports nothing but ` +
-    `the rules, and ${backing}`,
+    `the reviewed set, CSP allows no remote code, page-world code is two classic ` +
+    `scripts bundling nothing but the relay and the rules, and ${backing}`,
 );

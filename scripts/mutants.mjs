@@ -81,6 +81,11 @@ const TX = "src/lib/cardano/tx.ts";
 // because a *count* elsewhere fell, not because the detector did its job.
 const NOTICE_TEST = "src/components/wallet/__tests__/moneyNotice.test.ts";
 const CLASSIFY_RUN = "scripts/lib/classify-run.mjs";
+// The packaging gate and the build step for the two scripts that run inside a
+// website. Both went wrong together once: the build emitted ES modules, the
+// gate allowed exactly that import, and Chrome refused the file.
+const PKG_GATE = "scripts/check-extension-package.mjs";
+const EXT_VITE = "extension/vite.config.ts";
 const TESTS = [
   "src/lib/cardano/__tests__/history.test.ts",
   "src/lib/cardano/__tests__/price.test.ts",
@@ -109,6 +114,8 @@ const TESTS = [
   "extension/background/__tests__/worker.test.ts",
   "extension/src/__tests__/DataSignView.test.tsx",
   "scripts/__tests__/classifyRun.test.ts",
+  "scripts/__tests__/checkExtensionPackage.test.ts",
+  "extension/pageWorldBuild.test.ts",
 ];
 
 /**
@@ -117,6 +124,41 @@ const TESTS = [
  * measuring nothing, which is the failure mode it was written to prevent.
  */
 const MUTANTS = [
+  // ── The page-world scripts must load in a real browser: a content script and
+  // a `<script src>` are classic scripts, so neither may import anything ──
+  {
+    name: "page-world: the package gate no longer compiles content.js/inpage.js as classic scripts",
+    file: PKG_GATE,
+    from: "    new vm.Script(src, { filename: f });",
+    to: "    void vm;",
+  },
+  {
+    name: "page-world: the package gate no longer refuses a module outside the relay and the rules",
+    file: PKG_GATE,
+    from: "        if (!PAGE_WORLD_MAY_BUNDLE.has(m)) {",
+    to: "        if (false) {",
+  },
+  {
+    name: "page-world: the package gate reads a missing module receipt as nothing extra",
+    file: PKG_GATE,
+    from: "if (!existsSync(join(DIST, PAGE_WORLD_RECEIPT))) {",
+    to: "if (false) {",
+  },
+  {
+    name: "page-world: the package gate lets a dynamic import() through",
+    file: PKG_GATE,
+    from: "  if (parses && /(?<![\\w$.])import\\s*\\(/.test(src)) {",
+    to: "  if (false) {",
+  },
+  {
+    name: "page-world: the build emits ES modules importing a shared protocol chunk again",
+    file: EXT_VITE,
+    from: '            format: "iife",\n            inlineDynamicImports: true,',
+    to:
+      '            format: "es",\n' +
+      '            manualChunks: (id: string) => (id.includes("rpc/protocol") ? "protocol" : undefined),\n' +
+      '            chunkFileNames: "[name].js",',
+  },
   // ── Round six: a recovery phrase must not reach the clipboard; the popup must
   // not say the web page's sentences; the stylesheet gate must actually gate ──
   {
