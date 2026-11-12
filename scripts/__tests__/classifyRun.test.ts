@@ -176,6 +176,24 @@ describe("classifyRun", () => {
     expect(classifyRun(1, out)).toBe("caught");
   });
 
+  // The same code frame quoting vitest's section names: a test whose source says
+  // "Failed Suites" or "Unhandled Errors" showed them there, and the run read "broken".
+  it("does not read 'Failed Suites' or 'Unhandled Errors' in the code frame under an assertion failure", () => {
+    for (const quoted of [
+      "expect(out).not.toMatch(/Failed Suites/);",
+      'const h = "Unhandled Errors";',
+      // A fixture line quoted whole: the header's own rule, behind the quote mark.
+      '"⎯⎯⎯⎯⎯⎯ Failed Suites 1 ⎯⎯⎯⎯⎯⎯⎯",',
+      '"⎯⎯⎯⎯⎯⎯ Unhandled Errors ⎯⎯⎯⎯⎯⎯",',
+    ]) {
+      const out = ASSERTION.replace(
+        "AssertionError: expected 1 to be 2 // Object.is equality",
+        `AssertionError: expected 'caught' to be 'broken' // Object.is equality\n    162|     ${quoted}`,
+      );
+      expect(classifyRun(1, out)).toBe("caught");
+    }
+  });
+
   it("does not read a typo-class error quoted in the middle of an assertion message", () => {
     const out = ASSERTION.replace(
       "AssertionError: expected 1 to be 2",

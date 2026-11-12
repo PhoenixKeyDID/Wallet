@@ -2105,8 +2105,10 @@ const MUTANTS = [
   // runner has already imported the unmutated grader, so these runs are
   // graded by the real one. ──
   ...[
-    ["a failed suite", "/Failed Suites|Unhandled Errors?/.test(text) ||", "/MUT_CLASSIFY_SUITES|Unhandled Errors?/.test(text) ||"],
-    ["a transform failure", "/Failed Suites|Unhandled Errors?/.test(text) || TRANSFORM_FAILED.test(text)", "/Failed Suites|Unhandled Errors?/.test(text) || /MUT_CLASSIFY_TRANSFORM/.test(text)"],
+    ["a failed suite", '["Failed Suites \\\\d+", "Unhandled Errors?"]', '["MUT_CLASSIFY_SUITES", "Unhandled Errors?"]'],
+    ["an unhandled error", '["Failed Suites \\\\d+", "Unhandled Errors?"]', '["Failed Suites \\\\d+", "MUT_CLASSIFY_UNHANDLED"]'],
+    ["the header anchor of the section rule of", 'new RegExp("^[ \\\\t]*⎯+ (?:"', 'new RegExp("(?:" /* MUT_CLASSIFY_SECTION_ANYWHERE */'],
+    ["a transform failure", "SECTION_HEADER.test(text) || TRANSFORM_FAILED.test(text)", "SECTION_HEADER.test(text) || /MUT_CLASSIFY_TRANSFORM/.test(text)"],
     ["the FAIL-header anchor of the transform rule of", 'const TRANSFORM_FAILED = new RegExp(AFTER_FAIL + "Error: Transform failed)", "m");', 'const TRANSFORM_FAILED = /Transform failed/; /* MUT_CLASSIFY_TRANSFORM_ANYWHERE */'],
     ["the FAIL-header anchor of", 'const AFTER_FAIL = "^[ \\\\t]*FAIL[ \\\\t][^\\\\n]*\\\\n[ \\\\t]*(?:";', 'const AFTER_FAIL = "^\\\\s*(?:" /* MUT_CLASSIFY_ANCHOR */;'],
     ["the type-checked switch of", "  if ((compiled ? COMPILER_MISSES : TYPO_CLASS).test(text)) return \"broken\";", "  if (TYPO_CLASS.test(text) /* MUT_CLASSIFY_IGNORE_COMPILED */) return \"broken\";"],

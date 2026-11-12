@@ -77,7 +77,7 @@ export function classifyRun(status, output, { compiled = false } = {}) {
   // eslint-disable-next-line no-control-regex
   const text = output.replace(/\x1b\[[0-9;]*m/g, "");
   if (status === 0) return "pass";
-  if (/Failed Suites|Unhandled Errors?/.test(text) || TRANSFORM_FAILED.test(text)) return "broken";
+  if (SECTION_HEADER.test(text) || TRANSFORM_FAILED.test(text)) return "broken";
   if ((compiled ? COMPILER_MISSES : TYPO_CLASS).test(text)) return "broken";
   if (/Tests\s+\d+ failed/.test(text)) return "caught";
   return "broken";
@@ -103,12 +103,18 @@ const TYPO_CLASS = new RegExp(
   "m",
 );
 /**
+ * Vitest's own "Failed Suites N" and "Unhandled Errors" section headers, read only as the
+ * header line vitest draws (a rule of `⎯` either side). Read anywhere, the words matched the
+ * code frame of a failing test that quotes them (this grader's own tests do), and a run that
+ * failed on an assertion read "broken".
+ */
+const SECTION_HEADER = new RegExp("^[ \\t]*⎯+ (?:" + ["Failed Suites \\d+", "Unhandled Errors?"].join("|") + ") ⎯+", "m");
+/**
  * A transform failure a test died on — read where the error a test died on is
  * printed, like the typo class, not anywhere. Vitest prints a code frame of the
  * failing test's source under the error, so a test whose source quotes
  * "Transform failed" (this grader's own tests do) made every run that failed it
- * read "broken", whatever it failed on. "Failed Suites" and "Unhandled Errors"
- * are vitest's own section headers and stay read anywhere.
+ * read "broken", whatever it failed on. `SECTION_HEADER` above had the same fault.
  */
 const TRANSFORM_FAILED = new RegExp(AFTER_FAIL + "Error: Transform failed)", "m");
 /** The part of `TYPO_CLASS` that still counts after the type-check passed. */
