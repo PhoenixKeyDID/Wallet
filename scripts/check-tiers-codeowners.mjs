@@ -72,7 +72,10 @@
  * both ends, `**` as a whole segment). A pattern outside that dialect, or a
  * CODEOWNERS line in a form this script does not parse, fails the check rather
  * than being skipped: a gate that cannot read its input must not report that
- * the input is fine.
+ * the input is fine. One CODEOWNERS form is read rather than refused: a bare
+ * `*` ahead of every anchored line in its file sets a default reviewer and
+ * guards nothing, so it is counted apart and not as a guarded path. A `*`
+ * after an anchored line still fails.
  *
  * Usage: `node scripts/check-tiers-codeowners.mjs [repo-root]` — the root
  * defaults to the repository this script lives in; the tests pass a scratch one.
@@ -194,7 +197,9 @@ const patternCount = TIER_ORDER.reduce((n, t) => n + (Array.isArray(table.tiers[
 if (patternCount > MAX_TABLE_PATTERNS) cannotRun(`the tier table has ${patternCount} patterns, over the marketplace's ${MAX_TABLE_PATTERNS}`);
 const tiers = {};
 for (const tier of TIER_ORDER) {
-  const list = table.tiers[tier] ?? [];
+  // Only an absent key reads as an empty tier. A key set to null is a list the
+  // marketplace's reader rejects, so it must not pass here as "nothing listed".
+  const list = Object.hasOwn(table.tiers, tier) ? table.tiers[tier] : [];
   if (!Array.isArray(list) || list.some((g) => typeof g !== "string" || !g.length)) {
     cannotRun(`tier "${tier}" is not a list of non-empty strings`);
   }
