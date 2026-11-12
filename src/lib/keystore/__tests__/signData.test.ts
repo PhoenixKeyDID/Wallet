@@ -241,6 +241,15 @@ describe("the screen shows text only when the text is what is signed", () => {
     expect(hidden(0x2028)).toBeNull();
     expect(hidden(0x2029)).toBeNull();
   });
+  it("shows hex only for format characters that are not default-ignorable (Cf)", () => {
+    // Interlinear annotation marks, Kaithi number signs and an Egyptian
+    // hieroglyph format control: Cf, but outside Default_Ignorable_Code_Point,
+    // so only the Cf class refuses them.
+    for (const cp of [0xfff9, 0xfffa, 0xfffb, 0x110bd, 0x110cd, 0x13430]) {
+      expect(/\p{Default_Ignorable_Code_Point}/u.test(String.fromCodePoint(cp))).toBe(false);
+      expect(hidden(cp)).toBeNull();
+    }
+  });
   it("shows hex only for tag characters U+E0000–E007F (Cf)", () => {
     for (const cp of [0xe0001, 0xe0020, 0xe0041, 0xe007f]) expect(hidden(cp)).toBeNull();
   });
