@@ -48,6 +48,8 @@ import { createRegistry, type WindowPort } from "./pending";
 // `@types/chrome`, and a hand-written surface is one a reviewer can check.
 type Port = {
   name: string;
+  /** Set by the browser, not by the other end: which page opened this port. */
+  sender?: { url?: string };
   postMessage(m: unknown): void;
   onMessage: { addListener(cb: (m: unknown) => void): void };
   onDisconnect: { addListener(cb: () => void): void };
@@ -113,16 +115,37 @@ const registry = createRegistry(() => ({
 /** Requests to open a window that have not been answered yet. */
 const opening = new Map<string, Promise<WindowPort | null>>();
 
+/**
+ * Whether this port was opened by the wallet window, `approve.html` of this
+ * extension, judged from the URL the browser recorded for the sender.
+ *
+ * The port's name is chosen by whoever calls `connect`, so it says nothing.
+ * Any page of this extension can open a port by that name — the toolbar
+ * popup, an options page, a future one — and its `hello` would then name an
+ * origin and be served that origin's requests, with no unlocked screen behind
+ * it showing anyone what is being asked. Only the approval window is allowed
+ * to answer for a site. The comparison is the exact page plus its query or
+ * fragment: a bare prefix test would also accept `approve.html.evil`.
+ */
+function fromWalletWindow(port: Port): boolean {
+  const url = port.sender?.url;
+  if (typeof url !== "string") return false;
+  const page = chrome.runtime.getURL("approve.html");
+  return url === page || url.startsWith(`${page}?`) || url.startsWith(`${page}#`);
+}
+
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== WALLET_PORT) return;
+  if (!fromWalletWindow(port)) return;
   let origin: string | null = null;
   port.onMessage.addListener((raw) => {
     const m = raw as { type?: string; origin?: string; id?: unknown; result?: unknown };
     if (m?.type === "hello" && typeof m.origin === "string" && origin === null) {
       // The window tells us which origin it is serving. This is safe to trust
-      // in a way the page's own claim is not: the port comes from inside the
-      // extension, and the origin it names was handed to it by us when we
-      // opened it. Once, per port: a window serves the one site it was opened
+      // in a way the page's own claim is not: the port was opened by this
+      // extension's `approve.html` (`fromWalletWindow`, from the URL the
+      // browser recorded), and the origin it names was handed to it by us when
+      // we opened it. Once, per port: a window serves the one site it was opened
       // for, and a second hello naming another is not something to honour.
       origin = m.origin;
       registry.attach(origin, port);
