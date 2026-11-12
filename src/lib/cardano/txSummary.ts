@@ -53,7 +53,11 @@ export type Recipient = {
    * tokens leave unseen.
    */
   assets: NetChange[];
-  /** True when this output comes back to one of the wallet's own addresses. */
+  /**
+   * True when this output comes back to one of the wallet's own addresses
+   * without a datum. An own-address output carrying a datum is `false`: the
+   * wallet's UTxO reads skip it, so it is money that leaves.
+   */
   mine: boolean;
   /**
    * The output carries a datum (inline, or by hash). Sending to a script with
@@ -87,6 +91,12 @@ export type TxSummary = {
   ownInputs: number;
   totalInputs: number;
   withdrawals: number;
+  /**
+   * How many of `withdrawals` take rewards out of a reward account that is not
+   * this wallet's. The screen says something different for those: the money is
+   * somebody else's, and "this withdraws your staking rewards" would be false.
+   */
+  foreignWithdrawals: number;
   /** Tokens this transaction destroys, `amount` positive. Creating tokens is refused. */
   burns: NetChange[];
   /** Present when the transaction puts up collateral. */
@@ -277,9 +287,13 @@ const KNOWN_BODY_KEYS = new Set([
  *   collateral is at risk, and "minus the return" would understate it;
  * - tokens in the collateral that the return does not give back in full, or a
  *   return naming tokens the collateral never held;
- * - a declared total that disagrees with inputs minus return;
- * - a transaction that declares its own script fails (`is_valid = false`):
- *   that is not a risk, it is the collateral being spent.
+ * - a declared total that disagrees with inputs minus return.
+ *
+ * The amount shown is the protection, because it is the worst case whatever
+ * the page does after signing. A transaction that declares its own script fails
+ * (`is_valid = false`) is refused as well, but that refusal guards nothing: the
+ * flag is outside the signed body, so a page can get a signature on the `true`
+ * version and submit `false` with the same witness.
  */
 function readCollateral(
   b: Map<number, unknown>,
@@ -403,7 +417,13 @@ export function summariseTx(
   }
 
   // `is_valid = false` is the transaction saying its own script fails: the
-  // ledger then takes the collateral and nothing else happens.
+  // ledger then takes the collateral and nothing else happens. Refusing it here
+  // only stops the honest-looking case. The flag sits beside the body, not in
+  // it, so the signature does not cover it: a page can have the `true` version
+  // signed and submit the same body with `false`, and the witness is still
+  // valid. This is not what protects the collateral. What does is that the
+  // screen prints the ADA the collateral can lose (`readCollateral`), and that
+  // number is what the person agrees to.
   if (decoded.length >= 3 && decoded[2] === false) {
     bad("this transaction declares that its own script fails — signing it gives up its collateral");
   }
@@ -452,7 +472,16 @@ export function summariseTx(
     const { addressHex, lovelace, assets, datum } = readOutput(o);
     const net = addressNetwork(addressHex);
     if (net !== null && net !== networkId) bad("this transaction pays an address on another network");
-    const mine = own.has(addressHex.toLowerCase());
+    // An output to one of this wallet's addresses that carries a datum (inline
+    // or by hash) is not money coming back. The wallet's own UTxO reads skip
+    // every such output (`bfUtxos` skips inline datum and datum hash,
+    // `decodeUtxosToInputs` skips any Babbage datum), so after signing the
+    // wallet never sees it again — spendable or not, it has left. Counting it
+    // as change would let a page send 95 ADA to the wallet's own address under
+    // a datum and have the screen report a 5 ADA cost. It is shown as a
+    // recipient instead, with the datum flag, like any other one.
+    const ownAddress = own.has(addressHex.toLowerCase());
+    const mine = ownAddress && !datum;
     if (mine) {
       returnedLovelace += lovelace;
       for (const [unit, qty] of assets) {
@@ -490,6 +519,7 @@ export function summariseTx(
     if (hex.length === 114) ownStakeHashes.add(hex.slice(58));
   }
   let withdrawnLovelace = BigInt(0);
+  let foreignWithdrawals = 0;
   const rawWithdrawals = b.get(5);
   if (rawWithdrawals !== undefined) {
     if (!(rawWithdrawals instanceof Map)) bad("this transaction withdraws in a shape this wallet cannot read");
@@ -498,7 +528,10 @@ export function summariseTx(
       if (raw.length !== 29) bad("this transaction withdraws from an account this wallet cannot read");
       // Somebody else's rewards are somebody else's money; they neither arrive
       // here nor leave here.
-      if (!ownStakeHashes.has(raw.subarray(1).toString("hex"))) continue;
+      if (!ownStakeHashes.has(raw.subarray(1).toString("hex"))) {
+        foreignWithdrawals += 1;
+        continue;
+      }
       withdrawnLovelace += asBigInt(amount, "a withdrawal amount");
     }
   }
@@ -529,6 +562,7 @@ export function summariseTx(
     ownInputs: mineCount,
     totalInputs: inputList.length,
     withdrawals: countOf(b.get(5)),
+    foreignWithdrawals,
     burns: readBurns(b.get(9)),
     collateral: readCollateral(b, own, ownInputs, networkId),
     withdrawalLovelace: withdrawnLovelace,

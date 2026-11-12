@@ -391,6 +391,7 @@
   "cip30_unknown_inputs": "This wallet recognised {{known}} of {{total}} inputs. The amount above counts only what it recognised, so the real cost to you may be higher.",
   "cip30_paying": "Paying",
   "cip30_extra_actions": "This also withdraws your staking rewards. Approve it only if that is what you asked the site to do.",
+  "cip30_foreign_withdrawal": "This also withdraws staking rewards from another reward account, not this wallet's. Approve it only if you know why the site does that.",
   "cip30_reject": "Reject",
   "cip30_approve": "Sign",
   "cip30_declined": "You rejected this request.",

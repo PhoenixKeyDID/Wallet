@@ -142,9 +142,12 @@ export function requiredKeysFor(
 
   // `is_valid = false` is the transaction declaring its own script fails, which
   // makes the ledger take the collateral and do nothing else. The screen refuses
-  // it (`summariseTx`); the key-holding function refuses it again, for the same
-  // reason as every rule below. Read from the whole transaction, since the flag
-  // sits beside the body, not in it.
+  // it (`summariseTx`) and so does this function. Read from the whole
+  // transaction, since the flag sits beside the body, not in it — which is also
+  // why this refusal is not a protection: the witness signs the body hash only,
+  // so a page can have the `true` version signed and submit the same body with
+  // `false`. The collateral is protected by the approval screen printing the
+  // ADA it can lose, not by this check.
   let whole: unknown;
   try {
     whole = Decoder.decode(txBytes).value;

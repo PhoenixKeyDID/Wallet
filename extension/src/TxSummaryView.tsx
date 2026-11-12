@@ -85,7 +85,12 @@ export function TxSummaryView({ summary }: { summary: TxSummary }) {
           <p className="approve-note">{t("cip30_collateral_explain")}</p>
         </>
       )}
-      {summary.withdrawals > 0 && <p className="approve-error">{t("cip30_extra_actions")}</p>}
+      {/* "Your staking rewards" only for this wallet's own reward account; a
+          withdrawal from another account is someone else's money and says so. */}
+      {summary.withdrawals - summary.foreignWithdrawals > 0 && (
+        <p className="approve-error">{t("cip30_extra_actions")}</p>
+      )}
+      {summary.foreignWithdrawals > 0 && <p className="approve-error">{t("cip30_foreign_withdrawal")}</p>}
     </div>
   );
 }

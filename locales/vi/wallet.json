@@ -391,6 +391,7 @@
   "cip30_unknown_inputs": "Ví nhận ra {{known}} trong {{total}} đầu vào. Số ở trên chỉ tính phần ví nhận ra, nên số tiền thật sự mất có thể cao hơn.",
   "cip30_paying": "Trả cho",
   "cip30_extra_actions": "Giao dịch này còn rút phần thưởng staking của bạn. Chỉ duyệt nếu đó đúng là việc bạn nhờ trang web làm.",
+  "cip30_foreign_withdrawal": "Giao dịch này còn rút phần thưởng staking của một tài khoản thưởng khác, không phải của ví này. Chỉ duyệt nếu bạn biết vì sao trang web làm vậy.",
   "cip30_reject": "Từ chối",
   "cip30_approve": "Ký",
   "cip30_declined": "Bạn đã từ chối yêu cầu này.",

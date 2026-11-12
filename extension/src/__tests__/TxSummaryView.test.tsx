@@ -51,6 +51,7 @@ function shown(overrides: Partial<TxSummary> = {}) {
     burns: [],
     collateral: null,
     withdrawals: 0,
+    foreignWithdrawals: 0,
     withdrawalLovelace: BigInt(0),
     ...overrides,
   };
@@ -85,5 +86,25 @@ describe("TxSummaryView — what the approval window shows", () => {
   it("says when it recognised only some of the inputs", () => {
     const text = shown({ ownInputs: 1, totalInputs: 3 });
     expect(text).toContain("1 of 3");
+  });
+
+  // "Your staking rewards" is a claim about whose money it is. It holds only
+  // for this wallet's own reward account.
+  it("says 'your staking rewards' only for this wallet's own reward account", () => {
+    const own = shown({ withdrawals: 1, foreignWithdrawals: 0, withdrawalLovelace: BigInt(5_000_000) });
+    expect(own).toContain(en.cip30_extra_actions);
+    expect(own).not.toContain(en.cip30_foreign_withdrawal);
+
+    const foreign = shown({ withdrawals: 1, foreignWithdrawals: 1 });
+    expect(foreign).not.toContain(en.cip30_extra_actions);
+    expect(foreign).toContain(en.cip30_foreign_withdrawal);
+
+    const both = shown({ withdrawals: 2, foreignWithdrawals: 1, withdrawalLovelace: BigInt(5_000_000) });
+    expect(both).toContain(en.cip30_extra_actions);
+    expect(both).toContain(en.cip30_foreign_withdrawal);
+
+    const none = shown();
+    expect(none).not.toContain(en.cip30_extra_actions);
+    expect(none).not.toContain(en.cip30_foreign_withdrawal);
   });
 });

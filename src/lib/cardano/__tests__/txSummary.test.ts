@@ -307,6 +307,32 @@ describe("summariseTx — what it refuses", () => {
       expect(() => summariseTx(cbor, own.addresses, withBig(), 0)).toThrow(/collateral total/);
     });
 
+    // The return comes back to this wallet's address with the right amount;
+    // only the datum differs between these two cases. The wallet's UTxO reads
+    // skip an output carrying a datum, so a return under one is collateral the
+    // wallet never sees again.
+    const returnMapToMe = (datum?: unknown): [number, unknown] => [
+      16,
+      new Map<number, unknown>([
+        [0, tyUtils.getAddressFromString(MY_CHANGE).getBytes()],
+        [1, 995_000_000],
+        ...(datum === undefined ? [] : ([[2, datum]] as [number, unknown][])),
+      ]),
+    ];
+    it("describes a Babbage-shaped collateral return with no datum (control)", () => {
+      const cbor = encodeBody([...ordinary, collateralFromWallet, returnMapToMe()]);
+      expect(summariseTx(cbor, own.addresses, withBig(), 0).collateral).toEqual({
+        riskLovelace: BigInt(5_000_000),
+        inputs: 1,
+      });
+    });
+    it("refuses a collateral return that carries a datum", () => {
+      const inline = encodeBody([...ordinary, collateralFromWallet, returnMapToMe([1, Buffer.from("d87980", "hex")])]);
+      expect(() => summariseTx(inline, own.addresses, withBig(), 0)).toThrow(/collateral return carries a datum/);
+      const byHash = encodeBody([...ordinary, collateralFromWallet, returnMapToMe([0, Buffer.alloc(32, 0xab)])]);
+      expect(() => summariseTx(byHash, own.addresses, withBig(), 0)).toThrow(/collateral return carries a datum/);
+    });
+
     it("refuses a collateral return on its own", () => {
       const cbor = encodeBody([...ordinary, returnToMe]);
       expect(() => summariseTx(cbor, own.addresses, own.inputs, 0)).toThrow(/no collateral/);
@@ -413,6 +439,73 @@ describe("summariseTx — it notices the things it will not describe in detail",
       [2, 170_000],
       [5, new Map([[Buffer.from("e0" + "22".repeat(28), "hex"), 5_000_000]])],
     ]);
-    expect(summariseTx(cbor, own.addresses, own.inputs, 0).withdrawals).toBe(1);
+    const s = summariseTx(cbor, own.addresses, own.inputs, 0);
+    expect(s.withdrawals).toBe(1);
+    expect(s.foreignWithdrawals).toBe(0);
+  });
+
+  // A reward account whose stake key hash is not this wallet's: the screen
+  // must not say "your staking rewards" for it.
+  it("counts a withdrawal from someone else's reward account as foreign, and not into net", () => {
+    const cbor = encodeBody([
+      [0, [[Buffer.from(TXID, "hex"), 0]]],
+      [1, [[tyUtils.getAddressFromString(PAYEE).getBytes(), 3_000_000]]],
+      [2, 170_000],
+      [
+        5,
+        new Map([
+          [Buffer.from("e0" + "99".repeat(28), "hex"), 7_000_000],
+          [Buffer.from("e0" + "22".repeat(28), "hex"), 5_000_000],
+        ]),
+      ],
+    ]);
+    const s = summariseTx(cbor, own.addresses, own.inputs, 0);
+    expect(s.withdrawals).toBe(2);
+    expect(s.foreignWithdrawals).toBe(1);
+    expect(s.withdrawalLovelace).toBe(BigInt(5_000_000));
+  });
+});
+
+describe("summariseTx — an output to this wallet that carries a datum has left it", () => {
+  // The wallet holds 100 ADA. The page takes 4.8 ADA and sends 95 ADA back to
+  // the wallet's own receiving address — under a datum. The wallet's UTxO reads
+  // skip every output with a datum, so those 95 ADA are gone from its view.
+  const held = new Map([[`${TXID}#0`, { lovelace: BigInt(100_000_000), assets: new Map<string, bigint>() }]]);
+  const addresses = [hexOf(MINE), hexOf(MY_CHANGE)];
+  const encodeBody = (entries: [number, unknown][]) =>
+    Encoder.encode([new Map(entries), new Map(), true, null]).toString("hex");
+  const mineBytes = () => tyUtils.getAddressFromString(MINE).getBytes();
+  const tx = (back: unknown) =>
+    encodeBody([
+      [0, [[Buffer.from(TXID, "hex"), 0]]],
+      [1, [[tyUtils.getAddressFromString(PAYEE).getBytes(), 4_800_000], back]],
+      [2, 200_000],
+    ]);
+  const backTo = (datum?: unknown) =>
+    new Map<number, unknown>([
+      [0, mineBytes()],
+      [1, 95_000_000],
+      ...(datum === undefined ? [] : ([[2, datum]] as [number, unknown][])),
+    ]);
+
+  it("control: without a datum the 95 ADA is change and the cost is 5 ADA", () => {
+    const s = summariseTx(tx(backTo()), addresses, held, 0);
+    expect(s.net).toEqual([{ unit: "", policyId: "", assetNameHex: "", amount: BigInt(5_000_000) }]);
+    expect(s.toOthers.map((r) => r.address)).toEqual([PAYEE]);
+  });
+
+  const leaves = (s: ReturnType<typeof summariseTx>) => {
+    expect(s.net).toEqual([{ unit: "", policyId: "", assetNameHex: "", amount: BigInt(100_000_000) }]);
+    expect(s.toOthers).toContainEqual({ address: MINE, lovelace: BigInt(95_000_000), assets: [], mine: false, datum: true });
+  };
+
+  it("an inline datum: the whole 100 ADA leaves, and the own-address output is flagged", () => {
+    leaves(summariseTx(tx(backTo([1, Buffer.from("d87980", "hex")])), addresses, held, 0));
+  });
+  it("a datum hash (Babbage shape): the same", () => {
+    leaves(summariseTx(tx(backTo([0, Buffer.alloc(32, 0xab)])), addresses, held, 0));
+  });
+  it("a datum hash (legacy shape): the same", () => {
+    leaves(summariseTx(tx([mineBytes(), 95_000_000, Buffer.alloc(32, 0xab)]), addresses, held, 0));
   });
 });

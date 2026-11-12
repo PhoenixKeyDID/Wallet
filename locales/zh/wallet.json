@@ -391,6 +391,7 @@
   "cip30_unknown_inputs": "钱包只认出了 {{total}} 个输入中的 {{known}} 个。上面的金额只统计了认出的部分，实际支出可能更高。",
   "cip30_paying": "支付给",
   "cip30_extra_actions": "此交易还会提取你的质押奖励。只有在这正是你让网站做的事时才批准。",
+  "cip30_foreign_withdrawal": "此交易还会从另一个奖励账户（不是本钱包的）提取质押奖励。只有在你清楚网站为何这样做时才批准。",
   "cip30_reject": "拒绝",
   "cip30_approve": "签名",
   "cip30_declined": "你拒绝了这个请求。",
