@@ -19,8 +19,14 @@
  *
  *   TS2304  Cannot find name 'x'.
  *   TS2552  Cannot find name 'x'. Did you mean 'y'?
+ *   TS2305  Module '"m"' has no exported member 'x'.
+ *   TS2724  '"m"' has no exported member named 'x'. Did you mean 'y'?
  *   TS2339  Property 'x' does not exist on type 'T'.      (only if 'x' is new)
  *   TS2551  Property 'x' does not exist on type 'T'. Did you mean 'y'?  (idem)
+ *   TS2353  Object literal may only specify known properties, and 'x' does
+ *           not exist in type 'T'.                         (idem)
+ *   TS2561  Object literal may only specify known properties, but 'x' does
+ *           not exist in type 'T'. Did you mean to write 'y'?  (idem)
  *
  * The program is built once from `tsconfig.json`; each check builds a new one
  * that reuses every unchanged source file, so the cost is the checker's work
@@ -33,8 +39,11 @@
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 
-export const TYPO_CODES = new Set([2304, 2552, 2339, 2551]);
-const NAME_CODES = new Set([2304, 2552]);
+/** A name that is not in scope, or an import of a name the module does not export: always a typo. */
+const NAME_CODES = new Set([2304, 2552, 2305, 2724]);
+/** A property or object-literal key the type does not have: a typo only when the name is new to the file. */
+const NEW_NAME_CODES = new Set([2339, 2551, 2353, 2561]);
+export const TYPO_CODES = new Set([...NAME_CODES, ...NEW_NAME_CODES]);
 
 /**
  * Whether one semantic diagnostic is a misspelling rather than a type change.
@@ -48,14 +57,43 @@ const NAME_CODES = new Set([2304, 2552]);
  *     path. Measured 2026-11-12 over the registered mutants: four guard
  *     removals read `info`, `refusal`, `toLowerCase`, `cborHex` this way, each
  *     already in the file; a misspelling makes a name the file never had.
+ *     The same holds for an object-literal key the type does not declare.
+ *   - "New to the file" is read from the file's code, not its text:
+ *     `originalNames` is the set `namesInCode` builds from the syntax tree —
+ *     identifiers and the quoted names of properties — so a word in a comment
+ *     or a string does not count. Reading the whole text let `planned.ok` →
+ *     `planned.of` pass as a fair mutant because a comment says "of".
  *
- * Exported for the test; `name` is the quoted name in the message.
+ * Exported for the test; `name` is the text the diagnostic points at.
  */
-export function isTypo({ code, name }, originalText) {
+export function isTypo({ code, name }, originalNames) {
   if (NAME_CODES.has(code)) return true;
-  if (!TYPO_CODES.has(code) || name === null) return false;
-  const word = new RegExp(`(?<![\\w$])${name.replace(/[$]/g, "\\$")}(?![\\w$])`);
-  return !word.test(originalText);
+  if (!NEW_NAME_CODES.has(code) || name === null) return false;
+  return !originalNames.has(name);
+}
+
+/**
+ * Every name the code of `text` uses: identifiers (JSX attribute names
+ * included) and string literals that name a property — a quoted key, a quoted
+ * member in a type, `obj["x"]`. Comments, other string literals and template
+ * text are left out.
+ */
+export function namesInCode(ts, text, fileName = "x.tsx") {
+  const sf = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true);
+  const names = new Set();
+  const isPropertyName = (n) => {
+    const p = n.parent;
+    if (!p) return false;
+    if (ts.isElementAccessExpression(p)) return p.argumentExpression === n;
+    return "name" in p && p.name === n;
+  };
+  const visit = (n) => {
+    if (ts.isIdentifier(n) || ts.isPrivateIdentifier(n)) names.add(n.text);
+    else if ((ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n)) && isPropertyName(n)) names.add(n.text);
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  return names;
 }
 
 export function createTypechecker(repo) {
@@ -109,7 +147,7 @@ export function createTypechecker(repo) {
       }
       const sf = program.getSourceFile(abs);
       // Read from disk, which holds the unmutated text while a check runs.
-      const original = base.readFile(abs) ?? "";
+      const original = namesInCode(ts, base.readFile(abs) ?? "", abs);
       for (const d of program.getSyntacticDiagnostics(sf)) typo.push({ code: d.code, name: null, text: describe(d) });
       for (const d of program.getSemanticDiagnostics(sf)) {
         const entry = { code: d.code, name: missingName(d), text: describe(d) };
@@ -119,12 +157,21 @@ export function createTypechecker(repo) {
     return { typo, other, unchecked };
   };
 
+  // The name a diagnostic is about is the source text it points at — for
+  // TS2724 the message's first quoted string is the module path, not the name.
+  // The quoted name in the message is the fallback for a diagnostic with no span.
   const missingName = (d) => {
+    if (d.file && d.start !== undefined && d.length) {
+      const span = d.file.text.slice(d.start, d.start + d.length).replace(/^#/, "");
+      if (/^[\p{ID_Start}$_][\p{ID_Continue}$\u200c\u200d]*$/u.test(span)) return span;
+    }
     const m = /'([^']+)'/.exec(ts.flattenDiagnosticMessageText(d.messageText, "\n"));
     return m ? m[1] : null;
   };
 
   return {
+    /** `namesInCode` with this checker's TypeScript, for the tests. */
+    namesOf: (text) => namesInCode(ts, text),
     /** Diagnostics of the unmutated files, so a mutant is only charged with new ones. */
     baseline(rels) {
       overrides = new Map();
