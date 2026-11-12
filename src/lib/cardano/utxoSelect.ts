@@ -172,13 +172,7 @@ export const COLLATERAL_SEARCH_POOL = 40;
 export function selectCollateral(inputs: tyTypes.Input[], target?: bigint): tyTypes.Input[] | null {
   if (target === undefined) return selectLargestCollateral(inputs);
   if (target > COLLATERAL_CAP_LOVELACE) return null;
-  const byAscThenRef = (a: tyTypes.Input, b: tyTypes.Input) => {
-    const d = lovelaceOf(a) - lovelaceOf(b);
-    return d > ZERO ? 1 : d < ZERO ? -1 : refOf(a) < refOf(b) ? -1 : refOf(a) > refOf(b) ? 1 : 0;
-  };
-  const pure = inputs
-    .filter((i) => (i.tokens ?? []).length === 0 && lovelaceOf(i) <= COLLATERAL_CAP_LOVELACE)
-    .sort(byAscThenRef);
+  const pure = pureCoinsWithinCap(inputs);
 
   let best: { sum: bigint; coins: tyTypes.Input[] } | null = null;
   const consider = (coins: tyTypes.Input[]) => {
@@ -202,10 +196,25 @@ export function selectCollateral(inputs: tyTypes.Input[], target?: bigint): tyTy
   const single = pure.find((i) => lovelaceOf(i) >= target);
   if (single) consider([single]);
 
-  // Two and three coins, from sub-target coins only. Indices ascend, so each
-  // set is visited once and its coins are already in ascending order.
+  // Two and three coins, from sub-target coins only.
   const below = pure.filter((i) => lovelaceOf(i) < target);
-  const pool = below.length > COLLATERAL_SEARCH_POOL ? below.slice(below.length - COLLATERAL_SEARCH_POOL) : below;
+  forEachPairAndTriple(below.length > COLLATERAL_SEARCH_POOL ? below.slice(below.length - COLLATERAL_SEARCH_POOL) : below, consider);
+  return best ? (best as { coins: tyTypes.Input[] }).coins : null;
+}
+
+/** Pure-ADA coins of at most the cap, ascending by lovelace, then by `txid#index`. */
+function pureCoinsWithinCap(inputs: tyTypes.Input[]): tyTypes.Input[] {
+  const byAscThenRef = (a: tyTypes.Input, b: tyTypes.Input) => {
+    const d = lovelaceOf(a) - lovelaceOf(b);
+    return d > ZERO ? 1 : d < ZERO ? -1 : refOf(a) < refOf(b) ? -1 : refOf(a) > refOf(b) ? 1 : 0;
+  };
+  return inputs
+    .filter((i) => (i.tokens ?? []).length === 0 && lovelaceOf(i) <= COLLATERAL_CAP_LOVELACE)
+    .sort(byAscThenRef);
+}
+
+/** Every set of two and of three coins in `pool`. Indices ascend, so each set is visited once, in ascending order. */
+function forEachPairAndTriple(pool: tyTypes.Input[], consider: (coins: tyTypes.Input[]) => void): void {
   for (let a = 0; a < pool.length; a++) {
     for (let b = a + 1; b < pool.length; b++) {
       consider([pool[a]!, pool[b]!]);
@@ -213,7 +222,6 @@ export function selectCollateral(inputs: tyTypes.Input[], target?: bigint): tyTy
       for (let c = b + 1; c < pool.length; c++) consider([pool[a]!, pool[b]!, pool[c]!]);
     }
   }
-  return best ? (best as { coins: tyTypes.Input[] }).coins : null;
 }
 
 /** Below this, a no-amount `getCollateral()` answers `null`: too little to cover a script's collateral. */
@@ -221,17 +229,7 @@ export const COLLATERAL_FLOOR_LOVELACE = BigInt(1_000_000);
 
 /** `selectCollateral` without a target: the largest pure-ADA total within the cap, from 1 ADA. */
 function selectLargestCollateral(inputs: tyTypes.Input[]): tyTypes.Input[] | null {
-  const byAscThenRef = (a: tyTypes.Input, b: tyTypes.Input) => {
-    const d = lovelaceOf(a) - lovelaceOf(b);
-    return d > ZERO ? 1 : d < ZERO ? -1 : refOf(a) < refOf(b) ? -1 : refOf(a) > refOf(b) ? 1 : 0;
-  };
-  const pure = inputs
-    .filter((i) => (i.tokens ?? []).length === 0 && lovelaceOf(i) <= COLLATERAL_CAP_LOVELACE)
-    .sort(byAscThenRef);
-  // Combinations come from the largest coins: they are the ones that get a
-  // total closest to the cap. Single coins are all considered.
-  const pool = pure.length > COLLATERAL_SEARCH_POOL ? pure.slice(pure.length - COLLATERAL_SEARCH_POOL) : pure;
-
+  const pure = pureCoinsWithinCap(inputs);
   let best: { sum: bigint; coins: tyTypes.Input[] } | null = null;
   const consider = (coins: tyTypes.Input[]) => {
     const sum = coins.reduce((s, i) => s + lovelaceOf(i), ZERO);
@@ -248,13 +246,8 @@ function selectLargestCollateral(inputs: tyTypes.Input[]): tyTypes.Input[] | nul
     best = { sum, coins };
   };
   for (const coin of pure) consider([coin]);
-  for (let a = 0; a < pool.length; a++) {
-    for (let b = a + 1; b < pool.length; b++) {
-      consider([pool[a]!, pool[b]!]);
-      if (MAX_COLLATERAL_INPUTS < 3) continue;
-      for (let c = b + 1; c < pool.length; c++) consider([pool[a]!, pool[b]!, pool[c]!]);
-    }
-  }
+  // Combinations come from the largest coins: they get closest to the cap.
+  forEachPairAndTriple(pure.length > COLLATERAL_SEARCH_POOL ? pure.slice(pure.length - COLLATERAL_SEARCH_POOL) : pure, consider);
   const found = best as { sum: bigint; coins: tyTypes.Input[] } | null;
   return found && found.sum >= COLLATERAL_FLOOR_LOVELACE ? found.coins : null;
 }
