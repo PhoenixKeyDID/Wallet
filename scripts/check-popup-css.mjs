@@ -293,8 +293,18 @@ export function htmlClasses(html) {
     const lt = html.indexOf("<", i);
     if (lt < 0) break;
     if (html.startsWith("<!--", lt)) {
-      const end = html.indexOf("-->", lt + 4);
-      i = end < 0 ? n : end + 3;
+      // As the HTML tokenizer ends a comment: `<!-->` and `<!--->` are empty
+      // comments closed at once, and `--!>` closes one as well as `-->`.
+      // Searching only for `-->` past `<!--` would run an empty comment on to
+      // a later `-->` and hide every tag in between.
+      const body = lt + 4;
+      if (html[body] === ">") i = body + 1;
+      else if (html.startsWith("->", body)) i = body + 2;
+      else {
+        const ends = [["-->", 3], ["--!>", 4]].map(([t, len]) => [html.indexOf(t, body), len]).filter(([at]) => at >= 0);
+        const [at, len] = ends.sort((x, y) => x[0] - y[0])[0] ?? [n, 0];
+        i = at + len;
+      }
       continue;
     }
     if (!/[A-Za-z]/.test(html[lt + 1] ?? "")) {

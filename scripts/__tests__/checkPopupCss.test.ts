@@ -206,6 +206,21 @@ describe("HTML pages", () => {
     expect([...htmlClasses(html)]).toEqual(["x"]);
   });
 
+  // The browser closes `<!-->` and `<!--->` at once, and `--!>` closes a
+  // comment too: the tag after each is a real tag.
+  it.each([
+    [`<!--><i class="x"><!-- -->`],
+    [`<!---><i class="x"><!-- -->`],
+    [`<!-- note --!><i class="x"><!-- -->`],
+    [`<!-- a --!> <i class="x"> <!-- <b class="ghost"> -->`],
+  ])("ends the comment in %j where the browser does", (html) => {
+    expect([...htmlClasses(html)]).toEqual(["x"]);
+  });
+  it("still hides a tag inside an ordinary comment, and to the end in an unclosed one", () => {
+    expect([...htmlClasses(`<!-- - -> <i class="ghost"> --><b class="x">`)]).toEqual(["x"]);
+    expect([...htmlClasses(`<b class="x"><!-- <i class="ghost">`)]).toEqual(["x"]);
+  });
+
   it("does not read a class from inside another attribute's value, a script or a style", () => {
     expect([...htmlClasses(`<body title=" class=y">`)]).toEqual([]);
     expect([...htmlClasses(`<body data-x='<p class="y">'>`)]).toEqual([]);
