@@ -340,20 +340,64 @@ function hiddenInBase64(line) {
  * `https:…` to `new URL()`. They decode to nothing here, and a literal tab in
  * the source is deleted for the same reason.
  */
-const ESCAPE_HERE = /\\(?:[xu][0-9a-f{]|[tnr])|\t/i;
+/*
+ * A real line break hides a URL the same way, and so does a backslash before
+ * one. The window is two lines, and a JSX attribute may hold a newline
+ * (`href="https:/` ⏎ `/evil.example/p"` — esbuild keeps it, `new URL()` deletes
+ * it), and a backslash at the end of a line inside a JS string is a line
+ * continuation the lexer deletes with the break. Both printed OK. A real CR or
+ * LF now decodes to nothing, a continuation first.
+ *
+ * In a style sheet the escape is CSS's own: a backslash, one to six hex digits
+ * and an optional whitespace character (`https\3a //…` is `https://…`, and
+ * esbuild's minifier writes it out as the plain URL), or a backslash before
+ * any other character, which stands for that character. Measured: printed OK.
+ * A `.css`/`.scss`/`.less` file is read both ways — as CSS, and as before.
+ */
+const ESCAPE_HERE = /\\(?:[xu][0-9a-f{]|[tnr]|\r|\n|\u2028|\u2029)|\t/i;
 const ESCAPE_SEQ = /\\x([0-9a-f]{2})|\\u([0-9a-f]{4})|\\u\{([0-9a-f]{1,6})\}|\\[tnr]|\t/gi;
+const CONTINUATION = /\\(?:\r\n?|\n|\u2028|\u2029)/g;
+const CSS_ESCAPE = /\\([0-9a-f]{1,6})(?:\r\n|[ \t\r\n\f])?|\\([^\r\n\f0-9a-f])/gi;
+const CSS_EXT = /\.(?:css|scss|less)$/i;
+const codePoint = (hex) => {
+  const n = parseInt(hex, 16);
+  return n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : "";
+};
 function decodeEscapes(text) {
-  return text.replace(ESCAPE_SEQ, (_, x, u, cp) => {
-    const hex = x ?? u ?? cp;
-    if (hex === undefined) return "";
-    const n = parseInt(hex, 16);
-    return n <= 0x10ffff ? String.fromCodePoint(n) : "";
-  });
+  return text
+    .replace(CONTINUATION, "")
+    .replace(ESCAPE_SEQ, (_, x, u, cp) => {
+      const hex = x ?? u ?? cp;
+      if (hex === undefined) return "";
+      const n = parseInt(hex, 16);
+      return n <= 0x10ffff ? String.fromCodePoint(n) : "";
+    })
+    .replace(/[\r\n]/g, "");
 }
-function hiddenInEscapes(text) {
-  if (!ESCAPE_HERE.test(text) || URL_ONCE.test(text)) return false;
-  const decoded = decodeEscapes(text);
-  return URL_ONCE.test(decoded) || PROTOCOL_RELATIVE_START.test(decoded);
+function decodeCssEscapes(text) {
+  return text
+    .replace(CONTINUATION, "")
+    .replace(CSS_ESCAPE, (_, hex, ch) => (hex === undefined ? ch : codePoint(hex)))
+    .replace(/[\t\r\n]/g, "");
+}
+/*
+ * Every window holds a line break, so every window is decoded. A host at the
+ * very start of the decoded text (PROTOCOL_RELATIVE_START) is read only when
+ * the window holds a real escape: otherwise a line comment whose first word is
+ * a dotted name (two slashes, then `console.log(x)`) would read as a host. A quoted protocol-relative URL that
+ * only the decoding produced (`href="/` ⏎ `/evil.example"`) is read always.
+ */
+function hiddenInEscapes(text, css) {
+  if (URL_ONCE.test(text)) return false;
+  const escaped = ESCAPE_HERE.test(text) || (css && text.includes("\\"));
+  const quoted = PROTOCOL_RELATIVE_QUOTED.test(text);
+  const decoded = css ? [decodeEscapes(text), decodeCssEscapes(text)] : [decodeEscapes(text)];
+  return decoded.some(
+    (d) =>
+      URL_ONCE.test(d) ||
+      (!quoted && PROTOCOL_RELATIVE_QUOTED.test(d)) ||
+      (escaped && PROTOCOL_RELATIVE_START.test(d)),
+  );
 }
 
 /**
@@ -383,7 +427,12 @@ function decodeEntities(text) {
     return n <= 0x10ffff ? String.fromCodePoint(n) : m;
   });
 }
-const ENTITY_EXT = /\.(?:md|markdown|mdx|html?|xhtml|svg|xml|[jt]sx)$/i;
+/*
+ * Script files too, not only JSX: a `.ts` that assigns `innerHTML` or builds
+ * markup in a string hands the references to the HTML parser, which decodes
+ * them. A colon spelled `&#58;` inside a `.ts` string printed OK.
+ */
+const ENTITY_EXT = /\.(?:md|markdown|mdx|html?|xhtml|svg|xml|[mc]?[jt]sx?)$/i;
 function hiddenInEntities(window, markup) {
   if (!ENTITY_HERE.test(window)) return false;
   const decoded = decodeEntities(window.replace(new RegExp(URL_RE.source, "gi"), " "));
@@ -557,6 +606,7 @@ for (const file of [...rootFiles, ...SCAN_ROOTS.flatMap((root) => [...walk(join(
   const lines = text.split("\n");
   const markup = MARKUP_EXT.test(rel);
   const entities = ENTITY_EXT.test(rel);
+  const css = CSS_EXT.test(rel);
   for (let i = 0; i < lines.length; i += 1) {
     const window = lines[i] + "\n" + (lines[i + 1] ?? "");
     let hit = null;
@@ -569,7 +619,7 @@ for (const file of [...rootFiles, ...SCAN_ROOTS.flatMap((root) => [...walk(join(
     if (!hit && markup && PROTOCOL_RELATIVE_MARKUP.test(window)) hit = "a protocol-relative URL";
     if (!hit && entities && hiddenInEntities(window, markup)) hit = "a URL written with HTML character references";
     if (!hit && hiddenInBase64(lines[i])) hit = "a URL encoded in base64";
-    if (!hit && hiddenInEscapes(window)) hit = "a URL written with escape sequences";
+    if (!hit && hiddenInEscapes(window, css)) hit = "a URL written with escape sequences";
     if (!hit && hiddenInJoinedBase64(window)) hit = "a URL encoded in base64";
     if (hit) assembled.push(`${rel}:${i + 1}  ${hit}\n      ${lines[i].trim()}`);
   }

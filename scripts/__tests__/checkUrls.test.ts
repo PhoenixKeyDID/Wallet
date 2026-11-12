@@ -6,9 +6,9 @@
  * throwaway tree, so a red result names its own cause.
  *
  * The inputs are written with placeholders — `«C»` for the colon, `«S»` for a
- * slash — and assembled when the test runs. This file sits under `scripts/`,
- * which the guard scans, and the assembled forms are refused in every file
- * whether gated or not: spelling them out here would fail the guard on the
+ * slash, `«E»` for the ampersand of a character reference — and assembled when
+ * the test runs. This file sits under `scripts/`, which the guard scans, and
+ * the assembled forms are refused in every file whether gated or not: spelling them out here would fail the guard on the
  * real repo, which is the last case below.
  */
 import { describe, it, expect } from "vitest";
@@ -27,7 +27,8 @@ const src = (t: string) =>
     .replace(/«S»/g, "/")
     .replace(/«(htt\w*)»/g, "$1")
     .replace(/«X74»/g, "\\x74")
-    .replace(/«U003A»/g, "\\u003a");
+    .replace(/«U003A»/g, "\\u003a")
+    .replace(/«E»/g, "&");
 /** base64 of a placeholder fixture, computed here so no encoded URL sits in this file. */
 const b64 = (t: string) => Buffer.from(src(t)).toString("base64");
 
@@ -339,11 +340,11 @@ describe("check:urls — protocol-relative hosts with no dot", () => {
 
 describe("check:urls — HTML character references", () => {
   const refused: [string, string, string][] = [
-    ["a numeric colon in a JSX attribute", "src/Probe.tsx", `export const A = () => <a href="https&#58;«S»«S»evil.example/claim">c</a>;`],
-    ["a hex colon in an HTML attribute", "src/page.html", `<a href="https&#x3a;«S»«S»evil.example/claim">c</a>`],
-    ["a named colon in Markdown", "src/notes.md", `[c](https&colon;«S»«S»evil.example/claim)`],
-    ["named slashes in an HTML attribute", "src/page.html", `<a href="&sol;&sol;evil.example/claim">c</a>`],
-    ["a numeric colon with no semicolon", "src/page.html", `<a href="https&#58«S»«S»evil.example/claim">c</a>`],
+    ["a numeric colon in a JSX attribute", "src/Probe.tsx", `export const A = () => <a href="https«E»#58;«S»«S»evil.example/claim">c</a>;`],
+    ["a hex colon in an HTML attribute", "src/page.html", `<a href="https«E»#x3a;«S»«S»evil.example/claim">c</a>`],
+    ["a named colon in Markdown", "src/notes.md", `[c](https«E»colon;«S»«S»evil.example/claim)`],
+    ["named slashes in an HTML attribute", "src/page.html", `<a href="«E»sol;«E»sol;evil.example/claim">c</a>`],
+    ["a numeric colon with no semicolon", "src/page.html", `<a href="https«E»#58«S»«S»evil.example/claim">c</a>`],
     ["an encoded letter of the scheme", "src/page.html", `<a href="h&#116;tps«C»«S»«S»evil.example/claim">c</a>`],
   ];
   for (const [name, file, text] of refused) {
@@ -357,7 +358,7 @@ describe("check:urls — HTML character references", () => {
 
   it("refuses a hidden URL in a gated file that also shows a visible one", () => {
     const r = check(
-      { "src/page.html": src(`<a href="https«C»«S»«S»ok.example/?a=1&amp;b=2">ok</a> <a href="https&#58;«S»«S»evil.example/">x</a>\n`) },
+      { "src/page.html": src(`<a href="https«C»«S»«S»ok.example/?a=1&amp;b=2">ok</a> <a href="https«E»#58;«S»«S»evil.example/">x</a>\n`) },
       ["/src/page.html"],
     );
     expect(reasonOf(r.out), r.out).toBe(RUNTIME);
@@ -463,6 +464,50 @@ describe("check:urls — CODEOWNERS: the last matching line wins", () => {
   for (const [name, file, owners, raw] of passed) {
     it(`counts a file despite ${name}`, () => {
       const r = check(URL_AT(file), owners, raw);
+      expect(r.out, r.out).toContain("Outbound-URL guard OK");
+      expect(r.status).toBe(0);
+    });
+  }
+});
+
+describe("check:urls — line breaks, CSS escapes, and references in scripts", () => {
+  // Each of these printed OK, and each reaches the network: `new URL()` deletes
+  // the newline a JSX attribute keeps, the JS lexer deletes a backslash-newline
+  // inside a string, esbuild's CSS minifier writes `\3a ` out as a colon, and a
+  // `.ts` string handed to `innerHTML` has its references decoded.
+  const refused: [string, string, string, string][] = [
+    ["a real newline between the slashes of a JSX attribute", "src/Probe.tsx", `export const A = () => <a href="https«C»«S»\n«S»evil.example/p">c</a>;`, "escape sequences"],
+    ["a real CRLF after the colon of an HTML attribute", "src/page.html", `<a href="https«C»\r\n«S»«S»evil.example/p">c</a>`, "escape sequences"],
+    ["a line continuation between the slashes of a JS string", "src/probe.ts", `export const u = "https«C»«S»\\\n«S»evil.example/p";`, "escape sequences"],
+    ["a line continuation inside the scheme of a JS string", "src/probe.mjs", `export const u = "ht\\\ntps«C»«S»«S»evil.example/p";`, "escape sequences"],
+    ["a CSS hex escape for the colon, with its trailing space", "src/a.css", `.x { background: url("https\\3a «S»«S»evil.example/p.png"); }`, "escape sequences"],
+    ["a six-digit CSS hex escape for the colon", "src/a.scss", `.x { background: url("https\\00003a«S»«S»evil.example/p.png"); }`, "escape sequences"],
+    ["a CSS escape for a letter of the scheme", "src/a.less", `.x { background: url("h\\74tps«C»«S»«S»evil.example/p.png"); }`, "escape sequences"],
+    ["a real newline between the slashes of a protocol-relative JSX attribute", "src/Probe.tsx", `export const A = () => <a href="«S»\n«S»evil.example/p">c</a>;`, "escape sequences"],
+    ["a numeric colon reference in a .ts string", "src/probe.ts", `export const u = "https«E»#58;«S»«S»evil.example/p";`, "HTML character references"],
+    ["named slash references in a .js string", "src/probe.js", `el.innerHTML = '<a href="«E»sol;«E»sol;evil.example/p">c</a>';`, "HTML character references"],
+    ["a hex colon reference in a .cjs string", "scripts/probe.cjs", `module.exports = "https«E»#x3a;«S»«S»evil.example/p";`, "HTML character references"],
+  ];
+  for (const [name, file, text, how] of refused) {
+    it(`refuses ${name}`, () => {
+      const r = check({ [file]: src(text) + "\n" });
+      expect(reasonOf(r.out), r.out).toBe(RUNTIME);
+      expect(r.out).toContain(`${file}:1  a URL written with ${how}`);
+      expect(r.status).toBe(1);
+    });
+  }
+
+  const ok: [string, string, string][] = [
+    ["a line ending in a scheme word, then a comment line", "src/a.ts", `// the docs say https«C»\n// two slashes start a comment\nexport const a = 1;`],
+    ["a JS line continuation that builds no URL", "src/a.ts", `export const s = "first \\\nsecond";`],
+    ["CSS escapes that build no URL", "src/a.css", `.icon::before { content: "\\f101"; }\n.a\\:hover { color: red; }`],
+    ["a reference in a .ts string that builds no URL", "src/a.ts", `export const s = "Fish «E»amp; chips «E»#8212; 3 «E»lt; 4";`],
+    ["a comment line that starts with two slashes and a dotted name", "src/a.ts", `«S»«S»console.log(x)\nexport const a = 1;`],
+    ["a JSX attribute broken across lines with no URL", "src/A.tsx", `export const A = () => <a\n  title="x"\n  href="«S»help">c</a>;`],
+  ];
+  for (const [name, file, text] of ok) {
+    it(`passes ${name}`, () => {
+      const r = check({ [file]: src(text) + "\n" });
       expect(r.out, r.out).toContain("Outbound-URL guard OK");
       expect(r.status).toBe(0);
     });
