@@ -25,7 +25,7 @@
  * accident and the lazy shortcut. The author who is hiding is what code review
  * is for.
  */
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { closeSync, openSync, readFileSync, readSync, readdirSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, relative, resolve, sep } from "node:path";
 
@@ -57,7 +57,37 @@ const NOT_SOURCE = new Set([".git", "node_modules", "dist-extension", ".claude",
 
 /** Build output living inside a source root. Not written by hand, not shipped. */
 const BUILD_OUTPUT = new Set(["extension/smoke/out"]);
-const SOURCE_EXT = /\.(m|c)?[jt]sx?$|\.json$|\.html$|\.md$/;
+
+/**
+ * Which files are read — ONE rule, used by every step that picks files.
+ *
+ * There were two: the step that looks for unscanned directories, and the
+ * choice of files at the repo root, read only `.js/.ts/.json/.html/.md`, while
+ * the walk under the scan roots read everything. Measured: a new `public/`
+ * holding only an `.svg` with a link and a `.webmanifest` printed OK (the same
+ * directory with a `.json` failed), and so did `bunfig.toml` or `.npmrc` at
+ * the root pointing the package registry somewhere else — while the OK line
+ * said "every absolute URL at the repo root". A URL reaches the network from
+ * an SVG, a manifest or a registry setting as well as from code.
+ *
+ * Every regular file is read, whatever its name. The one exception is a file
+ * with a NUL byte in its first 8 KiB — an image, a font — which no pattern
+ * here can read; those are counted and named in every result.
+ */
+const binarySkipped = [];
+function isBinary(full) {
+  const fd = openSync(full, "r");
+  try {
+    const buf = Buffer.alloc(8192);
+    const n = readSync(fd, buf, 0, buf.length, 0);
+    return buf.subarray(0, n).includes(0);
+  } finally {
+    closeSync(fd);
+  }
+}
+function readable(full) {
+  return statSync(full).isFile() && !isBinary(full);
+}
 const CODEOWNERS = join(REPO, ".github", "CODEOWNERS");
 
 /**
@@ -89,11 +119,21 @@ const CODEOWNERS = join(REPO, ".github", "CODEOWNERS");
  *
  * With no slash at all, `ws:x` is an object key, not a URL, so the host must
  * then show a sign of being one — a dot, `@`, `%`, `[`, or a leading digit.
+ *
+ * A `*` is a host character. It used to be excluded, so a match pattern with a
+ * real host in it — `https://*.evil.example/*`, or `*://evil.example/*` with a
+ * wildcard scheme — read as carrying no destination and printed OK, although
+ * it names exactly the hosts it reaches. What is left alone is the one pattern
+ * that names no host: a host that is `*` and nothing else (`https://*`,
+ * `https://*\/…`, `*://*\/…`).
  */
-const HOST_CHAR = "[^\\s\"'`<>\\\\/…*$(){},;|^]";
+const HOST_CHAR = "[^\\s\"'`<>\\\\/…$(){},;|^]";
+const SLASHES = "(?:/|\\\\(?![nrtvbfux0-9]))+";
+const NOT_BARE_STAR = "(?!\\*(?:[/\\s\"'`<>),;\\]]|$))";
 const URL_RE = new RegExp(
-  "(?<![a-z0-9+.-])(?:https?|wss?):" +
-    `(?:(?:/|\\\\(?![nrtvbfux0-9]))+${HOST_CHAR}+|[0-9]${HOST_CHAR}*|${HOST_CHAR}*[.@%[]${HOST_CHAR}*)`,
+  "(?<![a-z0-9+.-])(?:(?:https?|wss?):" +
+    `(?:${SLASHES}${NOT_BARE_STAR}${HOST_CHAR}+|[0-9]${HOST_CHAR}*|${HOST_CHAR}*[.@%[]${HOST_CHAR}*)` +
+    `|\\*:${SLASHES}${NOT_BARE_STAR}${HOST_CHAR}+)`,
   "gi",
 );
 
@@ -293,19 +333,29 @@ function hiddenInJoinedBase64(text) {
   return false;
 }
 
+const OWNER = /^(?:@[A-Za-z0-9][A-Za-z0-9-]*(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)?|[^@\s]+@[^@\s]+\.[^@\s]+)$/;
+
 /** Repo-relative, POSIX-separated paths that CODEOWNERS assigns to someone. */
 function gatedPaths() {
   const rules = [];
   for (const raw of readFileSync(CODEOWNERS, "utf8").split("\n")) {
-    const line = raw.trim();
-    if (!line || line.startsWith("#")) continue;
+    // A `#` starts a comment wherever it sits — GitHub's own example has one
+    // after the owners, and escaping it with `\` is documented as not working.
+    // Reading the line whole counted `/src/b.ts  # owned by @someone later` as
+    // owned, because one of its words contained an `@`.
+    const line = raw.split("#")[0].trim();
+    if (!line) continue;
     const [pattern, ...owners] = line.split(/\s+/);
     if (!pattern) continue;
     // A pattern with no owner after it REMOVES ownership from its files —
     // GitHub applies the last matching line, and an ownerless one overrides
     // the `*` floor. Reading it as "gated" would let a URL sit in exactly the
     // file nobody has to review.
-    if (!owners.some((o) => o.includes("@"))) continue;
+    if (owners.length === 0) continue;
+    // GitHub skips a line with invalid syntax, so a line is counted only when
+    // every owner on it has a form GitHub accepts: `@user`, `@org/team`, or an
+    // email address.
+    if (!owners.every((o) => OWNER.test(o))) continue;
     rules.push(pattern.replace(/^\//, ""));
   }
   return rules;
@@ -329,7 +379,8 @@ function* walk(dir) {
     const rel = relative(REPO, full).split(sep).join("/");
     if (BUILD_OUTPUT.has(rel) || entry === "node_modules") continue;
     if (statSync(full).isDirectory()) yield* walk(full);
-    else yield full;
+    else if (readable(full)) yield full;
+    else if (statSync(full).isFile() && !binarySkipped.includes(rel)) binarySkipped.push(rel);
   }
 }
 
@@ -343,8 +394,9 @@ function assertNoUnscannedSourceRoot() {
     if (NOT_SOURCE.has(entry) || SCAN_ROOTS.includes(entry)) continue;
     const full = join(REPO, entry);
     if (!statSync(full).isDirectory()) continue;
-    for (const file of walk(full)) {
-      if (SOURCE_EXT.test(file)) { missed.push(entry); break; }
+    for (const _ of walk(full)) {
+      missed.push(entry);
+      break;
     }
   }
   if (missed.length) {
@@ -365,7 +417,12 @@ const offenders = [];
 const rootFiles = readdirSync(REPO)
   .sort()
   .map((entry) => join(REPO, entry))
-  .filter((full) => !statSync(full).isDirectory() && SOURCE_EXT.test(full));
+  .filter((full) => {
+    if (statSync(full).isDirectory()) return false;
+    if (readable(full)) return true;
+    if (statSync(full).isFile()) binarySkipped.push(relative(REPO, full).split(sep).join("/"));
+    return false;
+  });
 
 const assembled = [];
 
@@ -399,7 +456,10 @@ for (const file of [...rootFiles, ...SCAN_ROOTS.flatMap((root) => [...walk(join(
   offenders.push({ rel, urls: [...found] });
 }
 
+const skippedNote = `${binarySkipped.length} binary file${binarySkipped.length === 1 ? "" : "s"} not read${binarySkipped.length ? ": " + binarySkipped.join(", ") : ""}`;
+
 if (assembled.length) {
+  console.error(`(${skippedNote}.)\n`);
   console.error("Outbound-URL guard FAILED — URLs built at runtime, so no check can read the host:\n");
   for (const line of assembled) console.error(`  • ${line}`);
   console.error("\nWrite the full URL as one literal in a CODEOWNERS-gated file.");
@@ -407,6 +467,7 @@ if (assembled.length) {
 }
 
 if (offenders.length) {
+  console.error(`(${skippedNote}.)\n`);
   console.error("Outbound-URL guard FAILED — absolute URLs in ungated files:\n");
   for (const { rel, urls } of offenders) {
     console.error(`  • ${rel}`);
@@ -422,5 +483,5 @@ if (offenders.length) {
 }
 
 console.log(
-  `Outbound-URL guard OK — every absolute URL at the repo root and under ${SCAN_ROOTS.map((r) => r + "/").join(", ")} sits in a CODEOWNERS-gated file, and none is assembled at runtime.`,
+  `Outbound-URL guard OK — every absolute URL in a text file at the repo root and under ${SCAN_ROOTS.map((r) => r + "/").join(", ")} sits in a CODEOWNERS-gated file, and none is assembled at runtime (${skippedNote}).`,
 );

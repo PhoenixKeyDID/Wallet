@@ -102,6 +102,9 @@
 # reaches more people than one in any source file, and for a long time neither
 # was scanned at all.
 /README.md                               @AladinContract @GreenSun-Tech
+# The Apache-2.0 text, verbatim; its two links are the license's own. Named so
+# `check:urls`, which now reads every text file at the root, has a line to see.
+/LICENSE                                 @AladinContract @GreenSun-Tech
 /docs/                                   @AladinContract @GreenSun-Tech
 
 # The gate itself, and the rules that decide what is gated.

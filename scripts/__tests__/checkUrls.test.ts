@@ -198,6 +198,10 @@ describe("check:urls — inputs that used to print OK", () => {
     ["a newline escape after the colon", `export const u = "https«C»\\n«S»«S»evil.example/";`, RUNTIME],
     ["a carriage-return escape between the slashes", `export const u = "https«C»«S»\\r«S»evil.example/";`, RUNTIME],
     ["a colon written as a braced unicode escape", `export const u = "https\\u{3a}«S»«S»evil.example/";`, RUNTIME],
+    // A `*` used to end the host, so a match pattern naming real hosts read as
+    // naming none.
+    ["a match pattern with a wildcard subdomain of a real host", `export const m = "https«C»«S»«S»*.evil.example/*";`, UNGATED],
+    ["a match pattern with a wildcard scheme and a real host", `export const m = "*«C»«S»«S»evil.example/*";`, UNGATED],
   ];
 
   for (const [name, fixture, reason] of cases) {
@@ -214,6 +218,77 @@ describe("check:urls — inputs that used to print OK", () => {
       ["/src/"],
     );
     expect(reasonOf(r.out)).toBe(RUNTIME);
+    expect(r.status).toBe(1);
+  });
+});
+
+describe("check:urls — match patterns that name no host", () => {
+  it("passes a bare wildcard host, with any or a wildcard scheme", () => {
+    const r = check({ "src/a.ts": src(`export const m = ["https«C»«S»«S»*«S»*", "https«C»«S»«S»*", "*«C»«S»«S»*«S»*"];\n`) });
+    expect(r.out, r.out).toContain("Outbound-URL guard OK");
+    expect(r.status).toBe(0);
+  });
+});
+
+describe("check:urls — one rule for which files are read", () => {
+  const LINK = src(`<a href="https«C»«S»«S»evil.example/claim">claim</a>`);
+  it("refuses a new directory holding only an SVG and a web manifest", () => {
+    const r = check({
+      "public/icon.svg": `<svg xmlns="x">${LINK}</svg>\n`,
+      "public/site.webmanifest": src(`{"start_url": "https«C»«S»«S»evil.example/"}\n`),
+    });
+    expect(r.out, r.out).toContain("source directories nobody scans");
+    expect(r.out).toContain("public/");
+    expect(r.status).toBe(1);
+  });
+
+  const rootFiles: [string, string][] = [
+    ["bunfig.toml", src(`[install]\nregistry = "https«C»«S»«S»evil.example/npm/"\n`)],
+    [".npmrc", src(`registry=https«C»«S»«S»evil.example/npm/\n`)],
+    ["icon.svg", `<svg xmlns="x">${LINK}</svg>\n`],
+  ];
+  for (const [name, text] of rootFiles) {
+    it(`refuses a URL in ${name} at the repo root`, () => {
+      const r = check({ [name]: text });
+      expect(reasonOf(r.out), r.out).toBe(UNGATED);
+      expect(r.out).toContain(name);
+      expect(r.status).toBe(1);
+    });
+  }
+
+  it("refuses an SVG under a scan root", () => {
+    const r = check({ "src/icon.svg": `<svg xmlns="x">${LINK}</svg>\n` });
+    expect(reasonOf(r.out), r.out).toBe(UNGATED);
+    expect(r.status).toBe(1);
+  });
+
+  it("skips a binary file, and says so", () => {
+    const r = check({ "src/img.png": "\u0000PNG " + LINK });
+    expect(r.out, r.out).toContain("Outbound-URL guard OK");
+    expect(r.out).toContain("1 binary file not read: src/img.png");
+    expect(r.status).toBe(0);
+  });
+});
+
+describe("check:urls — CODEOWNERS comments and owner syntax", () => {
+  const URL_FILE = { "src/a.ts": src(`export const a = "https«C»«S»«S»evil.example/x";\n`) };
+  it("counts a line with a comment after a real owner", () => {
+    const r = check(URL_FILE, [], ["/src/a.ts  @AladinContract  # the provider"]);
+    expect(r.out, r.out).toContain("Outbound-URL guard OK");
+    expect(r.status).toBe(0);
+  });
+  it("counts an owner given as an email address", () => {
+    const r = check(URL_FILE, [], ["/src/a.ts  dev@example.com"]);
+    expect(r.status, r.out).toBe(0);
+  });
+  it("does not count an owner named only inside a trailing comment", () => {
+    const r = check(URL_FILE, [], ["/src/a.ts  # owned by @AladinContract later"]);
+    expect(reasonOf(r.out), r.out).toBe(UNGATED);
+    expect(r.status).toBe(1);
+  });
+  it("does not count a line GitHub skips for an owner it cannot parse", () => {
+    const r = check(URL_FILE, [], ["/src/a.ts  (@AladinContract)"]);
+    expect(reasonOf(r.out), r.out).toBe(UNGATED);
     expect(r.status).toBe(1);
   });
 });
