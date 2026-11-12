@@ -163,6 +163,19 @@ describe("classifyRun", () => {
     expect(classifyRun(1, out)).toBe("broken");
   });
 
+  // Vitest prints the failing test's source under the error. A test that
+  // quotes "Transform failed" in its source showed it there, and the whole
+  // run read "broken" although the test failed on an assertion.
+  it("does not read 'Transform failed' in the code frame under an assertion failure", () => {
+    const out = ASSERTION.replace(
+      "AssertionError: expected 1 to be 2 // Object.is equality",
+      "AssertionError: expected 'caught' to be 'broken' // Object.is equality\n" +
+        "    158|       'Error: Transform failed with 1 error:\\nmod-syn.ts:1:44: ERROR: Unexpected \";\"',",
+    );
+    expect(out).toMatch(/Transform failed/);
+    expect(classifyRun(1, out)).toBe("caught");
+  });
+
   it("does not read a typo-class error quoted in the middle of an assertion message", () => {
     const out = ASSERTION.replace(
       "AssertionError: expected 1 to be 2",

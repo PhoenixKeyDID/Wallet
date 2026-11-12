@@ -165,34 +165,39 @@ const MUTANTS = [
     name: "page-world: the package gate no longer compiles content.js/inpage.js as classic scripts",
     file: PKG_GATE,
     from: "    new vm.Script(src, { filename: f });",
-    to: "    void vm;",
+    to: "    void vm; /* MUT_PKG_NO_CLASSIC_COMPILE */",
+    marker: "MUT_PKG_NO_CLASSIC_COMPILE",
   },
   {
     name: "page-world: the package gate no longer refuses a module outside the relay and the rules",
     file: PKG_GATE,
     from: "        if (!PAGE_WORLD_MAY_BUNDLE.has(m)) {",
-    to: "        if (false) {",
+    to: "        if (false /* MUT_PKG_BUNDLE_ANY */) {",
+    marker: "MUT_PKG_BUNDLE_ANY",
   },
   {
     name: "page-world: the package gate reads a missing module receipt as nothing extra",
     file: PKG_GATE,
     from: "if (!existsSync(join(DIST, PAGE_WORLD_RECEIPT))) {",
-    to: "if (false) {",
+    to: "if (false /* MUT_PKG_NO_RECEIPT_OK */) {",
+    marker: "MUT_PKG_NO_RECEIPT_OK",
   },
   {
     name: "page-world: the package gate lets a dynamic import() through",
     file: PKG_GATE,
     from: "  if (parses && /(?<![\\w$.])import\\s*\\(/.test(src)) {",
-    to: "  if (false) {",
+    to: "  if (false /* MUT_PKG_DYNAMIC_IMPORT */) {",
+    marker: "MUT_PKG_DYNAMIC_IMPORT",
   },
   {
     name: "page-world: the build emits ES modules importing a shared protocol chunk again",
     file: EXT_VITE,
     from: '            format: "iife",\n            inlineDynamicImports: true,',
     to:
-      '            format: "es",\n' +
+      '            format: "es", // MUT_EXT_VITE_ES_CHUNKS\n' +
       '            manualChunks: (id: string) => (id.includes("rpc/protocol") ? "protocol" : undefined),\n' +
       '            chunkFileNames: "[name].js",',
+    marker: "MUT_EXT_VITE_ES_CHUNKS",
   },
   // ── Round six: a recovery phrase must not reach the clipboard; the popup must
   // not say the web page's sentences; the stylesheet gate must actually gate ──
@@ -1267,14 +1272,18 @@ const MUTANTS = [
         to:
           'import type { PhoenixNetwork } from "@/lib/cardano";\n\n' +
           "type Mods = Record<string, Record<string, (p: { value: string }) => JSX.Element>>;\n" +
-          "const meta = import.meta as unknown as { env?: unknown };\n" +
-          'const mods = (meta as unknown as { glob: (p: string, o: { eager: true }) => Mods }).glob("../C*.tsx", { eager: true });\n' +
-          "const Btn = Object.values(Object.values(mods)[0])[0];\n\n" +
+          "const meta = import.meta as unknown as { env?: unknown };\n\n" +
+          "// MUT_COPY_GLOB_VIA_META: called inside the component, not at module load —\n" +
+          "// vite rewrites only a literal `import.meta.glob`, so this call has no glob to\n" +
+          "// run and would throw at load in every test that imports the badge.\n" +
           "export function Shown({ secret }: { secret: string }) {\n" +
+          '  const mods = (meta as unknown as { glob: (p: string, o: { eager: true }) => Mods }).glob("../C*.tsx", { eager: true });\n' +
+          "  const Btn = Object.values(Object.values(mods)[0])[0];\n" +
           "  return <Btn value={secret} />;\n" +
           "}",
       },
     ],
+    marker: "MUT_COPY_GLOB_VIA_META",
   },
   {
     name: "a locale file that parses to null passes as a namespace with no keys",
@@ -2096,8 +2105,9 @@ const MUTANTS = [
   // runner has already imported the unmutated grader, so these runs are
   // graded by the real one. ──
   ...[
-    ["a failed suite", "/Failed Suites|Unhandled Errors?|Transform failed/", "/MUT_CLASSIFY_SUITES|Unhandled Errors?|Transform failed/"],
-    ["a transform failure", "/Failed Suites|Unhandled Errors?|Transform failed/", "/Failed Suites|Unhandled Errors?|MUT_CLASSIFY_TRANSFORM/"],
+    ["a failed suite", "/Failed Suites|Unhandled Errors?/.test(text) ||", "/MUT_CLASSIFY_SUITES|Unhandled Errors?/.test(text) ||"],
+    ["a transform failure", "/Failed Suites|Unhandled Errors?/.test(text) || TRANSFORM_FAILED.test(text)", "/Failed Suites|Unhandled Errors?/.test(text) || /MUT_CLASSIFY_TRANSFORM/.test(text)"],
+    ["the FAIL-header anchor of the transform rule of", 'const TRANSFORM_FAILED = new RegExp(AFTER_FAIL + "Error: Transform failed)", "m");', 'const TRANSFORM_FAILED = /Transform failed/; /* MUT_CLASSIFY_TRANSFORM_ANYWHERE */'],
     ["the FAIL-header anchor of", 'const AFTER_FAIL = "^[ \\\\t]*FAIL[ \\\\t][^\\\\n]*\\\\n[ \\\\t]*(?:";', 'const AFTER_FAIL = "^\\\\s*(?:" /* MUT_CLASSIFY_ANCHOR */;'],
     ["the type-checked switch of", "  if ((compiled ? COMPILER_MISSES : TYPO_CLASS).test(text)) return \"broken\";", "  if (TYPO_CLASS.test(text) /* MUT_CLASSIFY_IGNORE_COMPILED */) return \"broken\";"],
     ["`is not defined` after a type-check among", 'const COMPILER_MISSES = new RegExp(AFTER_FAIL + ["ReferenceError: .* is not defined", "SyntaxError: "]', 'const COMPILER_MISSES = new RegExp(AFTER_FAIL + ["MUT_CLASSIFY_COMPILED_REF", "SyntaxError: "]'],
