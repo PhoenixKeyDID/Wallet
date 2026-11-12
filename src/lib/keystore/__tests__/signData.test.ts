@@ -281,6 +281,49 @@ describe("the screen shows text only when the text is what is signed", () => {
     expect(shown).toEqual([]);
   });
   it("still shows plain emoji, and a heart with its variation selector, as text", () => {
-    for (const t of ["gm 😀", "🚀 to the moon", "❤️"]) expect(printableText(Buffer.from(t, "utf8"))).toBe(t);
+    for (const t of ["gm 😀", "🚀 to the moon", "❤️", "❤\ufe0e", "gm ☺️ 10 ADA"]) {
+      expect(printableText(Buffer.from(t, "utf8"))).toBe(t);
+    }
+  });
+
+  // The C1 controls U+0080–U+009F (NEL U+0085 breaks a line in some renderers)
+  // and DEL U+007F are Cc, not Cf: only the control range catches them.
+  it("shows hex only for DEL and the C1 controls U+007F–U+009F", () => {
+    for (const cp of [0x7f, 0x80, 0x85, 0x8d, 0x9b, 0x9f]) expect(hidden(cp)).toBeNull();
+    expect(printableText(Buffer.from("a\u00a0b", "utf8"))).toBe("a\u00a0b"); // first code point past the range
+  });
+
+  // Default-ignorable code points are drawn as nothing, and most are not Cf.
+  it("shows hex only for default-ignorable code points that are not format characters", () => {
+    const cases: [number, string][] = [
+      [0xfe0f, "variation selector-16 with no emoji before it"],
+      [0xe0100, "variation selector-17"],
+      [0x034f, "combining grapheme joiner"],
+      [0x3164, "Hangul filler"],
+      [0x115f, "Hangul choseong filler"],
+      [0xffa0, "halfwidth Hangul filler"],
+      [0x180b, "Mongolian free variation selector one"],
+      [0x17b4, "Khmer vowel inherent AQ"],
+    ];
+    const shown = cases.filter(([cp]) => hidden(cp) !== null).map(([, name]) => name);
+    expect(shown).toEqual([]);
+    expect(printableText(Buffer.from("pay\ufe0f 10", "utf8"))).toBeNull();
+    expect(printableText(Buffer.from("❤\u034f", "utf8"))).toBeNull(); // only FE0E/FE0F are let through after an emoji
+  });
+
+  // A message that ends after a page of blank space reads as finished.
+  it("shows hex only for three or more blank lines in a row", () => {
+    expect(printableText(Buffer.from("a\n\n\nb", "utf8"))).toBe("a\n\n\nb"); // two blank lines
+    expect(printableText(Buffer.from("a\n\n\n\nb", "utf8"))).toBeNull();
+    expect(printableText(Buffer.from("a\n \n\t\n  \nb", "utf8"))).toBeNull(); // blank, not empty
+    expect(printableText(Buffer.from("a" + "\n".repeat(60) + "send all to addr_test1evil", "utf8"))).toBeNull();
+  });
+  it("shows hex only for long whitespace at the start or the end", () => {
+    expect(printableText(Buffer.from("abc\n", "utf8"))).toBe("abc\n");
+    expect(printableText(Buffer.from("abc" + " ".repeat(16), "utf8"))).toBe("abc" + " ".repeat(16));
+    expect(printableText(Buffer.from("abc" + " ".repeat(17), "utf8"))).toBeNull();
+    expect(printableText(Buffer.from(" ".repeat(17) + "abc", "utf8"))).toBeNull();
+    expect(printableText(Buffer.from("abc\n\n", "utf8"))).toBeNull();
+    expect(printableText(Buffer.from("\n\nabc", "utf8"))).toBeNull();
   });
 });

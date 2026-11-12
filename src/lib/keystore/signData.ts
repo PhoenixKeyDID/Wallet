@@ -112,6 +112,22 @@ const hexOfBech32 = (a: string) => addressBytes(a)?.toString("hex") ?? "";
  *    digit inside them also sends the text to hex — which is the safe
  *    direction. A test walks every code point of every RTL `\p{Script=…}` the
  *    engine knows and checks it is covered.
+ * 4. **Characters Unicode says to draw as nothing**
+ *    (`\p{Default_Ignorable_Code_Point}`): the combining grapheme joiner
+ *    U+034F, the Hangul fillers U+115F / U+1160 / U+3164 / U+FFA0, the
+ *    Mongolian free variation selectors U+180B–180D, the Khmer inherent vowels
+ *    U+17B4 / U+17B5, and the variation selectors U+FE00–FE0F and
+ *    U+E0100–E01EF. Most are not `\p{Cf}`, so rule 2 does not see them. One
+ *    pair is let through: U+FE0E / U+FE0F straight after an emoji
+ *    (`\p{Extended_Pictographic}`) only picks text or colour presentation —
+ *    "❤️" is a heart followed by U+FE0F, and refusing it would send ordinary
+ *    messages to hex.
+ * 5. **Blank space that pushes text out of sight**: three or more blank lines
+ *    in a row, or a long run of whitespace at the start or the end (more than
+ *    16 characters, or two or more line breaks). A message that ends after a
+ *    page of newlines reads as finished while the part that matters sits below
+ *    — the screen also prints the byte and line count, so even what is shown
+ *    as text has a size that can be checked.
  */
 export function printableText(bytes: Uint8Array): string | null {
   let text: string;
@@ -126,8 +142,20 @@ export function printableText(bytes: Uint8Array): string | null {
   if (/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/.test(text)) return null;
   if (NOT_DRAWN_AS_ITSELF.test(text)) return null;
   if (RIGHT_TO_LEFT.test(text)) return null;
+  if (DRAWN_AS_NOTHING.test(text.replace(EMOJI_PRESENTATION, "$1"))) return null;
+  if (BLANK_LINES.test(text)) return null;
+  const edges = [/^\s+/.exec(text)?.[0] ?? "", /\s+$/.exec(text)?.[0] ?? ""];
+  if (edges.some((w) => w.length > MAX_EDGE_WHITESPACE || w.split("\n").length > 2)) return null;
   return text;
 }
+
+/** Default-ignorable code points: Unicode's "draw as nothing" set. */
+const DRAWN_AS_NOTHING = /\p{Default_Ignorable_Code_Point}/u;
+/** A text or emoji presentation selector straight after an emoji — the one ignorable use let through. */
+const EMOJI_PRESENTATION = /(\p{Extended_Pictographic})[\ufe0e\ufe0f]/gu;
+/** Three blank lines in a row: four line breaks with only spaces or tabs between them. */
+const BLANK_LINES = /\n[ \t]*\n[ \t]*\n[ \t]*\n/;
+const MAX_EDGE_WHITESPACE = 16;
 
 /** Format, line/paragraph separator, private-use and unassigned code points. */
 const NOT_DRAWN_AS_ITSELF = /[\p{Cf}\p{Zl}\p{Zp}\p{Co}\p{Cn}]/u;
