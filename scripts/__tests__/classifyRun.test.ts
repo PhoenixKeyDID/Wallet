@@ -140,6 +140,37 @@ describe("classifyRun", () => {
     expect(classifyRun(1, out)).toBe("caught");
   });
 
+  // The three below each hold a line every later rule would grade "caught",
+  // so each one is red only through the rule its name gives.
+  it("grades a failed suite beside test failures in another file as broken", () => {
+    const out = [
+      BEFORE_ALL.split("\n").slice(0, 3).join("\n"),
+      ASSERTION.replace(SUMMARY_FAILED, ""),
+      " Test Files  2 failed (2)",
+      "      Tests  3 failed | 2 passed (5)",
+    ].join("\n");
+    expect(classifyRun(1, out)).toBe("broken");
+  });
+
+  // A test that imports a module at run time (`await import`, `vi.importActual`)
+  // reports a transform failure as its own error, not as a failed suite.
+  it("grades a transform failure raised inside a test as broken", () => {
+    const out = ASSERTION.replace(
+      "AssertionError: expected 1 to be 2 // Object.is equality",
+      'Error: Transform failed with 1 error:\nmod-syn.ts:1:44: ERROR: Unexpected ";"',
+    );
+    expect(out).not.toMatch(/Failed Suites/);
+    expect(classifyRun(1, out)).toBe("broken");
+  });
+
+  it("does not read a typo-class error quoted in the middle of an assertion message", () => {
+    const out = ASSERTION.replace(
+      "AssertionError: expected 1 to be 2",
+      "AssertionError: expected 'ReferenceError: x is not defined' to be 'ok'",
+    );
+    expect(classifyRun(1, out)).toBe("caught");
+  });
+
   it("grades a failed run with no test failure at all (vitest did not start) as broken", () => {
     expect(classifyRun(1, "Error: spawn npx ENOENT")).toBe("broken");
   });

@@ -80,6 +80,7 @@ const TX = "src/lib/cardano/tx.ts";
 // unanswered here before: two table rows named after a detector were going red
 // because a *count* elsewhere fell, not because the detector did its job.
 const NOTICE_TEST = "src/components/wallet/__tests__/moneyNotice.test.ts";
+const CLASSIFY_RUN = "scripts/lib/classify-run.mjs";
 const TESTS = [
   "src/lib/cardano/__tests__/history.test.ts",
   "src/lib/cardano/__tests__/price.test.ts",
@@ -107,6 +108,7 @@ const TESTS = [
   "src/lib/keystore/__tests__/signForeign.test.ts",
   "extension/background/__tests__/worker.test.ts",
   "extension/src/__tests__/DataSignView.test.tsx",
+  "scripts/__tests__/classifyRun.test.ts",
 ];
 
 /**
@@ -1879,6 +1881,26 @@ const MUTANTS = [
     to: "{false /* MUT_VIEW_RECIPIENT_DATUM */ && <span className=\"approve-note\">{t(\"cip30_output_datum\")}</span>}",
     marker: "MUT_VIEW_RECIPIENT_DATUM",
   },
+  // ── The grader of this file. Each rule in classifyRun deleted on its own:
+  // a rule no test needs is a rule a refactor drops without a sound. The
+  // runner has already imported the unmutated grader, so these runs are
+  // graded by the real one. ──
+  ...[
+    ["a failed suite", "/Failed Suites|Unhandled Errors?|Transform failed/", "/MUT_CLASSIFY_SUITES|Unhandled Errors?|Transform failed/"],
+    ["a transform failure", "/Failed Suites|Unhandled Errors?|Transform failed/", "/Failed Suites|Unhandled Errors?|MUT_CLASSIFY_TRANSFORM/"],
+    ["the start-of-line anchor of", '  "^\\\\s*(?:" +', '  "(?:" /* MUT_CLASSIFY_ANCHOR */ +'],
+    ["a SyntaxError among", '      "SyntaxError: ",', '      "MUT_CLASSIFY_SYNTAX",'],
+    ["`is not a function` among", '      "TypeError: .* is not a function",', '      "MUT_CLASSIFY_NOT_FUNCTION",'],
+    ["`before initialization` among", "      \"ReferenceError: Cannot access '.*' before initialization\",", '      "MUT_CLASSIFY_BEFORE_INIT",'],
+    ["`is not a constructor` among", '      "TypeError: .* is not a constructor",', '      "MUT_CLASSIFY_NOT_CONSTRUCTOR",'],
+    ["`is not iterable` among", '      "TypeError: .* is not iterable",', '      "MUT_CLASSIFY_NOT_ITERABLE",'],
+  ].map(([what, from, to]) => ({
+    name: `classify-run: ${what} the broken rules is no longer read`,
+    file: CLASSIFY_RUN,
+    from,
+    to,
+    marker: /MUT_CLASSIFY_[A-Z_]+/.exec(to)[0],
+  })),
 ];
 
 /**
