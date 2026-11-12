@@ -86,6 +86,22 @@ describe("TxSummaryView — what the approval window shows", () => {
     expect(text).toContain(PAYEE);
   });
 
+  // The tokens each recipient gets, and whether a datum rides on that output,
+  // are printed on that recipient's line: a script address receiving LAMP
+  // under a datum is where a contract keeps someone's money.
+  it("prints each recipient's tokens and its datum flag on its own line", () => {
+    const text = shown({
+      toOthers: [{ address: PAYEE, lovelace: BigInt(2_000_000), assets: [token(REAL, BigInt(9))], mine: false, datum: true }],
+    });
+    expect(text).toContain(en.cip30_paying);
+    expect(text).toContain(`9 LAMP · ${policyIdShort(REAL)}`);
+    expect(text).toContain(en.cip30_output_datum);
+
+    const plain = shown({ toOthers: [{ address: PAYEE, lovelace: BigInt(2_000_000), assets: [], mine: false, datum: false }] });
+    expect(plain).not.toContain(en.cip30_output_datum);
+    expect(plain).not.toContain("LAMP");
+  });
+
   // A drip-pot claim pays LAMP to this wallet's own address under a datum. It
   // is change — the wallet sees and spends it — but the datum on it must still
   // be on the screen, with the amount, the token and the address.
