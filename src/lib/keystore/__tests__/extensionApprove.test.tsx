@@ -13,7 +13,7 @@ import { render, cleanup, fireEvent, waitFor, act, within } from "@testing-libra
 import { I18nextProvider } from "react-i18next";
 import { Buffer } from "buffer";
 import BigNumber from "bignumber.js";
-import { Encoder } from "@stricahq/cbors";
+import { Decoder, Encoder } from "@stricahq/cbors";
 import { utils as tyUtils, types as tyTypes } from "@stricahq/typhonjs";
 import en from "../../../../locales/en/wallet.json";
 import { DEFAULT_LOCK_TIMEOUT_MS } from "@/lib/keystore/session";
@@ -23,6 +23,9 @@ import { decodeUtxosToInputs } from "@/lib/cardano/tx";
 import { baseAddress } from "@/lib/cardano/address";
 import { bech32 } from "bech32";
 import { verifyCip8 } from "./vendor/lamp-drip-pot/cip8";
+import { formatAda } from "@/lib/cardano/provider";
+import { blake2b224, blake2b256 } from "@/lib/cardano/hash";
+import { dripClaimTxHex, AUTH_NAME } from "./fixtures/dripPotClaim";
 
 const mocks = vi.hoisted(() => ({
   wallets: [] as unknown[],
@@ -62,6 +65,7 @@ let acct0Primary: string;
 let acct1Addresses: string[];
 let acct1RewardHex: string;
 let acct1StakeKeyHash: string;
+let acct1: Awaited<ReturnType<typeof accountFromEntropy>>;
 
 beforeAll(async () => {
   (globalThis as unknown as { chrome: unknown }).chrome = {
@@ -94,6 +98,7 @@ beforeAll(async () => {
   acct1Addresses = allAddresses(a1);
   acct1RewardHex = Buffer.from(bech32.fromWords(bech32.decode(a1.rewardAddress, 1023).words)).toString("hex");
   acct1StakeKeyHash = a1.stakeKeyHashHex;
+  acct1 = a1;
   mocks.wallets.push({
     id: "w1",
     label: "Main",
@@ -369,6 +374,50 @@ describe("signTx: a signing step that fails is TxSignError.ProofGeneration (1)",
       ok: false,
       error: { code: 1, info: expect.stringContaining("koios down") },
     });
+  });
+});
+
+describe("signTx on a LAMP drip-pot claim, partialSign = true", () => {
+  it("shows the burn and the collateral at risk, and Sign returns the witness set for this wallet's two keys", async () => {
+    const fee = { txId: "71".repeat(32), index: 1 };
+    const coll = { txId: "72".repeat(32), index: 0, lovelace: BigInt(5_000_000) };
+    const at = (bech: string) => tyUtils.getAddressFromString(bech) as tyTypes.ShelleyAddress;
+    const inputs = () => [
+      { txId: fee.txId, index: fee.index, amount: new BigNumber("5000000"), tokens: [], address: at(acct1.external[0]!.address) },
+      { txId: coll.txId, index: coll.index, amount: new BigNumber("5000000"), tokens: [], address: at(acct1.external[1]!.address) },
+    ];
+    mocks.fetchUtxos.mockResolvedValue(inputs());
+    const cbor = dripClaimTxHex({
+      walletAddressHex: at(acct1.external[0]!.address).getHex(),
+      feeInput: fee,
+      collateralInput: coll,
+      network: 0,
+    });
+    const { port, view } = await unlocked();
+    act(() => port.deliver({ type: "request", id: "c1", origin: ORIGIN, method: "signTx", params: [cbor, true] }));
+    const approve = await view.findByText(en.cip30_approve);
+    await waitFor(() => expect((approve as HTMLButtonElement).disabled).toBe(false));
+    const text = view.container.textContent ?? "";
+    expect(text).toContain(en.cip30_burns);
+    expect(text).toContain(AUTH_NAME.slice(0, 8));
+    expect(text).toContain(en.cip30_collateral_risk.replace("{{ada}}", formatAda(BigInt(1_500_000))));
+    fireEvent.click(approve);
+    await waitFor(() => expect(port.sent.find((m) => m.id === "c1")).toBeDefined());
+    const res = port.sent.find((m) => m.id === "c1")!.result!;
+    expect(res.ok).toBe(true);
+    const ws = Decoder.decode(Buffer.from(res.value as string, "hex")).value as Map<number, [Buffer, Buffer][]>;
+    expect([...ws.keys()]).toEqual([0]);
+    const hashes = Array.from(ws.get(0)!).map(([pub]) => Buffer.from(blake2b224(pub)).toString("hex")).sort();
+    expect(hashes).toEqual([acct1.external[0]!.keyHashHex, acct1.external[1]!.keyHashHex].sort());
+    // Each signature checks over the hash of the body bytes exactly as sent.
+    const tx = Buffer.from(cbor, "hex");
+    const body = Buffer.from(Encoder.encode((Decoder.decode(tx).value as unknown[])[0]));
+    expect(tx.subarray(1, 1 + body.length).equals(body)).toBe(true);
+    const { verify, createPublicKey } = await import("node:crypto");
+    for (const [pub, sig] of ws.get(0)!) {
+      const spki = Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), pub]);
+      expect(verify(null, Buffer.from(blake2b256(body)), createPublicKey({ key: spki, format: "der", type: "spki" }), sig)).toBe(true);
+    }
   });
 });
 

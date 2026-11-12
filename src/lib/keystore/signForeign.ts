@@ -140,6 +140,21 @@ export function requiredKeysFor(
   if (!(decoded instanceof Map)) throw new LocalSignError("sign_foreign_not_a_tx");
   const b = decoded as Map<number, unknown>;
 
+  // `is_valid = false` is the transaction declaring its own script fails, which
+  // makes the ledger take the collateral and do nothing else. The screen refuses
+  // it (`summariseTx`); the key-holding function refuses it again, for the same
+  // reason as every rule below. Read from the whole transaction, since the flag
+  // sits beside the body, not in it.
+  let whole: unknown;
+  try {
+    whole = Decoder.decode(txBytes).value;
+  } catch {
+    throw new LocalSignError("sign_foreign_not_a_tx");
+  }
+  if (Array.isArray(whole) && whole.length >= 3 && whole[2] === false) {
+    throw new LocalSignError("sign_foreign_declared_invalid");
+  }
+
   const need: string[] = [];
   const add = (hashHex: string) => {
     if (!need.includes(hashHex)) need.push(hashHex);
