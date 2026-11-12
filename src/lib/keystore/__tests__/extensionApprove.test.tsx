@@ -21,6 +21,8 @@ import { accountFromEntropy, allAddresses, primaryAddress, sealVault } from "@/l
 import type { StoredWallet } from "@/lib/keystore/storage";
 import { decodeUtxosToInputs } from "@/lib/cardano/tx";
 import { baseAddress } from "@/lib/cardano/address";
+import { bech32 } from "bech32";
+import { verifyCip8 } from "./vendor/lamp-drip-pot/cip8";
 
 const mocks = vi.hoisted(() => ({
   wallets: [] as unknown[],
@@ -58,6 +60,8 @@ let i18n: import("i18next").i18n;
 let acct1Primary: string;
 let acct0Primary: string;
 let acct1Addresses: string[];
+let acct1RewardHex: string;
+let acct1StakeKeyHash: string;
 
 beforeAll(async () => {
   (globalThis as unknown as { chrome: unknown }).chrome = {
@@ -88,6 +92,8 @@ beforeAll(async () => {
   acct0Primary = primaryAddress(a0);
   acct1Primary = primaryAddress(a1);
   acct1Addresses = allAddresses(a1);
+  acct1RewardHex = Buffer.from(bech32.fromWords(bech32.decode(a1.rewardAddress, 1023).words)).toString("hex");
+  acct1StakeKeyHash = a1.stakeKeyHashHex;
   mocks.wallets.push({
     id: "w1",
     label: "Main",
@@ -207,12 +213,60 @@ describe("getUtxos / getBalance", () => {
   });
 });
 
-describe("signData is refused at once, never parked on a dead screen", () => {
-  it("answers DataSignError.ProofGeneration and shows no approval buttons", async () => {
+describe("signData: the stake key signs what the screen shows, or the request is refused by code", () => {
+  const MESSAGE = "drip-enroll/1\ncampaign: gst-preprod-1\nnetwork: Preprod";
+  const payloadHex = () => Buffer.from(MESSAGE, "utf8").toString("hex");
+
+  it("shows the key, the address and the message, and signs with the stake key LAMP's verifier accepts", async () => {
     const { port, view } = await unlocked();
-    const res = await ask(port, "d1", "signData", [acct1Primary, "deadbeef"]);
+    act(() => port.deliver({ type: "request", id: "d1", origin: ORIGIN, method: "signData", params: [acct1RewardHex, payloadHex()] }));
+    await view.findByText(en.cip30_sign_data_key_stake);
+    expect(view.getByTestId("sign-data-text").textContent).toBe(MESSAGE);
+    expect(view.getByTestId("sign-data-hex").textContent).toBe(payloadHex());
+    expect(port.sent.find((m) => m.id === "d1")).toBeUndefined();
+    fireEvent.click(view.getByText(en.cip30_sign_data_cta));
+    let got: Msg | undefined;
+    await waitFor(() => {
+      got = port.sent.find((m) => m.type === "result" && m.id === "d1");
+      expect(got).toBeDefined();
+    });
+    expect(got!.result!.ok).toBe(true);
+    const v = got!.result!.value as { signature: string; key: string };
+    expect(() =>
+      verifyCip8(v.signature, v.key, {
+        rewardAddressHex: acct1RewardHex,
+        stakeKeyHash: acct1StakeKeyHash,
+        payload: new Uint8Array(Buffer.from(MESSAGE, "utf8")),
+      }),
+    ).not.toThrow();
+  });
+
+  it("Reject answers DataSignError.UserDeclined (3)", async () => {
+    const { port, view } = await unlocked();
+    act(() => port.deliver({ type: "request", id: "d2", origin: ORIGIN, method: "signData", params: [acct1RewardHex, payloadHex()] }));
+    await view.findByText(en.cip30_sign_data_key_stake);
+    fireEvent.click(view.getByText(en.cip30_reject));
+    await waitFor(() => expect(port.sent.find((m) => m.id === "d2")?.result).toMatchObject({ ok: false, error: { code: 3 } }));
+  });
+
+  it("an address this wallet does not hold is ProofGeneration (1), at once, with no buttons", async () => {
+    const { port, view } = await unlocked();
+    const res = await ask(port, "d3", "signData", [OUTSIDER, payloadHex()]);
     expect(res.result).toMatchObject({ ok: false, error: { code: 1 } });
     expect(view.queryByText(en.cip30_reject)).toBeNull();
+  });
+
+  it("a script reward address is AddressNotPK (2)", async () => {
+    const { port } = await unlocked();
+    const res = await ask(port, "d4", "signData", ["f0" + "11".repeat(28), payloadHex()]);
+    expect(res.result).toMatchObject({ ok: false, error: { code: 2 } });
+  });
+
+  it("account 0's reward address is not account 1's to sign for", async () => {
+    const { port } = await unlocked();
+    const a0 = await accountFromEntropy(ENTROPY, 0, 0);
+    const res = await ask(port, "d5", "signData", [a0.rewardAddress, payloadHex()]);
+    expect(res.result).toMatchObject({ ok: false, error: { code: 1 } });
   });
 });
 

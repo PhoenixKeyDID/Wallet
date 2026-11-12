@@ -158,16 +158,15 @@ export const proofFailed = (info: string): ApiError => ({ code: TX_SIGN_ERROR.Pr
 export const sendRefused = (info: string): ApiError => ({ code: TX_SEND_ERROR.Refused, info });
 export const sendFailed = (info: string): ApiError => ({ code: TX_SEND_ERROR.Failure, info });
 /**
- * `signData` is not implemented. Its own error type has the code for exactly
- * that — the wallet could not produce the proof — and a dApp reading
- * `signData`'s error path understands it. `APIError.Refused` would instead read
- * as "the wallet disconnected", and some dApps answer that by calling `enable`
- * again, which here opens a window that then refuses again.
+ * A `signData` refusal, in `DataSignError`'s own numbers: `1` the wallet holds
+ * no key for that address, `2` the address is a script and has none, `3` the
+ * person said no. `APIError.Refused` would instead read as "the wallet
+ * disconnected", and some dApps answer that by calling `enable` again.
  */
-export const dataSignUnsupported = (info: string): ApiError => ({
-  code: DATA_SIGN_ERROR.ProofGeneration,
-  info,
-});
+export const dataSignError = (
+  code: (typeof DATA_SIGN_ERROR)[keyof typeof DATA_SIGN_ERROR],
+  info: string,
+): ApiError => ({ code, info });
 
 /**
  * Recognise a request without trusting it.

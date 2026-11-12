@@ -39,10 +39,12 @@ import { vaultStore, type StoredWallet } from "../../src/lib/keystore/storage";
 import { DEFAULT_LOCK_TIMEOUT_MS } from "../../src/lib/keystore/session";
 import { summariseTx, UndescribableTxError, type TxSummary } from "../../src/lib/cardano/txSummary";
 import { signForeignTx } from "../../src/lib/keystore/signForeign";
+import { planDataSign, signDataCip8, DATA_SIGN_CODE, type DataSignPlan } from "../../src/lib/keystore/signData";
 import { encodeBalanceHex, encodeInputsAsUtxosHex } from "../../src/lib/cardano/utxoCbor";
 import { submitTx } from "../../src/lib/cardano/provider";
 import type { WalletPort } from "../../src/lib/cardano/walletPort";
 import { TxSummaryView } from "./TxSummaryView";
+import { DataSignView } from "./DataSignView";
 import {
   displayOrigin,
   refused,
@@ -50,7 +52,7 @@ import {
   internal,
   proofFailed,
   invalid,
-  dataSignUnsupported,
+  dataSignError,
   sendFailed,
   sendRefused,
   WALLET_PORT,
@@ -158,7 +160,14 @@ type Phase =
    * address list of anyone curious enough to look at who was asking.
    */
   | { at: "connect"; req: Incoming }
-  | { at: "decide"; req: Incoming; summary?: TxSummary; undescribable?: string };
+  | {
+      at: "decide";
+      req: Incoming;
+      summary?: TxSummary;
+      undescribable?: string;
+      /** `signData` only: which key, which address, which bytes — decided before the screen opens. */
+      dataSign?: DataSignPlan;
+    };
 
 export function Approve() {
   const { t } = useTranslation("wallet");
@@ -274,16 +283,34 @@ export function Approve() {
         return;
       }
       if (req.method === "signData") {
-        // No describer for arbitrary data exists in this wallet, and the rule
-        // above — nothing is signed that cannot be described — leaves exactly
-        // one honest answer. Given at once, by code: a screen whose approve
-        // button can never be enabled is a request that hangs until a person
-        // works out that the only button that works is Reject.
-        p.postMessage({
-          type: "result",
-          id: req.id,
-          result: { ok: false, error: dataSignUnsupported(tRef.current("cip30_sign_data_unsupported")) },
-        });
+        // Which key would sign is settled here, from the address alone, before
+        // anything reaches the screen. An address this account cannot speak
+        // for is answered at once — there is nothing for a person to approve,
+        // and a screen whose only working button is Reject is a request that
+        // hangs until someone works that out.
+        const planned = planDataSign(acct, req.params[0], req.params[1]);
+        if (!planned.ok) {
+          const why = tRef.current(planned.refusal.reason);
+          p.postMessage({
+            type: "result",
+            id: req.id,
+            result: {
+              ok: false,
+              error: planned.refusal.code === -1 ? invalid(why) : dataSignError(planned.refusal.code, why),
+            },
+          });
+          return;
+        }
+        if (decidingRef.current) {
+          p.postMessage({
+            type: "result",
+            id: req.id,
+            result: { ok: false, error: refused("another request is already on screen") },
+          });
+          return;
+        }
+        decidingRef.current = true;
+        setPhase({ at: "decide", req, dataSign: planned.plan });
         return;
       }
       if (req.method === "signTx" || req.method === "submitTx") {
@@ -455,6 +482,28 @@ export function Approve() {
   };
 
   /**
+   * Sign the message shown on screen, with the key shown on screen.
+   *
+   * The plan was made from the request when it arrived and is what the screen
+   * rendered; it is signed as is, never re-derived from the request, so what is
+   * signed cannot drift from what was read.
+   */
+  const signMessage = () => {
+    if (phase.at !== "decide" || !account || !phase.dataSign) return;
+    setBusy(true);
+    try {
+      answer({ ok: true, value: signDataCip8(account, phase.dataSign) });
+    } catch (e) {
+      answer({
+        ok: false,
+        error: dataSignError(DATA_SIGN_CODE.ProofGeneration, e instanceof Error ? e.message : String(e)),
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
    * Put an already-signed transaction on the network, after the person has
    * read its description.
    *
@@ -558,7 +607,7 @@ export function Approve() {
   }
 
   if (phase.at === "decide") {
-    const { summary, undescribable, req } = phase;
+    const { summary, undescribable, req, dataSign } = phase;
     return (
       <div className="approve">
         <OriginLine />
@@ -574,6 +623,7 @@ export function Approve() {
         )}
 
         {summary && <TxSummaryView summary={summary} />}
+        {dataSign && <DataSignView plan={dataSign} />}
 
         <div className="approve-actions">
           <button
@@ -581,18 +631,29 @@ export function Approve() {
               answer({
                 ok: false,
                 // `submitTx` speaks `TxSendError`, where `2` means Failure.
-                error: req.method === "submitTx" ? sendRefused(t("cip30_declined")) : declined(t("cip30_declined")),
+                error:
+                  req.method === "submitTx"
+                    ? sendRefused(t("cip30_declined"))
+                    : req.method === "signData"
+                      ? dataSignError(DATA_SIGN_CODE.UserDeclined, t("cip30_declined"))
+                      : declined(t("cip30_declined")),
               })
             }
           >
             {t("cip30_reject")}
           </button>
           <button
-            disabled={busy || !summary || !!undescribable}
-            onClick={() => void (req.method === "submitTx" ? broadcast() : sign())}
+            disabled={busy || (req.method === "signData" ? !dataSign : !summary || !!undescribable)}
+            onClick={() =>
+              req.method === "signData" ? signMessage() : void (req.method === "submitTx" ? broadcast() : sign())
+            }
             className="approve-primary"
           >
-            {req.method === "submitTx" ? t("cip30_submit_cta") : t("cip30_approve")}
+            {req.method === "submitTx"
+              ? t("cip30_submit_cta")
+              : req.method === "signData"
+                ? t("cip30_sign_data_cta")
+                : t("cip30_approve")}
           </button>
         </div>
       </div>
