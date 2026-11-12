@@ -28,6 +28,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { classifyRun } from "./lib/classify-run.mjs";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HISTORY = "src/lib/cardano/history.ts";
@@ -1900,21 +1901,8 @@ const VITEST = [
   ...TESTS,
 ];
 
-/**
- * What one test run says about the tree: "pass", "caught" (at least one test
- * ran and failed), or "broken" (the run failed without a failing test — a
- * syntax or compile error, a suite that could not load, vitest not starting).
- * A broken mutant is not a pinned guard: a non-zero exit alone would read a
- * typo in `to` as "caught", and the guard it was meant to measure would go
- * unmeasured under a RED line.
- */
-export function classifyRun(status, output) {
-  const text = output.replace(/\x1b\[[0-9;]*m/g, "");
-  if (status === 0) return "pass";
-  if (/Failed Suites|Unhandled Errors?|Transform failed/.test(text)) return "broken";
-  if (/Tests\s+\d+ failed/.test(text)) return "caught";
-  return "broken";
-}
+// "pass", "caught" or "broken" for one run; the rules and why are in
+// scripts/lib/classify-run.mjs, kept apart so a test can import them.
 
 const runTests = () => {
   const r = spawnSync("npx", VITEST, {
@@ -1992,7 +1980,7 @@ try {
     const result = runTests();
     for (const rel of next.keys()) write(rel, originals.get(rel));
     if (result === "broken") {
-      console.error(`  MUTANT BROKEN  ← ${m.name}\n          (the run failed without a failing test: syntax, compile or load error)`);
+      console.error(`  MUTANT BROKEN  ← ${m.name}\n          (no test failed on behaviour: a syntax, compile or load error, an unhandled error, or a typo-class error such as "x is not defined")`);
       broken += 1;
       continue;
     }
