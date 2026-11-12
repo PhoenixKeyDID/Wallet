@@ -164,9 +164,13 @@ export const COLLATERAL_SEARCH_POOL = 40;
  *
  * With no `target` (a `getCollateral()` call without `amount`), the site has
  * not said how much it needs, so the wallet offers the most it is willing to:
- * the pure-ADA set with the LARGEST total that stays within the cap, then the
+ * the pure-ADA set with the largest total that stays within the cap, then the
  * fewest coins, then the lowest `txid#index` list — and only when that total
- * reaches `COLLATERAL_FLOOR_LOVELACE`. Using the cap as the target instead
+ * reaches `COLLATERAL_FLOOR_LOVELACE`. "Largest" is over every single coin and
+ * over the pairs and triples of the `COLLATERAL_SEARCH_POOL` (40) largest
+ * coins within the cap; with more coins than that, a pair or triple holding a
+ * smaller coin is never looked at, so the answer can fall short of the true
+ * maximum. Using the cap as the target instead
  * answered only a wallet whose coins summed to exactly 5 ADA.
  */
 export function selectCollateral(inputs: tyTypes.Input[], target?: bigint): tyTypes.Input[] | null {
@@ -227,7 +231,11 @@ function forEachPairAndTriple(pool: tyTypes.Input[], consider: (coins: tyTypes.I
 /** Below this, a no-amount `getCollateral()` answers `null`: too little to cover a script's collateral. */
 export const COLLATERAL_FLOOR_LOVELACE = BigInt(1_000_000);
 
-/** `selectCollateral` without a target: the largest pure-ADA total within the cap, from 1 ADA. */
+/**
+ * `selectCollateral` without a target: the largest pure-ADA total within the
+ * cap, from 1 ADA, among single coins and the pairs and triples of the 40
+ * largest coins (`COLLATERAL_SEARCH_POOL`).
+ */
 function selectLargestCollateral(inputs: tyTypes.Input[]): tyTypes.Input[] | null {
   const pure = pureCoinsWithinCap(inputs);
   let best: { sum: bigint; coins: tyTypes.Input[] } | null = null;
