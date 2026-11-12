@@ -174,4 +174,48 @@ describe("classifyRun", () => {
   it("grades a failed run with no test failure at all (vitest did not start) as broken", () => {
     expect(classifyRun(1, "Error: spawn npx ENOENT")).toBe("broken");
   });
+
+  // vitest groups tests that died on the same error under one error line.
+  it("reads the error under several FAIL headers in a row", () => {
+    const out = REFERENCE.replace(
+      " FAIL  scripts/__tests__/zz-probe/ref.test.ts > r",
+      " FAIL  scripts/__tests__/zz-probe/ref.test.ts > r\n FAIL  scripts/__tests__/zz-probe/ref.test.ts > r2",
+    );
+    expect(classifyRun(1, out)).toBe("broken");
+  });
+
+  // Round 6: the code under test logged an error it had caught; the run's
+  // only failure is an assertion. A `stderr |` block is not a test dying.
+  it("does not read a typo-class line the code under test printed on stderr", () => {
+    const out = [
+      "stderr | scripts/__tests__/zz-probe/assert.test.ts > other",
+      "TypeError: provider.fetch is not a function",
+      "ReferenceError: flase is not defined",
+      "",
+      ASSERTION,
+    ].join("\n");
+    expect(classifyRun(1, out)).toBe("caught");
+    expect(classifyRun(1, out, { compiled: true })).toBe("caught");
+  });
+
+  // Round 6: a fair mutant on a type-checked file that removes an
+  // Array.isArray guard makes the loop throw `is not iterable`. The compiler
+  // already refused the misspellings that raise these four.
+  const NOT_ITERABLE = REFERENCE.replace("ReferenceError: flase is not defined", "TypeError: utxos is not iterable");
+  it.each([
+    ["is not iterable", "TypeError: utxos is not iterable"],
+    ["is not a function", "TypeError: provider.fetch is not a function"],
+    ["is not a constructor", "TypeError: Bignumber is not a constructor"],
+    ["before initialization", "ReferenceError: Cannot access 'plan' before initialization"],
+  ])("grades `%s` as caught when the mutated files were type-checked", (_, error) => {
+    const out = REFERENCE.replace("ReferenceError: flase is not defined", error);
+    expect(classifyRun(1, out, { compiled: true })).toBe("caught");
+    expect(classifyRun(1, out)).toBe("broken"); // no compile step: still broken
+  });
+  it("still grades `is not defined` and a SyntaxError as broken after a type-check", () => {
+    expect(classifyRun(1, REFERENCE, { compiled: true })).toBe("broken");
+    const syntax = REFERENCE.replace("ReferenceError: flase is not defined", "SyntaxError: Invalid regular expression: /[/u: Unterminated character class");
+    expect(classifyRun(1, syntax, { compiled: true })).toBe("broken");
+    expect(classifyRun(1, NOT_ITERABLE, { compiled: false })).toBe("broken");
+  });
 });

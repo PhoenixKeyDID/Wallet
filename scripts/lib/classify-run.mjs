@@ -15,11 +15,27 @@
  * Typo-class errors are `ReferenceError: … is not defined`, `ReferenceError:
  * Cannot access '…' before initialization`, `TypeError: … is not a function`,
  * `TypeError: … is not a constructor`, `TypeError: … is not iterable` and any
- * `SyntaxError` (a bad regular expression built at run time is one), each read
- * only at the start of a line, where vitest prints the error a test died on.
- * A mutant whose `to` reads `if (flase)` fails every test that reaches it,
- * with exactly such an error, and before this rule that counted as the guard
+ * `SyntaxError` (a bad regular expression built at run time is one). A
+ * mutant whose `to` reads `if (flase)` fails every test that reaches it, with
+ * exactly such an error, and before this rule that counted as the guard
  * being pinned — the guard was never measured.
+ *
+ * Two limits on where they are read:
+ *
+ *   - Only as the error a test died on: the first line after the ` FAIL  …`
+ *     header(s) vitest prints for a failed test. Anywhere else — a
+ *     `stderr | …` block where the code under test logged an error it caught
+ *     — the line is the program talking, not the test dying, and reading it
+ *     made a fair mutant "broken" because some other code path logged.
+ *   - `compiled: true` (every file the mutant edits was type-checked first,
+ *     see `scripts/lib/typecheck-mutant.mjs`) keeps only the two that the
+ *     compiler can miss or that no fair mutant raises: `SyntaxError` (a
+ *     regular expression built from a string) and `… is not defined`. The
+ *     other four are what a fair mutant does when it removes a guard — drop
+ *     an `Array.isArray` check and the loop throws `… is not iterable` — and
+ *     the misspellings that raise them (a property the type does not have)
+ *     are already compile errors. For a file the type-check does not cover
+ *     (`scripts/*.mjs`, CSS) all six still count: there is no other net.
  *
  * ## What is NOT measured here, said out loud
  *
@@ -57,19 +73,24 @@
  *     even when the throw was the behaviour change. Rare, and the error is on
  *     the cautious side: the mutant is reported, not silently credited.
  */
-export function classifyRun(status, output) {
+export function classifyRun(status, output, { compiled = false } = {}) {
   // eslint-disable-next-line no-control-regex
   const text = output.replace(/\x1b\[[0-9;]*m/g, "");
   if (status === 0) return "pass";
   if (/Failed Suites|Unhandled Errors?|Transform failed/.test(text)) return "broken";
-  if (TYPO_CLASS.test(text)) return "broken";
+  if ((compiled ? COMPILER_MISSES : TYPO_CLASS).test(text)) return "broken";
   if (/Tests\s+\d+ failed/.test(text)) return "caught";
   return "broken";
 }
 
-/** An error the mutated text raises by itself, as vitest prints it at the start of a line. */
+/**
+ * A ` FAIL  file > test` header, then the line holding the error the test died on. When vitest
+ * groups several headers over one error, the last header is the line before it, so one header is enough.
+ */
+const AFTER_FAIL = "^[ \\t]*FAIL[ \\t][^\\n]*\\n[ \\t]*(?:";
+/** An error the mutated text raises by itself, read where vitest prints the error a test died on. */
 const TYPO_CLASS = new RegExp(
-  "^\\s*(?:" +
+  AFTER_FAIL +
     [
       "ReferenceError: .* is not defined",
       "ReferenceError: Cannot access '.*' before initialization",
@@ -81,3 +102,5 @@ const TYPO_CLASS = new RegExp(
     ")",
   "m",
 );
+/** The part of `TYPO_CLASS` that still counts after the type-check passed. */
+const COMPILER_MISSES = new RegExp(AFTER_FAIL + ["ReferenceError: .* is not defined", "SyntaxError: "].join("|") + ")", "m");

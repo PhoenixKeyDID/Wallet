@@ -1965,7 +1965,9 @@ const MUTANTS = [
   ...[
     ["a failed suite", "/Failed Suites|Unhandled Errors?|Transform failed/", "/MUT_CLASSIFY_SUITES|Unhandled Errors?|Transform failed/"],
     ["a transform failure", "/Failed Suites|Unhandled Errors?|Transform failed/", "/Failed Suites|Unhandled Errors?|MUT_CLASSIFY_TRANSFORM/"],
-    ["the start-of-line anchor of", '  "^\\\\s*(?:" +', '  "(?:" /* MUT_CLASSIFY_ANCHOR */ +'],
+    ["the FAIL-header anchor of", 'const AFTER_FAIL = "^[ \\\\t]*FAIL[ \\\\t][^\\\\n]*\\\\n[ \\\\t]*(?:";', 'const AFTER_FAIL = "^\\\\s*(?:" /* MUT_CLASSIFY_ANCHOR */;'],
+    ["the type-checked switch of", "  if ((compiled ? COMPILER_MISSES : TYPO_CLASS).test(text)) return \"broken\";", "  if (TYPO_CLASS.test(text) /* MUT_CLASSIFY_IGNORE_COMPILED */) return \"broken\";"],
+    ["`is not defined` after a type-check among", 'const COMPILER_MISSES = new RegExp(AFTER_FAIL + ["ReferenceError: .* is not defined", "SyntaxError: "]', 'const COMPILER_MISSES = new RegExp(AFTER_FAIL + ["MUT_CLASSIFY_COMPILED_REF", "SyntaxError: "]'],
     ["a SyntaxError among", '      "SyntaxError: ",', '      "MUT_CLASSIFY_SYNTAX",'],
     ["`is not a function` among", '      "TypeError: .* is not a function",', '      "MUT_CLASSIFY_NOT_FUNCTION",'],
     ["`before initialization` among", "      \"ReferenceError: Cannot access '.*' before initialization\",", '      "MUT_CLASSIFY_BEFORE_INIT",'],
@@ -2011,14 +2013,16 @@ const VITEST = [
 // "pass", "caught" or "broken" for one run; the rules and why are in
 // scripts/lib/classify-run.mjs, kept apart so a test can import them.
 
-const runTests = () => {
+// `compiled`: every file the mutant edits passed the type-check, so the
+// grader can leave the run-time errors a fair mutant raises to the tests.
+const runTests = (compiled = false) => {
   const r = spawnSync("npx", VITEST, {
     cwd: REPO,
     encoding: "utf8",
     env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0" },
     maxBuffer: 64 * 1024 * 1024,
   });
-  return classifyRun(r.status ?? 1, `${r.stdout ?? ""}\n${r.stderr ?? ""}\n${r.error ? String(r.error) : ""}`);
+  return classifyRun(r.status ?? 1, `${r.stdout ?? ""}\n${r.stderr ?? ""}\n${r.error ? String(r.error) : ""}`, { compiled });
 };
 
 const editsOf = (m) => m.edits ?? [m];
@@ -2124,7 +2128,7 @@ try {
       unanchored += 1;
       continue;
     }
-    const result = runTests();
+    const result = runTests(compiled.unchecked.length === 0);
     for (const rel of next.keys()) write(rel, originals.get(rel));
     if (result === "broken") {
       console.error(`  MUTANT BROKEN  ← ${m.name}\n          (no test failed on behaviour: a syntax, compile or load error, an unhandled error, or a typo-class error such as "x is not defined")`);
