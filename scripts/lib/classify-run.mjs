@@ -12,11 +12,35 @@
  *                that threw, a `beforeAll` that threw), an unhandled error, or
  *                a test that died on a typo-class error.
  *
- * Typo-class errors are `ReferenceError: … is not defined`, `TypeError: … is
- * not a function` and any `SyntaxError` (a bad regular expression built at
- * run time is one). A mutant whose `to` reads `if (flase)` fails every test
- * that reaches it, with exactly such an error, and before this rule that
- * counted as the guard being pinned — the guard was never measured.
+ * Typo-class errors are `ReferenceError: … is not defined`, `ReferenceError:
+ * Cannot access '…' before initialization`, `TypeError: … is not a function`,
+ * `TypeError: … is not a constructor`, `TypeError: … is not iterable` and any
+ * `SyntaxError` (a bad regular expression built at run time is one), each read
+ * only at the start of a line, where vitest prints the error a test died on.
+ * A mutant whose `to` reads `if (flase)` fails every test that reaches it,
+ * with exactly such an error, and before this rule that counted as the guard
+ * being pinned — the guard was never measured.
+ *
+ * ## What is NOT measured here, said out loud
+ *
+ * This reads vitest's output, so it only sees an error that reaches it.
+ *
+ *   - A `catch` in the code under test that swallows the typo's error. The
+ *     tests then fail on assertions and the run reads "caught". Measured
+ *     2026-11-12: `summariseTx(` misspelt in `extension/src/approve.tsx`, the
+ *     `catch` beside it turns the ReferenceError into the "cannot read this
+ *     transaction" screen, eleven tests fail on assertions. That road is
+ *     closed one step earlier, not here: `mutants.mjs` type-checks every
+ *     mutant before a test runs (`scripts/lib/typecheck-mutant.mjs`), and a
+ *     name that does not exist is a compile error whatever catches it later.
+ *   - The same swallow in a file the type-check does not cover — anything
+ *     outside `tsconfig.json`, which is every `scripts/*.mjs` gate. A typo in
+ *     a mutant of a gate script that the gate catches is still read "caught".
+ *   - A React event handler that throws under jsdom/happy-dom: the error is
+ *     reported to the window, not to the test, and may not fail the run.
+ *   - A "typo" that lands on a name that does exist (`amount` for `amounts`).
+ *     It runs, it compiles, and it is a different mutant from the one named;
+ *     nothing short of reading the `to` text catches it.
  *
  * Decisions, each tested in `scripts/__tests__/classifyRun.test.ts`:
  *
@@ -44,4 +68,16 @@ export function classifyRun(status, output) {
 }
 
 /** An error the mutated text raises by itself, as vitest prints it at the start of a line. */
-const TYPO_CLASS = /^\s*(?:ReferenceError: .* is not defined|TypeError: .* is not a function|SyntaxError: )/m;
+const TYPO_CLASS = new RegExp(
+  "^\\s*(?:" +
+    [
+      "ReferenceError: .* is not defined",
+      "ReferenceError: Cannot access '.*' before initialization",
+      "TypeError: .* is not a function",
+      "TypeError: .* is not a constructor",
+      "TypeError: .* is not iterable",
+      "SyntaxError: ",
+    ].join("|") +
+    ")",
+  "m",
+);

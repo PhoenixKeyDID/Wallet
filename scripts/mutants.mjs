@@ -29,6 +29,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { classifyRun } from "./lib/classify-run.mjs";
+import { createTypechecker } from "./lib/typecheck-mutant.mjs";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HISTORY = "src/lib/cardano/history.ts";
@@ -352,7 +353,9 @@ const MUTANTS = [
     name: "withdrawal ownership filter removed (a stranger's reward counts as ours)",
     file: HISTORY,
     from: "    if (ownStakeAddresses.has(stake)) withdrawn += amount;",
-    to: "    withdrawn += amount;",
+    // Kept as an `if` so the `else if` after it still parses.
+    to: "    if (true /* MUT_WITHDRAWAL_OWNER */) withdrawn += amount;",
+    marker: "MUT_WITHDRAWAL_OWNER",
   },
   {
     name: "an unattributable row shows an amount anyway",
@@ -929,6 +932,10 @@ const MUTANTS = [
       },
       { file: COPY_GUARD_TEST, from: COPYABLE_ANCHOR, to: `${COPYABLE_ANCHOR}\n    "${BALANCE}#Shown: ${value}",` },
     ],
+    // `Echo` is left undeclared on purpose: the guard reads this source and
+    // cannot see what another element does with the setter, and `Shown` is
+    // never rendered, so the missing name never runs.
+    ...(body.includes("<Echo ") ? { undeclared: ["Echo"] } : {}),
   })),
   // A parameter the component defaults or writes holds its own functions, not
   // the caller's: picking one by the phrase rebuilds the phrase.
@@ -975,8 +982,9 @@ const MUTANTS = [
       "kept in sessionStorage reached through a module helper",
       "const ss = () => sessionStorage;",
       "Shown",
-      '  ss().setItem("k", secret);\n  return <CopyBtn value={ss().getItem("k")} />;',
-      'ss().getItem("k")',
+      // Single quotes: the value is pasted into a double-quoted string in the test.
+      "  ss().setItem('k', secret);\n  return <CopyBtn value={ss().getItem('k')} />;",
+      "ss().getItem('k')",
     ],
     [
       "handed on through a context",
@@ -1918,7 +1926,13 @@ const editsOf = (m) => m.edits ?? [m];
 // A name filter, for re-measuring the guards one change touched. The summary
 // line says how many ran out of how many, so a filtered run cannot be read
 // as the whole list.
-const only = process.argv[2];
+//
+// `--typecheck-only` runs the compile step below for every selected mutant and
+// no test at all: it lists the mutants that would be graded broken before a
+// test starts, in seconds rather than the hours a full run takes.
+const args = process.argv.slice(2);
+const typecheckOnly = args.includes("--typecheck-only");
+const only = args.find((a) => !a.startsWith("--"));
 const RUN = only ? MUTANTS.filter((m) => m.name.includes(only)) : MUTANTS;
 if (RUN.length === 0) {
   console.error(`No mutant name contains ${JSON.stringify(only)}.`);
@@ -1939,11 +1953,25 @@ process.on("SIGINT", () => {
 let survived = 0;
 let unanchored = 0;
 let broken = 0;
+let uncompiled = 0;
+
+// The compile step, before any test: a misspelt name in a mutant's `to` is a
+// broken mutant even when the code under test catches the error it raises at
+// run time, which `classifyRun` — reading only vitest's output — cannot see.
+// Why and how: scripts/lib/typecheck-mutant.mjs. Measured 2026-11-12: built
+// once in ~1.4 s, then ~150 ms per mutant; a whole `tsc --noEmit` is ~3 s.
+const typechecker = createTypechecker(REPO);
+const typecheckBaseline = typechecker.baseline([...originals.keys()]);
+if (typecheckBaseline.typo.length || typecheckBaseline.other.length) {
+  console.error("The unmutated tree does not type-check — fix that first:\n  " +
+    [...typecheckBaseline.typo, ...typecheckBaseline.other].map((d) => d.text).join("\n  "));
+  process.exit(1);
+}
 
 try {
   // Refuse to grade anything if the tree is already red: every mutation would
   // read as "caught" for a reason that has nothing to do with the mutation.
-  const baseline = runTests();
+  const baseline = typecheckOnly ? "pass" : runTests();
   if (baseline !== "pass") {
     console.error("Baseline is already failing — fix that first; mutation results\n" +
       `measured against a red baseline mean nothing (baseline: ${baseline}).`);
@@ -1968,6 +1996,26 @@ try {
       unanchored += 1;
       continue;
     }
+    // Checked in memory, before anything is written: a mutant that does not
+    // compile never touches the tree.
+    const compiled = typechecker.check(next);
+    // `undeclared`: names a mutant uses on purpose without declaring them, for
+    // a gate that reads source and never runs it (see the copy-guard entries).
+    const typo = compiled.typo.filter((d) => !(m.undeclared ?? []).includes(d.name));
+    if (compiled.unchecked.length) {
+      if (typecheckOnly) console.log(`  UNCHECKED ← ${m.name}\n          (outside tsconfig.json: ${compiled.unchecked.join(", ")})`);
+      uncompiled += 1;
+    }
+    if (compiled.other.length && typecheckOnly) {
+      // A type change can be the point of a mutant, so it is shown, not graded.
+      console.log(`  TYPE    ← ${m.name}\n          ${compiled.other.map((d) => d.text).join("\n          ")}`);
+    }
+    if (typo.length) {
+      console.error(`  MUTANT BROKEN  ← ${m.name}\n          (does not compile: ${typo.map((d) => d.text).join("; ")})`);
+      broken += 1;
+      continue;
+    }
+    if (typecheckOnly) continue;
     for (const [rel, text] of next) write(rel, text);
     // The marker is read back from disk, not from `next`: a write that went
     // somewhere else would otherwise grade the unmutated file.
@@ -1993,6 +2041,17 @@ try {
 }
 
 const bad = survived + unanchored + broken;
+if (typecheckOnly) {
+  // Nothing was graded: the line must not read as a pinned count.
+  console.log(
+    `\ntype-check only, no test ran: ${RUN.length - broken - unanchored}/${RUN.length} compile` +
+      (only ? ` (filter ${JSON.stringify(only)}: ${RUN.length} of ${MUTANTS.length} mutants)` : "") +
+      (broken ? ` · ${broken} MUTANT BROKEN (misspelt name)` : "") +
+      (unanchored ? ` · ${unanchored} anchor(s) no longer match the source` : "") +
+      (uncompiled ? ` · ${uncompiled} edit a file outside tsconfig.json (not type-checked)` : ""),
+  );
+  process.exit(broken + unanchored === 0 ? 0 : 1);
+}
 console.log(
   `\n${RUN.length - bad}/${RUN.length} guards pinned` +
     (only ? ` (filter ${JSON.stringify(only)}: ${RUN.length} of ${MUTANTS.length} mutants)` : "") +

@@ -95,6 +95,14 @@ describe("classifyRun", () => {
     expect(classifyRun(1, NOT_A_FUNCTION)).toBe("broken");
   });
 
+  it.each([
+    ["a let read before its line runs", "ReferenceError: Cannot access 'plan' before initialization"],
+    ["new on a misspelt class", "TypeError: Bignumber is not a constructor"],
+    ["for…of over a misspelt value", "TypeError: outputz is not iterable"],
+  ])("grades %s as broken", (_, error) => {
+    expect(classifyRun(1, REFERENCE.replace("ReferenceError: flase is not defined", error))).toBe("broken");
+  });
+
   it("grades a SyntaxError raised at run time (a bad regular expression) as broken", () => {
     const out = REFERENCE.replace("ReferenceError: flase is not defined", "SyntaxError: Invalid regular expression: /[/u: Unterminated character class");
     expect(classifyRun(1, out)).toBe("broken");
