@@ -124,6 +124,41 @@ const TESTS = [
  * measuring nothing, which is the failure mode it was written to prevent.
  */
 const MUTANTS = [
+  {
+    name: "txSummary counts a withdrawal as the wallet's whatever its reward account header says",
+    file: TX_SUMMARY,
+    from: "  return raw.length === 29 && raw[0] >> 4 === 0xe && (raw[0] & 0x0f) === networkId;",
+    to: "  return raw.length === 29 || networkId < 0; /* MUT_TXSUMMARY_REWARD_HEADER */",
+    marker: "MUT_TXSUMMARY_REWARD_HEADER",
+  },
+  {
+    name: "txSummary reads a reward account's network but not its credential type",
+    file: TX_SUMMARY,
+    from: "  return raw.length === 29 && raw[0] >> 4 === 0xe && (raw[0] & 0x0f) === networkId;",
+    to: "  return raw.length === 29 && (raw[0] & 0x0f) === networkId; /* MUT_TXSUMMARY_REWARD_CRED */",
+    marker: "MUT_TXSUMMARY_REWARD_CRED",
+  },
+  {
+    name: "txSummary reads a reward account's credential type but not its network",
+    file: TX_SUMMARY,
+    from: "  return raw.length === 29 && raw[0] >> 4 === 0xe && (raw[0] & 0x0f) === networkId;",
+    to: "  return raw.length === 29 && raw[0] >> 4 === 0xe && networkId >= 0; /* MUT_TXSUMMARY_REWARD_NET */",
+    marker: "MUT_TXSUMMARY_REWARD_NET",
+  },
+  {
+    name: "txSummary withdrawal ownership skips the reward account header check",
+    file: TX_SUMMARY,
+    from: "      if (!isKeyRewardAccountOn(raw, networkId) || !ownStakeHashes.has(stakeHash)) {",
+    to: "      if (!ownStakeHashes.has(stakeHash)) { /* MUT_TXSUMMARY_WITHDRAWAL_NO_HEADER */",
+    marker: "MUT_TXSUMMARY_WITHDRAWAL_NO_HEADER",
+  },
+  {
+    name: "signForeign adds the stake key for a withdrawal whatever its header says",
+    file: SIGN_FOREIGN,
+    from: "      const accountKey = isKeyRewardAccountOn(raw, ledgerNetworkId) && stakeHash === account.stakeKeyHashHex;",
+    to: "      const accountKey = stakeHash === account.stakeKeyHashHex; /* MUT_SIGNFOREIGN_WITHDRAWAL_NO_HEADER */",
+    marker: "MUT_SIGNFOREIGN_WITHDRAWAL_NO_HEADER",
+  },
   // ── The page-world scripts must load in a real browser: a content script and
   // a `<script src>` are classic scripts, so neither may import anything ──
   {

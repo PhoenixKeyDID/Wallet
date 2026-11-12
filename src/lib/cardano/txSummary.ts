@@ -442,6 +442,23 @@ function readBurns(raw: unknown): NetChange[] {
 }
 
 /**
+ * Whether a 29-byte reward account is a key-hash account on `networkId`: its
+ * header byte has high nibble `0xE` (stake credential is a key hash) and low
+ * nibble equal to the network id.
+ *
+ * Only such an account can be this wallet's. The 28 bytes after the header
+ * alone do not say so: under header `0xF_` they are a script hash, and under
+ * the other network's id they name an account on a chain this wallet is not
+ * on. Counting either as "your staking rewards" would have the screen report a
+ * withdrawal that is not this wallet's, and the signer add the stake key for
+ * it. The signer (`requiredKeysFor`) reads ownership through this same
+ * function, so the two cannot disagree on it.
+ */
+export function isKeyRewardAccountOn(raw: Uint8Array, networkId: number): boolean {
+  return raw.length === 29 && raw[0] >> 4 === 0xe && (raw[0] & 0x0f) === networkId;
+}
+
+/**
  * Describe a signed-or-unsigned transaction from the wallet's point of view.
  *
  * `ownAddressesHex` and `ownInputRefs` are what make the answer specific to
@@ -610,7 +627,7 @@ export function summariseTx(
       // Somebody else's rewards are somebody else's money; they neither arrive
       // here nor leave here.
       const stakeHash = raw.subarray(1).toString("hex");
-      if (!ownStakeHashes.has(stakeHash)) {
+      if (!isKeyRewardAccountOn(raw, networkId) || !ownStakeHashes.has(stakeHash)) {
         foreignWithdrawals += 1;
         continue;
       }

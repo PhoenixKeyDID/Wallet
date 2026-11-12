@@ -40,7 +40,7 @@ import { Buffer } from "buffer";
 import { Decoder, Encoder } from "@stricahq/cbors";
 import { utils as tyUtils } from "@stricahq/typhonjs";
 import { blake2b256, toHex } from "../cardano/hash";
-import { summariseTx, UndescribableTxError, type TxSummary } from "../cardano/txSummary";
+import { isKeyRewardAccountOn, summariseTx, UndescribableTxError, type TxSummary } from "../cardano/txSummary";
 import { LocalSignError, type Account } from "./index";
 
 /** One UTxO the wallet holds, as the approval screen valued it. */
@@ -347,7 +347,7 @@ export function requiredKeysFor(
       const raw = Buffer.from(rewardAccount as Buffer);
       if (raw.length !== 29) continue;
       const stakeHash = raw.subarray(1).toString("hex");
-      const accountKey = stakeHash === account.stakeKeyHashHex;
+      const accountKey = isKeyRewardAccountOn(raw, ledgerNetworkId) && stakeHash === account.stakeKeyHashHex;
       if (accountKey !== counted.has(stakeHash)) {
         throw new LocalSignError("sign_foreign_withdrawal_mismatch", stakeHash);
       }

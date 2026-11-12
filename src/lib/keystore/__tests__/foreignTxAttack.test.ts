@@ -193,6 +193,23 @@ describe("khoá stake của khoản rút thưởng thì phải ký, không cần
     ]);
     expect(() => signForeignTx(tx(body), a, addressesOnly(other), true)).toThrow(/^sign_foreign_withdrawal_mismatch: /);
   });
+
+  // Mã băm stake của chính ví nhưng byte đầu nói mạng khác (0xe1 trên ví
+  // testnet) hoặc credential script (0xf0): không phải tài khoản thưởng của ví.
+  // Màn hình tính là của bên ngoài và hàm ký không thêm khoá stake — hai bên
+  // cùng đọc một hàm nên không vênh (không ném mismatch).
+  it.each([
+    ["mạng khác", 0xe1],
+    ["credential script", 0xf0],
+  ])("rút từ tài khoản mang mã băm stake của ví nhưng %s: không ký bằng khoá stake", async (_label, header) => {
+    const a = await acct();
+    const body = base();
+    body.set(5, new Map([[Buffer.concat([Buffer.from([header]), Buffer.from(a.stakeKeyHashHex, "hex")]), 5_000_000]]));
+    const s = summariseTx(tx(body), addressesOnly(a).ownAddressesHex, addressesOnly(a).held, 0);
+    expect(s.foreignWithdrawals).toBe(1);
+    expect(s.ownRewardKeyHashes).toEqual([]);
+    expect(requiredKeysFor(tx(body), a, addressesOnly(a)).keyHashes).not.toContain(a.stakeKeyHashHex);
+  });
 });
 
 /**

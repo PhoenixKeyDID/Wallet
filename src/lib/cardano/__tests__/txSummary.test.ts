@@ -467,6 +467,35 @@ describe("summariseTx — it notices the things it will not describe in detail",
     expect(s.foreignWithdrawals).toBe(1);
     expect(s.withdrawalLovelace).toBe(BigInt(5_000_000));
   });
+
+  // The 28 bytes after the header are this wallet's stake key hash, but the
+  // header says another network (0xe1 on a testnet wallet) or a script
+  // credential (0xf0): neither account is this wallet's.
+  it.each([
+    ["on another network", "e1"],
+    ["under a script credential", "f0"],
+  ])("counts a withdrawal from an account with this wallet's stake hash %s as foreign", (_label, header) => {
+    const ownStake = own.addresses.find((h) => h.length === 114)!.slice(58);
+    const cbor = encodeBody([
+      [0, [[Buffer.from(TXID, "hex"), 0]]],
+      [1, [[tyUtils.getAddressFromString(PAYEE).getBytes(), 3_000_000]]],
+      [2, 170_000],
+      [5, new Map([[Buffer.from(header + ownStake, "hex"), 5_000_000]])],
+    ]);
+    const s = summariseTx(cbor, own.addresses, own.inputs, 0);
+    expect(s.foreignWithdrawals).toBe(1);
+    expect(s.ownRewardKeyHashes).toEqual([]);
+    expect(s.withdrawalLovelace).toBe(BigInt(0));
+    // The same hash under the right header is this wallet's — the case above
+    // is refused for its header, not for its hash.
+    const mine = encodeBody([
+      [0, [[Buffer.from(TXID, "hex"), 0]]],
+      [1, [[tyUtils.getAddressFromString(PAYEE).getBytes(), 3_000_000]]],
+      [2, 170_000],
+      [5, new Map([[Buffer.from("e0" + ownStake, "hex"), 5_000_000]])],
+    ]);
+    expect(summariseTx(mine, own.addresses, own.inputs, 0).ownRewardKeyHashes).toEqual([ownStake]);
+  });
 });
 
 describe("summariseTx — an output to this wallet's key address under a datum is change", () => {
