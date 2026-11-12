@@ -16,6 +16,7 @@ import BigNumber from "bignumber.js";
 import { Decoder, Encoder } from "@stricahq/cbors";
 import { utils as tyUtils, types as tyTypes } from "@stricahq/typhonjs";
 import en from "../../../../locales/en/wallet.json";
+import vi_ from "../../../../locales/vi/wallet.json";
 import { DEFAULT_LOCK_TIMEOUT_MS } from "@/lib/keystore/session";
 import { accountFromEntropy, allAddresses, primaryAddress, sealVault } from "@/lib/keystore";
 import type { StoredWallet } from "@/lib/keystore/storage";
@@ -566,5 +567,105 @@ describe("an idle lock closes the port the unlocked account answered on", () => 
     const res = port.sent.find((m) => m.type === "result" && m.id === "gap1");
     expect(res?.result).toMatchObject({ ok: false, error: { code: -3, info: en.cip30_window_locked } });
     expect(mocks.fetchUtxos).not.toHaveBeenCalled();
+  });
+});
+
+describe("a summary read late lands only on the request it was read for", () => {
+  const pays = (lovelace: number) =>
+    Encoder.encode([
+      new Map<number, unknown>([
+        [0, [[Buffer.from("11".repeat(32), "hex"), 0]]],
+        [1, [[Buffer.from((tyUtils.getAddressFromString(OUTSIDER) as tyTypes.ShelleyAddress).getHex(), "hex"), lovelace]]],
+        [2, 200_000],
+      ]),
+      new Map(),
+      true,
+      null,
+    ]).toString("hex");
+  const later = <T,>() => {
+    let resolve!: (v: T) => void;
+    const promise = new Promise<T>((r) => (resolve = r));
+    return { promise, resolve };
+  };
+  const ticks = async () => {
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+  };
+
+  // The request check on its own, as a function: React 19 commits the Reject
+  // (and runs the effect's cleanup) before a late read continues, so through
+  // the window `cancelled` already catches the cases below. This pins the
+  // check that holds whatever order React evaluates the updater in.
+  it("decidingFor accepts only the decide screen for the very same request object", async () => {
+    const { decidingFor } = await import("../../../../extension/src/approve");
+    const a = { id: "1", origin: ORIGIN, method: "signTx", params: [pays(1_111_111)] };
+    const sameIdOtherTx = { id: "1", origin: ORIGIN, method: "signTx", params: [pays(2_222_222)] };
+    expect(decidingFor({ at: "decide", req: a }, a)).toBe(true);
+    expect(decidingFor({ at: "decide", req: sameIdOtherTx }, a)).toBe(false);
+    expect(decidingFor({ at: "decide", req: { ...a, id: "2" } }, a)).toBe(false);
+    expect(decidingFor({ at: "idle" }, a)).toBe(false);
+    expect(decidingFor({ at: "connect", req: a }, a)).toBe(false);
+  });
+
+  // Reject the first request and deliver the second in one act, then let the
+  // first one's read finish: the screen must show the second transaction.
+  for (const secondId of ["second", "first"]) {
+    it(`Reject + a new request (id ${secondId === "first" ? "reused" : "fresh"}) in one tick: the screen shows the new transaction`, async () => {
+      const firstRead = later<unknown[]>();
+      mocks.fetchUtxos.mockImplementationOnce(() => firstRead.promise).mockResolvedValue(ourInputs());
+      const { port, view } = await unlocked();
+      act(() => port.deliver({ type: "request", id: "first", origin: ORIGIN, method: "signTx", params: [pays(1_111_111), true] }));
+      await waitFor(() => expect(mocks.fetchUtxos).toHaveBeenCalledTimes(1));
+      const reject = await view.findByText(en.cip30_reject);
+      await act(async () => {
+        fireEvent.click(reject);
+        port.deliver({ type: "request", id: secondId, origin: ORIGIN, method: "signTx", params: [pays(2_222_222), true] });
+        firstRead.resolve(ourInputs());
+        await ticks();
+      });
+      expect(port.sent.find((m) => m.type === "result" && m.id === "first")!.result).toMatchObject({ ok: false, error: { code: 2 } });
+      await waitFor(() => expect(view.container.textContent).toContain(`${formatAda(BigInt(2_222_222))} ADA`));
+      expect(view.container.textContent).not.toContain(`${formatAda(BigInt(1_111_111))} ADA`);
+    });
+  }
+
+  // A language switch re-runs the effect for the request still on screen. The
+  // first read is answered later, from an older view of the wallet that does
+  // not hold the coin; if it landed it would replace the newer summary and
+  // view, and Sign would refuse a coin the screen had just shown as this
+  // wallet's. `cancelled` is the guard here — the request is the same one.
+  it("a language switch while the first read is out: the late first read does not replace the newer one", async () => {
+    const spendsOurCoin = Encoder.encode([
+      new Map<number, unknown>([
+        [0, [[Buffer.from("77".repeat(32), "hex"), 1]]],
+        [1, [[Buffer.from((tyUtils.getAddressFromString(OUTSIDER) as tyTypes.ShelleyAddress).getHex(), "hex"), 4_800_000]]],
+        [2, 200_000],
+      ]),
+      new Map(),
+      true,
+      null,
+    ]).toString("hex");
+    const firstRead = later<unknown[]>();
+    mocks.fetchUtxos.mockImplementationOnce(() => firstRead.promise).mockResolvedValue(ourInputs());
+    const { port, view } = await unlocked();
+    try {
+      act(() => port.deliver({ type: "request", id: "lang1", origin: ORIGIN, method: "signTx", params: [spendsOurCoin, false] }));
+      await waitFor(() => expect(mocks.fetchUtxos).toHaveBeenCalledTimes(1));
+      await act(async () => {
+        await i18n.changeLanguage("vi");
+      });
+      const approve = await view.findByText(vi_.cip30_approve);
+      await waitFor(() => expect((approve as HTMLButtonElement).disabled).toBe(false));
+      await act(async () => {
+        firstRead.resolve([]);
+        await ticks();
+      });
+      fireEvent.click(view.getByText(vi_.cip30_approve));
+      await waitFor(() => expect(port.sent.find((m) => m.id === "lang1")).toBeDefined());
+      expect(port.sent.find((m) => m.id === "lang1")!.result!.ok).toBe(true);
+    } finally {
+      await act(async () => {
+        await i18n.changeLanguage("en");
+      });
+    }
   });
 });

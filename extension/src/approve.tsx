@@ -174,6 +174,16 @@ const chromeRuntime = (
   globalThis as unknown as { chrome?: { runtime?: { connect(o: { name: string }): Port } } }
 ).chrome?.runtime;
 
+/**
+ * Whether `cur` is the decide screen for exactly `req` — a late summary may
+ * land only there. The request object is compared, not only its id: a page
+ * that numbers every call "1" would otherwise get the first transaction's
+ * summary drawn above the second one's bytes, and Sign signs the bytes.
+ */
+export function decidingFor(cur: { at: string; req?: unknown }, req: unknown): boolean {
+  return cur.at === "decide" && cur.req === req;
+}
+
 /** What the window is doing right now. */
 type Phase =
   | { at: "unlock" }
@@ -413,17 +423,24 @@ export function Approve() {
       setPhase({ ...phase, undescribable: t("cip30_not_a_tx") });
       return;
     }
+    // Two guards. `cancelled` drops a read this effect started and then
+    // re-ran (a language switch re-runs it while the first read is still out),
+    // and a read for a request React has already moved away from. The request
+    // check (`decidingFor`) does not lean on React's scheduling: whatever order
+    // the updater is evaluated in, it only ever writes onto the screen for the
+    // very request it read.
     let cancelled = false;
+    const stillOnScreen = (cur: Phase): cur is Extract<Phase, { at: "decide" }> => decidingFor(cur, req);
     void (async () => {
       try {
         const wp = localPort(account);
         const view = walletViewFrom(await wp.getInputs(), await wp.getOwnedAddressesHex());
         const summary = summariseTx(cbor, view.ownAddressesHex, view.held, account.network === 1 ? 1 : 0);
-        if (!cancelled) setPhase((cur) => (cur.at === "decide" ? { ...cur, summary, view } : cur));
+        if (!cancelled) setPhase((cur) => (stillOnScreen(cur) ? { ...cur, summary, view } : cur));
       } catch (e) {
         const why =
           e instanceof UndescribableTxError ? (e.key ? t(e.key) : e.message) : t("cip30_cannot_read_tx");
-        if (!cancelled) setPhase((cur) => (cur.at === "decide" ? { ...cur, undescribable: why } : cur));
+        if (!cancelled) setPhase((cur) => (stillOnScreen(cur) ? { ...cur, undescribable: why } : cur));
       }
     })();
     return () => {
