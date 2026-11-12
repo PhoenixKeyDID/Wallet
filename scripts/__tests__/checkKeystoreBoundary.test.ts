@@ -21,14 +21,14 @@ const TSCONFIG = JSON.stringify({ compilerOptions: { baseUrl: ".", paths: { "@/*
 
 /** Runs the gate on a tree holding a keystore, a tsconfig, and `files`. */
 function check(
-  files: Record<string, string>,
+  files: Record<string, string | Buffer>,
   opts: { tsconfig?: string; link?: [string, string]; viaSymlinkedRoot?: boolean } = {},
 ) {
   const outer = mkdtempSync(join(tmpdir(), "keystore-boundary-"));
   const root = join(outer, "real");
   mkdirSync(root);
   try {
-    const tree: Record<string, string> = {
+    const tree: Record<string, string | Buffer> = {
       "tsconfig.json": opts.tsconfig ?? TSCONFIG,
       "src/lib/keystore/index.ts": "export * from './vault';\n",
       "src/lib/keystore/vault.ts": "export const vault = 1;\n",
@@ -171,7 +171,7 @@ describe("check:keystore-boundary — imports that used to print OK", () => {
     });
     expect(r.out, r.out).toContain("scripts/__tests__/helper.ts:1");
     expect(r.out).not.toContain("thing.test.ts");
-    expect(r.out).toContain("scripts/__tests__/*.test.* are not read (1 skipped)");
+    expect(r.out).toContain("scripts/__tests__/*.test.* are not read unless imported (1 skipped)");
     expect(r.status).toBe(1);
   });
 
@@ -266,6 +266,161 @@ describe("check:keystore-boundary — allowed files used as relays", () => {
       expect(r.status).toBe(0);
     });
   }
+});
+
+describe("check:keystore-boundary — globs are matched against the files that exist", () => {
+  const PANEL = "src/components/wallet/LocalWalletPanel.tsx";
+  const LEAKY_PANEL = `export * from "../../lib/keystore";\nexport const LocalWalletPanel = 1;\n`;
+  const refused: [string, string, Record<string, string>?][] = [
+    ["a recursive glob over the directory above the keystore", `import.meta.glob("../lib/**/*.ts", { eager: true })`],
+    ["a one-level wildcard above a keystore module name", `import.meta.glob("../lib/*/vault.ts", { eager: true })`],
+    ["a brace set naming the keystore", `import.meta.glob("../lib/{other,keystore/vault}.ts")`],
+    ["a ? wildcard inside the directory name", `import.meta.glob("../lib/k?ystore/*.ts")`],
+    ["a character class inside the directory name", `import.meta.glob("../lib/[k]eystore/*.ts")`],
+    ["a glob through the @/ alias", `import.meta.glob("@/lib/**/vault.ts")`],
+    ["a root-relative glob", `import.meta.glob("/src/**/vault.ts")`],
+    ["a glob loading the sealed LocalWalletPanel", `import.meta.glob("./wallet/*.tsx", { eager: true })`, { [PANEL]: LEAKY_PANEL }],
+    ["a glob whose pattern is a variable", `import.meta.glob(pattern)`],
+    ["a glob whose pattern is an interpolating template", "import.meta.glob(`../lib/${dir}/*.ts`)"],
+    ["a glob whose array holds an expression", `import.meta.glob(["../lib/other.ts", base + "/*.ts"])`],
+    ["a glob with an extglob", `import.meta.glob("../lib/@(keystore)/*.ts")`],
+    ["a glob with a comment before the parenthesis", `import.meta.glob /* x */ ("../lib/**/*.ts")`],
+  ];
+  for (const [name, call, extra] of refused) {
+    it(`refuses ${name}`, () => {
+      const r = check({ "src/components/Panel.tsx": `const pattern = "x", dir = "y", base = "z";\nexport const m = ${call};\n`, ...(extra ?? {}) });
+      expect(r.out, r.out).toContain("src/components/Panel.tsx:2");
+      expect(r.status).toBe(1);
+    });
+  }
+
+  const passed: [string, string, Record<string, string>?][] = [
+    ["a recursive glob that matches only files beside the keystore", `import.meta.glob("../lib/**/other.ts")`],
+    ["a wildcard over a directory holding no keystore file", `import.meta.glob("./wallet/*.tsx")`, { "src/components/wallet/WatchPanel.tsx": "export const W = 1;\n" }],
+    ["a brace set naming only files beside the keystore", `import.meta.glob("../lib/{other,missing}.ts")`],
+  ];
+  for (const [name, call, extra] of passed) {
+    it(`passes ${name}`, () => {
+      const r = check({ "src/components/Panel.tsx": `export const m = ${call};\n`, ...(extra ?? {}) });
+      expect(r.out, r.out).toContain("Keystore boundary OK");
+      expect(r.status).toBe(0);
+    });
+  }
+
+  it("passes prose that names import.meta.glob without calling it", () => {
+    const r = check({ "src/components/Panel.tsx": "// import.meta.glob loads modules by pattern\nexport const p = 1;\n" });
+    expect(r.out, r.out).toContain("Keystore boundary OK");
+    expect(r.status).toBe(0);
+  });
+});
+
+describe("check:keystore-boundary — a relay is found by the import that reaches it", () => {
+  const refused: [string, Record<string, string>, string][] = [
+    ["docs/", { "docs/relay.ts": `export * from "../src/lib/keystore";\n`, "src/components/Panel.tsx": `export * from "../../docs/relay";\n` }, "docs/relay.ts:1"],
+    ["locales/", { "locales/relay.ts": `export * from "../src/lib/keystore";\n`, "src/components/Panel.tsx": `export * from "../../locales/relay";\n` }, "locales/relay.ts:1"],
+    [".github/", { ".github/relay.ts": `export * from "../src/lib/keystore";\n`, "src/components/Panel.tsx": `export * from "../../.github/relay";\n` }, ".github/relay.ts:1"],
+    ["a test file skipped by name", { "scripts/__tests__/relay.test.ts": `export * from "../../src/lib/keystore";\n`, "src/components/Panel.tsx": `export * from "../../scripts/__tests__/relay.test";\n` }, "scripts/__tests__/relay.test.ts:1"],
+    ["two hops through docs/", { "docs/a.ts": `export * from "./b";\n`, "docs/b.ts": `export * from "../src/lib/keystore";\n`, "src/components/Panel.tsx": `export * from "../../docs/a";\n` }, "docs/b.ts:1 (read because docs/a.ts imports it)"],
+    ["a dynamic import into docs/", { "docs/relay.ts": `export * from "../src/lib/keystore";\n`, "src/components/Panel.tsx": `export const l = () => import("../../docs/relay");\n` }, "docs/relay.ts:1"],
+    ["a glob into docs/", { "docs/relay.ts": `export * from "../src/lib/keystore";\n`, "src/components/Panel.tsx": `export const m = import.meta.glob("../../docs/*.ts", { eager: true });\n` }, "docs/relay.ts:1"],
+  ];
+  for (const [name, files, site] of refused) {
+    it(`refuses a relay through ${name}`, () => {
+      const r = check(files);
+      expect(r.out, r.out).toContain(site.includes("read because") ? site : `${site} (read because src/components/Panel.tsx imports it)`);
+      expect(r.status).toBe(1);
+    });
+  }
+
+  it("passes a docs/ file that re-exports the keystore when nothing imports it", () => {
+    const r = check({ "docs/relay.ts": `export * from "../src/lib/keystore";\n` });
+    expect(r.out, r.out).toContain("Keystore boundary OK");
+    expect(r.status).toBe(0);
+  });
+
+  it("passes a clean docs/ module that a panel imports, and counts it", () => {
+    const r = check({ "docs/table.ts": `export const t = 1;\n`, "src/components/Panel.tsx": `export { t } from "../../docs/table";\n` });
+    expect(r.out, r.out).toContain("Keystore boundary OK");
+    expect(r.out).toContain("(1 outside those)");
+    expect(r.status).toBe(0);
+  });
+});
+
+describe("check:keystore-boundary — package.json imports", () => {
+  const cases: [string, unknown, string][] = [
+    ["an exact key", { "#k": "./src/lib/keystore/index.ts" }, `export * from "#k";`],
+    ["a key under conditions", { "#k": { node: "./src/lib/other.ts", default: "./src/lib/keystore/index.ts" } }, `export * from "#k";`],
+    ["a wildcard key", { "#ks/*": "./src/lib/keystore/*.ts" }, `import { vault } from "#ks/vault";\nexport { vault };`],
+  ];
+  for (const [name, imports, text] of cases) {
+    it(`refuses ${name}`, () => {
+      const r = check({ "package.json": JSON.stringify({ name: "x", imports }), "src/components/Panel.tsx": text + "\n" });
+      expect(r.out, r.out).toContain("src/components/Panel.tsx:1");
+      expect(r.status).toBe(1);
+    });
+  }
+
+  it("passes a # alias that resolves beside the keystore", () => {
+    const r = check({ "package.json": JSON.stringify({ name: "x", imports: { "#o": "./src/lib/other.ts" } }), "src/components/Panel.tsx": `export * from "#o";\n` });
+    expect(r.out, r.out).toContain("Keystore boundary OK");
+    expect(r.status).toBe(0);
+  });
+
+  it("fails on a package.json it cannot parse, rather than resolving without it", () => {
+    const r = check({ "package.json": "{ nope", "src/components/Panel.tsx": `export * from "#k";\n` });
+    expect(r.out, r.out).toContain("cannot parse package.json");
+    expect(r.status).toBe(1);
+  });
+});
+
+describe("check:keystore-boundary — string names in an import clause", () => {
+  const PANEL = "src/components/wallet/LocalWalletPanel.tsx";
+  const CLEAN_PANEL = `import { vault } from "../../lib/keystore/vault";\nexport function LocalWalletPanel() { return vault; }\n`;
+  const refused: [string, string][] = [
+    ["a re-export under a string name", `export { vault as "v" } from "../lib/keystore";`],
+    ["an import of a string name", `import { "vault" as v } from "../lib/keystore";\nexport { v };`],
+    ["a string name with a comma inside", `import { "a,b" as v, vault } from "../lib/keystore";\nexport { v, vault };`],
+  ];
+  for (const [name, text] of refused) {
+    it(`refuses ${name}`, () => {
+      const r = check({ "src/components/Panel.tsx": text + "\n" });
+      expect(r.out, r.out).toContain("src/components/Panel.tsx:1");
+      expect(r.status).toBe(1);
+    });
+  }
+
+  it("passes the sealed panel imported by its name spelled as a string", () => {
+    const r = check({ [PANEL]: CLEAN_PANEL, "src/components/wallet/Hub.tsx": `import { "LocalWalletPanel" as P } from "./LocalWalletPanel";\nexport const h = P;\n` });
+    expect(r.out, r.out).toContain("Keystore boundary OK");
+    expect(r.status).toBe(0);
+  });
+
+  it("refuses a string name the sealed panel may not hand out", () => {
+    const r = check({ [PANEL]: CLEAN_PANEL, "src/components/connect/P.tsx": `import { "vault" as v } from "../wallet/LocalWalletPanel";\nexport const x = v;\n` });
+    expect(r.out, r.out).toContain("src/components/connect/P.tsx:1");
+    expect(r.status).toBe(1);
+  });
+
+  it("passes a string-named re-export of a module beside the keystore", () => {
+    const r = check({ "src/components/Panel.tsx": `export { other as "o" } from "../lib/other";\n` });
+    expect(r.out, r.out).toContain("Keystore boundary OK");
+    expect(r.status).toBe(0);
+  });
+});
+
+describe("check:keystore-boundary — a source file it cannot read as text", () => {
+  it("fails on a UTF-16 source file", () => {
+    const body = Buffer.from(`export * from "../lib/keystore";\n`, "utf16le");
+    const r = check({ "src/components/Panel.ts": Buffer.concat([Buffer.from([0xff, 0xfe]), body]) });
+    expect(r.out, r.out).toContain("src/components/Panel.ts is UTF-16");
+    expect(r.status).toBe(1);
+  });
+
+  it("fails on a source file with a NUL byte", () => {
+    const r = check({ "src/components/Panel.ts": `// \u0000\nexport const p = 1;\n` });
+    expect(r.out, r.out).toContain("src/components/Panel.ts has a NUL byte");
+    expect(r.status).toBe(1);
+  });
 });
 
 describe("check:keystore-boundary — this repo", () => {
