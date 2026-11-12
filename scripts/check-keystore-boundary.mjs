@@ -17,7 +17,7 @@
  */
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 /**
  * The repo this script lives in, unless a root is passed as the first argument
@@ -52,29 +52,55 @@ const ALLOWED = [
   "extension/src/approve.tsx",
 ];
 
-const SCAN = ["src", "extension"];
 /**
- * Static `import`/`export … from`, at the start of a line or after a
- * statement-separating `;` — two statements on one line were invisible to a
- * version anchored at column 0 alone, and the second one is where an import
- * hides when the first is innocent.
- *
- * The anchor is why the second pattern below exists. This one only sees a
- * statement beginning a line or following a `;`, which is every *static*
- * import — but a module can also be pulled in from inside a function body,
- * indented, and that is the shape someone reaches for when the obvious
- * spelling is rejected.
+ * Every top-level directory that holds JavaScript or TypeScript. `scripts` was
+ * missing: a panel re-exporting `../../scripts/relay`, with `scripts/relay.ts`
+ * re-exporting the keystore, printed OK, because the one file that touched the
+ * keystore sat where nobody looked. `assertNoUnscannedSourceRoot()` fails the
+ * gate when a new directory appears that is on neither list.
  */
-const IMPORT_RE = /(?:^|;)[ \t]*(?:import|export)\b[\s\S]*?["'`]([^"'`]+)["'`]/gm;
+const SCAN = ["src", "extension", "scripts"];
+/** Never source this gate owes a look at. */
+const NOT_SOURCE = new Set([".git", "node_modules", "dist-extension", ".claude", "_Agents", ".github", "docs", "locales"]);
+/**
+ * The one exclusion, and it is printed with every result. The gate's own tests
+ * live here and spell keystore imports inside string fixtures — an alias such
+ * as `@/lib/keystore/vault` resolves the same from any directory — so reading
+ * them would fail the gate on its own test data. Only `*.test.*` files are
+ * skipped: a helper module beside them is still read.
+ */
+const EXCLUDED = /^scripts\/__tests__\/[^/]+\.test\.(m|c)?[jt]sx?$/;
+const EXCLUSION_NOTE = "test files matching scripts/__tests__/*.test.* are not read";
+
+/** A gap between tokens: whitespace, a block comment, or a line comment. */
+const GAP = String.raw`(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*)`;
+/**
+ * Static `import`/`export … from`, wherever the statement starts.
+ *
+ * It used to be anchored at the start of a line or after a `;`, and each
+ * anchor was a way past it: a block comment before the statement on the same
+ * line (`/**\/ import …`) and an empty block (`{} import …`) both printed OK,
+ * and both compile. The keyword is now matched anywhere it starts a word.
+ *
+ * What may sit between the keyword and the specifier is limited to what an
+ * import clause is made of — names, `*`, braces, commas, `as`/`from`/`type`,
+ * whitespace and comments. The old body was "anything, lazily", which let
+ * `export { f };` on one line run on to a quote on a later line, report THAT
+ * line, and catch an indented `import()` only by accident.
+ */
+const IMPORT_RE = new RegExp(String.raw`\b(?:import|export)(?:${GAP}|[\w$*{},])*?["'\`]([^"'\`]+)["'\`]`, "g");
 /**
  * Dynamic `import("…")` and `require("…")`, anywhere, at any indentation.
  *
  * Verified against this gate before it was added: a file containing only
- * `export const CLS = "probe";` and `return import("@/lib/keystore/port")`
- * inside a function was reported **OK**, as was the same file using
- * `require(...)`. The pattern above cannot reach either — its `^` anchor skips
- * indented code, and its lazy body stops at the first quote it meets, which in
- * such a file is an unrelated string literal.
+ * `export const CLS = "probe";` and a dynamic import of the keystore's `port`
+ * module through the `@/` alias, inside a function, was reported **OK**, as was
+ * the same file using `require(...)`. The static pattern, as it stood then,
+ * could reach neither — its `^` anchor skipped indented code, and its lazy body
+ * stopped at the first quote it met, which in such a file is an unrelated
+ * string literal. (The example is described rather than spelled out because
+ * this file is now scanned too, and the spelled-out call is exactly what it
+ * refuses.)
  *
  * The quotes may be backticks: `` import(`…`) `` with no interpolation is a
  * static specifier to the runtime and an invisible one to a pattern that only
@@ -90,7 +116,23 @@ const IMPORT_RE = /(?:^|;)[ \t]*(?:import|export)\b[\s\S]*?["'`]([^"'`]+)["'`]/g
  * This is a textual check, so it catches the accident and the shortcut, not the
  * author who is deliberately hiding. That author is what code review is for.
  */
-const DYNAMIC_RE = /\b(?:import|require)\s*\(\s*["'`]([^"'`]+)["'`]/g;
+const DYNAMIC_RE = new RegExp(String.raw`\b(?:import|require)\s*\(${GAP}*["'\`]([^"'\`]+)["'\`]`, "g");
+// A comment between `(` and the specifier — `import(/* @vite-ignore */ "…")`,
+// the form Vite itself suggests — used to hide the call; `GAP` lets it through.
+
+/**
+ * `import.meta.glob("…")` — Vite's way to import every module a pattern names,
+ * eagerly if asked. Measured: `import.meta.glob("../lib/keystore/vault.ts",
+ * { eager: true })` inside a function printed OK. The argument may be one
+ * pattern or an array of them; each is resolved like a specifier, and a `*` in
+ * it is compared as a path segment, so a pattern under the keystore directory
+ * is inside it. Negated patterns (`!…`) only remove files and are skipped.
+ */
+const GLOB_RE = new RegExp(
+  String.raw`\bimport\.meta\.glob(?:Eager)?\s*(?:<[^>()]*>)?\s*\(${GAP}*(\[[^\]]*\]|["'\`][^"'\`]+["'\`])`,
+  "g",
+);
+const STRING_RE = /["'`]([^"'`]+)["'`]/g;
 
 /**
  * Where an import specifier lands, decided by resolving it — not by what it
@@ -112,18 +154,21 @@ const DYNAMIC_RE = /\b(?:import|require)\s*\(\s*["'`]([^"'`]+)["'`]/g;
  */
 const KEYSTORE = canonical(join(REPO, "src", "lib", "keystore"));
 
-/** `tsconfig.json`'s module resolution, or a failure — never a silent default. */
-function loadTsconfig() {
-  const file = join(REPO, "tsconfig.json");
-  if (!existsSync(file)) return { baseUrl: REPO, paths: [] };
+/** A failure — never a silent default. */
+function fail(message) {
+  console.error(`Keystore boundary FAILED — ${message}`);
+  process.exit(1);
+}
+
+/** One tsconfig file, read as the JSONC it is. */
+function readTsconfig(file) {
   const text = readFileSync(file, "utf8");
-  let json;
   try {
-    json = JSON.parse(text);
+    return JSON.parse(text);
   } catch {
     try {
       // tsconfig is JSONC. Drop comments and trailing commas, outside strings.
-      json = JSON.parse(
+      return JSON.parse(
         text
           .replace(/("(?:[^"\\]|\\.)*")|\/\/[^\n]*|\/\*[\s\S]*?\*\//g, (m, str) => str ?? "")
           .replace(/("(?:[^"\\]|\\.)*")|,(\s*[}\]])/g, (m, str, close) => str ?? close),
@@ -131,27 +176,76 @@ function loadTsconfig() {
     } catch (e) {
       // An alias this gate cannot read is an import it cannot resolve: fail, so
       // the gate does not go on reporting OK about a map it never saw.
-      console.error(`Keystore boundary FAILED — cannot parse tsconfig.json: ${e.message}`);
-      process.exit(1);
+      return fail(`cannot parse ${relative(REPO, file).split(sep).join("/")}: ${e.message}`);
     }
   }
+}
+
+/** The file an `extends` entry names, as tsc finds it. */
+function extendsTarget(entry, fromDir) {
+  const tries = entry.startsWith(".") || isAbsolute(entry)
+    ? [resolve(fromDir, entry), resolve(fromDir, `${entry}.json`)]
+    : [join(REPO, "node_modules", entry), join(REPO, "node_modules", `${entry}.json`), join(REPO, "node_modules", entry, "tsconfig.json")];
+  const hit = tries.find((t) => existsSync(t) && statSync(t).isFile());
+  return hit ?? fail(`cannot find "${entry}", which a tsconfig extends`);
+}
+
+/**
+ * One config and the chain it `extends`, merged as tsc merges it: a key set in
+ * a file beats the same key from what it extends, and of several `extends`
+ * entries the later one wins. Without this an alias declared in a base config
+ * (`#k` → the keystore, in `tsconfig.base.json`) printed OK.
+ */
+function loadChain(file, seen) {
+  if (seen.has(file)) fail(`tsconfig extends itself through ${relative(REPO, file)}`);
+  seen.add(file);
+  const json = readTsconfig(file);
+  const dir = dirname(file);
+  const acc = {};
+  for (const entry of [].concat(json.extends ?? [])) {
+    for (const [k, v] of Object.entries(loadChain(extendsTarget(entry, dir), seen))) if (v !== undefined) acc[k] = v;
+  }
   const options = json.compilerOptions ?? {};
-  const baseUrl = resolve(REPO, options.baseUrl ?? ".");
-  return { baseUrl, paths: Object.entries(options.paths ?? {}) };
+  if (options.baseUrl !== undefined) acc.baseUrl = resolve(dir, options.baseUrl);
+  if (options.paths !== undefined) {
+    acc.paths = Object.entries(options.paths);
+    acc.pathsDir = dir; // with no baseUrl, targets are relative to the declaring file
+  }
+  seen.delete(file);
+  return acc;
+}
+
+/** `tsconfig.json`'s module resolution, following `extends`, or a failure. */
+function loadTsconfig() {
+  const file = join(REPO, "tsconfig.json");
+  if (!existsSync(file)) return { baseUrl: REPO, pathsBase: REPO, paths: [] };
+  const c = loadChain(file, new Set());
+  return { baseUrl: c.baseUrl ?? REPO, pathsBase: c.baseUrl ?? c.pathsDir ?? REPO, paths: c.paths ?? [] };
 }
 
 const TSCONFIG = loadTsconfig();
 
 /**
  * The real path of what `p` names, trying the extensions the bundler tries.
- * A path that does not exist is compared as written: it cannot build, and
- * comparing it lexically still catches a typo'd spelling of the keystore.
+ * A path that does not exist keeps its own last segments, but the longest part
+ * of it that DOES exist is resolved to its real path first. Comparing the
+ * whole thing as written put it on a different side of every symlink than
+ * KEYSTORE: under a repo reached through one (macOS `/var` → `/private/var`),
+ * `…/keystore/vault.js` — which a bundler resolves to `vault.ts` — printed OK.
  */
 function canonical(p) {
   for (const c of [p, `${p}.ts`, `${p}.tsx`, `${p}.js`, `${p}.mjs`]) {
     if (existsSync(c)) return realpathSync(c);
   }
-  return resolve(p);
+  let head = resolve(p);
+  const tail = [];
+  while (!existsSync(head)) {
+    const up = dirname(head);
+    if (up === head) return resolve(p);
+    tail.unshift(basename(head));
+    head = up;
+  }
+  return join(realpathSync(head), ...tail);
 }
 
 /** Every path a specifier written in `fromFile` can resolve to. */
@@ -173,7 +267,7 @@ function candidates(spec, fromFile) {
     const hit = star < 0 ? s === pattern : s.startsWith(head) && s.endsWith(tail) && s.length >= head.length + tail.length;
     if (!hit) continue;
     const middle = star < 0 ? "" : s.slice(head.length, s.length - tail.length);
-    for (const t of targets) out.push(resolve(TSCONFIG.baseUrl, t.replace("*", middle)));
+    for (const t of targets) out.push(resolve(TSCONFIG.pathsBase, t.replace("*", middle)));
   }
   // `baseUrl` makes every bare path a path from that directory as well.
   out.push(resolve(TSCONFIG.baseUrl, s));
@@ -209,26 +303,64 @@ const rel = (f) => relative(REPO, f).split(sep).join("/");
 const allowed = (r) => ALLOWED.some((a) => (a.endsWith("/") ? r.startsWith(a) : r === a));
 const lineOf = (text, index) => text.slice(0, index).split("\n").length;
 
+/** A top-level directory holding source that neither list mentions. */
+function assertNoUnscannedSourceRoot() {
+  const missed = readdirSync(REPO)
+    .sort()
+    .filter((d) => !NOT_SOURCE.has(d) && !SCAN.includes(d) && statSync(join(REPO, d)).isDirectory())
+    .filter((d) => {
+      for (const _ of walk(join(REPO, d))) return true;
+      return false;
+    });
+  if (missed.length) {
+    fail(
+      `source directories nobody scans: ${missed.map((d) => d + "/").join(", ")}\n` +
+        "Add them to SCAN in this file, or to NOT_SOURCE if they ship nothing.",
+    );
+  }
+}
+assertNoUnscannedSourceRoot();
+
+/** Specifiers in `text`, each with the offset of the statement that names it. */
+function* specifiers(text) {
+  for (const re of [IMPORT_RE, DYNAMIC_RE]) {
+    re.lastIndex = 0; // these are /g and shared across files
+    for (const m of text.matchAll(re)) yield [m[1], m.index];
+  }
+  GLOB_RE.lastIndex = 0;
+  for (const m of text.matchAll(GLOB_RE)) {
+    for (const s of m[1].matchAll(STRING_RE)) if (!s[1].startsWith("!")) yield [s[1], m.index];
+  }
+}
+
 const offenders = [];
-for (const file of SCAN.flatMap((d) => [...walk(join(REPO, d))])) {
+let excluded = 0;
+// Files at the repo root are read too: a relay module there is one directory
+// hop from any panel, exactly like one under `scripts/`.
+const rootFiles = readdirSync(REPO)
+  .sort()
+  .map((n) => join(REPO, n))
+  .filter((f) => /\.(m|c)?[jt]sx?$/.test(f) && statSync(f).isFile());
+for (const file of [...rootFiles, ...SCAN.flatMap((d) => (existsSync(join(REPO, d)) ? [...walk(join(REPO, d))] : []))]) {
   const r = rel(file);
+  if (EXCLUDED.test(r)) {
+    excluded += 1;
+    continue;
+  }
   if (allowed(r)) continue;
   const text = readFileSync(file, "utf8");
   const seen = new Set();
-  for (const re of [IMPORT_RE, DYNAMIC_RE]) {
-    re.lastIndex = 0; // these are /g and shared across files
-    for (const m of text.matchAll(re)) {
-      const spec = m[1];
-      if (!reachesKeystore(spec, file)) continue;
-      const line = lineOf(text, m.index);
-      // A static import can match both patterns; report the site once.
-      const at = `${r}:${line}`;
-      if (seen.has(at)) continue;
-      seen.add(at);
-      offenders.push(`${at} imports "${spec}"`);
-    }
+  for (const [spec, index] of specifiers(text)) {
+    if (!reachesKeystore(spec, file)) continue;
+    // A static import can match more than one pattern; report the site once.
+    const at = `${r}:${lineOf(text, index)}`;
+    if (seen.has(`${at} ${spec}`)) continue;
+    seen.add(`${at} ${spec}`);
+    offenders.push(`${at} imports "${spec}"`);
   }
 }
+
+const scope = `scanned the repo root and ${SCAN.map((d) => d + "/").join(", ")}; ${EXCLUSION_NOTE} (${excluded} skipped)`;
 
 if (offenders.length) {
   console.error("Keystore boundary FAILED — the self-custody keystore is reachable from:\n");
@@ -239,9 +371,10 @@ if (offenders.length) {
       "\nEither route this through the panel, or widen ALLOWED in this file and say" +
       "\nin the same diff which document sentence you are changing.",
   );
+  console.error(`\n(${scope}.)`);
   process.exit(1);
 }
 
 console.log(
-  `Keystore boundary OK — src/lib/keystore is imported only from ${ALLOWED.length} allowed locations.`,
+  `Keystore boundary OK — src/lib/keystore is imported only from ${ALLOWED.length} allowed locations (${scope}).`,
 );

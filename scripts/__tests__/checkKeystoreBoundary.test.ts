@@ -20,8 +20,13 @@ const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "..", "check-keysto
 const TSCONFIG = JSON.stringify({ compilerOptions: { baseUrl: ".", paths: { "@/*": ["./src/*"] } } });
 
 /** Runs the gate on a tree holding a keystore, a tsconfig, and `files`. */
-function check(files: Record<string, string>, opts: { tsconfig?: string; link?: [string, string] } = {}) {
-  const root = mkdtempSync(join(tmpdir(), "keystore-boundary-"));
+function check(
+  files: Record<string, string>,
+  opts: { tsconfig?: string; link?: [string, string]; viaSymlinkedRoot?: boolean } = {},
+) {
+  const outer = mkdtempSync(join(tmpdir(), "keystore-boundary-"));
+  const root = join(outer, "real");
+  mkdirSync(root);
   try {
     const tree: Record<string, string> = {
       "tsconfig.json": opts.tsconfig ?? TSCONFIG,
@@ -37,10 +42,18 @@ function check(files: Record<string, string>, opts: { tsconfig?: string; link?: 
       writeFileSync(join(root, rel), text);
     }
     if (opts.link) symlinkSync(join(root, opts.link[1]), join(root, opts.link[0]), "dir");
-    const r = spawnSync(process.execPath, [SCRIPT, root], { encoding: "utf8" });
+    // The gate is handed a path through a symlink, so the repo it walks and the
+    // real path it compares against differ — as they do under macOS's tmpdir,
+    // made explicit here so the case means the same on every OS.
+    let target = root;
+    if (opts.viaSymlinkedRoot) {
+      target = join(outer, "link");
+      symlinkSync(root, target, "dir");
+    }
+    const r = spawnSync(process.execPath, [SCRIPT, target], { encoding: "utf8" });
     return { status: r.status, out: r.stdout + r.stderr };
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmSync(outer, { recursive: true, force: true });
   }
 }
 
@@ -82,6 +95,13 @@ describe("check:keystore-boundary — imports that used to print OK", () => {
     ["a file inside a directory named out", "src/out/Panel.tsx", `import { vault } from "../lib/keystore";`],
     ["a plain JavaScript file", "src/components/Panel.js", `import { vault } from "../lib/keystore";`],
     ["a script-module file", "src/components/Panel.mjs", `import { vault } from "../lib/keystore";`],
+    ["a static import after a block comment on the same line", "src/components/Panel.tsx", `/**/ import { vault } from "../lib/keystore";`],
+    ["a static import after an empty block on the same line", "src/components/Panel.tsx", `{} import { vault } from "../lib/keystore";`],
+    ["a dynamic import with a comment before the specifier", "src/components/Panel.tsx", `function f() {\n  return import(/* @vite-ignore */ "../lib/keystore");\n}\nexport { f };`],
+    ["import.meta.glob of a keystore module", "src/components/Panel.tsx", `function f() {\n  return import.meta.glob("../lib/keystore/vault.ts", { eager: true });\n}\nexport { f };`],
+    ["import.meta.glob with the keystore in an array of patterns", "src/components/Panel.tsx", `export const m = import.meta.glob(["../lib/other.ts", "../lib/keystore/*.ts"]);`],
+    ["an import from a file under scripts/", "scripts/relay.ts", `export * from "../src/lib/keystore";`],
+    ["an import from a file at the repo root", "relay.ts", `export * from "./src/lib/keystore";`],
   ];
 
   for (const [name, file, text] of cases) {
@@ -107,6 +127,81 @@ describe("check:keystore-boundary — imports that used to print OK", () => {
     expect(r.out).toContain("src/components/Panel.tsx");
     expect(r.status).toBe(1);
   });
+
+  it("refuses an alias declared in a config that tsconfig.json extends", () => {
+    const r = check(
+      {
+        "src/components/Panel.tsx": `import { vault } from "#k";\n`,
+        "tsconfig.base.json": JSON.stringify({ compilerOptions: { baseUrl: ".", paths: { "#k": ["./src/lib/keystore/index.ts"] } } }),
+      },
+      { tsconfig: JSON.stringify({ extends: "./tsconfig.base.json" }) },
+    );
+    expect(r.out, r.out).toContain("src/components/Panel.tsx");
+    expect(r.status).toBe(1);
+  });
+
+  it("refuses a .js specifier for a .ts keystore module when the repo path goes through a symlink", () => {
+    const r = check({ "src/components/Panel.tsx": `import { vault } from "../lib/keystore/vault.js";\n` }, { viaSymlinkedRoot: true });
+    expect(r.out, r.out).toContain("src/components/Panel.tsx:1");
+    expect(r.status).toBe(1);
+  });
+
+  it("refuses a relay: a panel re-exporting a scripts/ module that re-exports the keystore", () => {
+    const r = check({
+      "src/components/Panel.tsx": `export * from "../../scripts/relay";\n`,
+      "scripts/relay.ts": `export * from "../src/lib/keystore";\n`,
+    });
+    expect(r.out, r.out).toContain("scripts/relay.ts:1");
+    expect(r.status).toBe(1);
+  });
+
+  it("reports the line of the dynamic import, not of an earlier export with no quote", () => {
+    const r = check({
+      "src/components/Panel.tsx": `export { g };\nconst g = 1;\nfunction f() {\n  return import("../lib/keystore");\n}\n`,
+    });
+    expect(r.out, r.out).toContain("src/components/Panel.tsx:4");
+    expect(r.out).not.toContain("src/components/Panel.tsx:1");
+    expect(r.status).toBe(1);
+  });
+
+  it("reads a helper module beside the gate's tests, and says which test files it skipped", () => {
+    const r = check({
+      "scripts/__tests__/helper.ts": `export * from "../../src/lib/keystore";\n`,
+      "scripts/__tests__/thing.test.ts": `const fixture = 'import { vault } from "@/lib/keystore/vault"';\n`,
+    });
+    expect(r.out, r.out).toContain("scripts/__tests__/helper.ts:1");
+    expect(r.out).not.toContain("thing.test.ts");
+    expect(r.out).toContain("scripts/__tests__/*.test.* are not read (1 skipped)");
+    expect(r.status).toBe(1);
+  });
+
+  it("fails on a source directory it does not scan", () => {
+    const r = check({ "tools/relay.ts": `export * from "../src/lib/keystore";\n` });
+    expect(r.out, r.out).toContain("source directories nobody scans: tools/");
+    expect(r.status).toBe(1);
+  });
+
+  it("fails on an extends it cannot find, rather than resolving without the base config", () => {
+    const r = check({ "src/a.ts": "export const a = 1;\n" }, { tsconfig: JSON.stringify({ extends: "./missing.json" }) });
+    expect(r.out).toContain('cannot find "./missing.json"');
+    expect(r.status).toBe(1);
+  });
+});
+
+describe("check:keystore-boundary — controls for the widened patterns", () => {
+  const ok: [string, Record<string, string>][] = [
+    ["a glob over a directory beside the keystore", { "src/components/Panel.tsx": `export const m = import.meta.glob("../lib/*.ts");\n` }],
+    ["a negated glob naming the keystore", { "src/components/Panel.tsx": `export const m = import.meta.glob(["../lib/*.ts", "!../lib/keystore/**"]);\n` }],
+    ["an export list followed by unrelated strings", { "src/components/Panel.tsx": `export { g };\nconst g = "../lib/keystore";\n` }],
+    ["a test file under scripts/__tests__ spelling an alias import in a fixture", { "scripts/__tests__/x.test.ts": `const t = 'import { v } from "@/lib/keystore/vault"';\n` }],
+  ];
+  for (const [name, files] of ok) {
+    it(`passes ${name}`, () => {
+      const r = check(files);
+      expect(r.out, r.out).toContain("Keystore boundary OK");
+      expect(r.status).toBe(0);
+    });
+  }
 });
 
 describe("check:keystore-boundary — this repo", () => {
