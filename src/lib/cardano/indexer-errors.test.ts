@@ -63,6 +63,7 @@ describe("indexer failures propagate instead of becoming data", () => {
       registered: false,
       delegatedPoolId: null,
       rewardsAvailable: BigInt("0"),
+      delegatedDRep: null,
     });
   });
 
@@ -76,6 +77,7 @@ describe("indexer failures propagate instead of becoming data", () => {
             status: "registered",
             delegated_pool: "pool1abc",
             rewards_available: "12345",
+            delegated_drep: "drep_always_abstain",
           },
         ]),
       ),
@@ -84,6 +86,7 @@ describe("indexer failures propagate instead of becoming data", () => {
       registered: true,
       delegatedPoolId: "pool1abc",
       rewardsAvailable: BigInt("12345"),
+      delegatedDRep: "drep_always_abstain",
     });
   });
 

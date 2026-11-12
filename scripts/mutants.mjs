@@ -33,6 +33,8 @@ const HISTORY = "src/lib/cardano/history.ts";
 const PRICE = "src/lib/cardano/price.ts";
 const SEND = "src/components/wallet/SendPanel.tsx";
 const STAKING = "src/components/wallet/StakingPanel.tsx";
+// The library read the withdraw door decides from.
+const STAKING_LIB = "src/lib/cardano/staking.ts";
 const GOV = "src/components/wallet/GovernancePanel.tsx";
 const TABS = "src/components/wallet/WalletTabs.tsx";
 const PROVIDER = "src/lib/cardano/provider.ts";
@@ -79,6 +81,8 @@ const TESTS = [
   "src/components/wallet/__tests__/LocalWalletPanel.context.test.tsx",
   "scripts/__tests__/checkPopupCss.test.ts",
   "scripts/__tests__/checkLocales.test.ts",
+  "src/components/wallet/__tests__/StakingPanel.withdraw.test.tsx",
+  "src/lib/cardano/__tests__/stakeAccountState.test.ts",
 ];
 
 /**
@@ -1165,6 +1169,51 @@ const MUTANTS = [
     from: 'if (json === null || typeof json !== "object" || Array.isArray(json)) {',
     to: "if (false) {",
   },
+  // ── The withdraw door: since Conway the node refuses a reward withdrawal from
+  // an account with no vote delegation, and a button that only appears with
+  // rewards in hand left new users looking for a feature that seemed missing ──
+  {
+    name: "the withdraw button hides again while there is nothing to take",
+    file: STAKING,
+    from: '  return (\n    <div className="space-y-1">',
+    to: '  if (!hasRewards) return null;\n  return (\n    <div className="space-y-1">',
+  },
+  {
+    name: "the DRep rule is not read, so withdraw is offered to an account the node refuses",
+    file: STAKING,
+    from: "  const needsDRep = hasRewards && state.delegatedDRep === null;",
+    to: "  const needsDRep = false;",
+  },
+  {
+    name: "an indexer row without delegated_drep reads as 'no DRep'",
+    file: STAKING_LIB,
+    from: "  if (r.delegated_drep === undefined) {",
+    to: "  if (false) {",
+  },
+  {
+    name: "the one-step fix delegates to No Confidence instead of Abstain",
+    file: STAKING,
+    from: '        target: { kind: "abstain" },',
+    to: '        target: { kind: "noConfidence" },',
+  },
+  {
+    name: "after Abstain is sent, nobody re-reads the account and withdraw never opens",
+    file: STAKING,
+    from: "    if (!abstainWaiting || !rewardAddressBech32) return;",
+    to: "    if (true) return;",
+  },
+  {
+    name: "the Abstain confirm signs while a submit is uncertain",
+    file: STAKING,
+    from: '    if (!abstainReview) return;\n    // A third way to sign on this screen, so it carries the same refusal.\n    if (uncertainHash !== null) return toastError(t("uncertain_blocked"));',
+    to: "    if (!abstainReview) return;",
+  },
+  {
+    name: "the Abstain button ignores the uncertain-submit lock",
+    file: STAKING,
+    from: "            disabled={locked}\n            onClick={onAbstain}",
+    to: "            disabled={false}\n            onClick={onAbstain}",
+  },
 ];
 
 /**
@@ -1181,6 +1230,13 @@ const MUTANTS = [
  * Pinning these would need a gate naming one function in one file, which then
  * goes red on any honest rename — the kind of watcher that gets deleted rather
  * than fixed.
+ *
+ *   - `StakingPanel.reviewWithdraw()`'s `delegatedDRep === null` refusal
+ *
+ * A second door the other way round: the screen never draws the withdraw
+ * button for such an account, and dropping THAT is caught above ("the DRep
+ * rule is not read"). With no button there is no way to reach the function
+ * from the screen, so no screen test can tell whether its own check is there.
  */
 
 const read = (rel) => readFileSync(join(REPO, rel), "utf8");

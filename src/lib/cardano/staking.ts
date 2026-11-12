@@ -125,12 +125,21 @@ export type StakeAccountState = {
   registered: boolean;
   delegatedPoolId: string | null;
   rewardsAvailable: bigint;
+  /**
+   * The account's vote delegation: a `drep1…` id, `drep_always_abstain`,
+   * `drep_always_no_confidence`, or null when it has none. Since the Conway
+   * hard fork a key-based account with no vote delegation cannot withdraw its
+   * rewards — the node rejects the whole transaction — so the withdraw button
+   * reads this before it builds anything.
+   */
+  delegatedDRep: string | null;
 };
 
 type AccountInfoRow = {
   stake_address?: string;
   status?: string; // "registered" | "not registered"
   delegated_pool?: string | null;
+  delegated_drep?: string | null;
   rewards_available?: string | null;
 };
 
@@ -155,11 +164,20 @@ export async function getStakeAccountState(
     _stake_addresses: [rewardAddressBech32],
   });
   const r = rows[0];
-  if (!r) return { registered: false, delegatedPoolId: null, rewardsAvailable: BigInt("0") };
+  if (!r) {
+    return { registered: false, delegatedPoolId: null, rewardsAvailable: BigInt("0"), delegatedDRep: null };
+  }
+  // Absent is not the same as null. An indexer that does not report the field
+  // must not be read as "no DRep": that would send a user who already chose
+  // one into a second, paid vote-delegation transaction.
+  if (r.delegated_drep === undefined) {
+    throw new Error("Indexer response has no delegated_drep field");
+  }
   return {
     registered: r.status === "registered",
     delegatedPoolId: r.delegated_pool ?? null,
     rewardsAvailable: BigInt(r.rewards_available ?? "0"),
+    delegatedDRep: r.delegated_drep,
   };
 }
 
