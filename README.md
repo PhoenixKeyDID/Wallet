@@ -36,6 +36,9 @@ refers to (Wallet API v2, Rebirthme, DappConnector) are canonical in
 
 **Full specification & security model:** [`docs/Phoenix Wallet-Feat.md`](<docs/Phoenix Wallet-Feat.md>).
 
+**Security audit scope (browser extension):** [`docs/extension-audit-scope.md`](docs/extension-audit-scope.md).
+**Contribution tiers (which paths an outside contributor may be paid to change):** [`docs/contribution-tiers.json`](docs/contribution-tiers.json).
+
 ## Design: where your keys live
 
 Five modes. **Four of them never hold a key**; the fifth does, on purpose, and
