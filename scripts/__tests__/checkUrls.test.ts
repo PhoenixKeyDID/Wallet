@@ -35,11 +35,14 @@ const b64 = (t: string) => Buffer.from(src(t)).toString("base64");
  * Runs the guard on a tree holding the four scan roots, a CODEOWNERS made of
  * `owners` lines, and `files` (repo-relative path → text).
  */
-function check(files: Record<string, string>, owners: string[] = []) {
+function check(files: Record<string, string>, owners: string[] = [], rawOwnerLines: string[] = []) {
   const root = mkdtempSync(join(tmpdir(), "check-urls-"));
   try {
     for (const d of ["src", "extension", "scripts", "docs", ".github"]) mkdirSync(join(root, d), { recursive: true });
-    writeFileSync(join(root, ".github", "CODEOWNERS"), owners.map((o) => `${o}  @owner`).join("\n") + "\n");
+    writeFileSync(
+      join(root, ".github", "CODEOWNERS"),
+      [...owners.map((o) => `${o}  @owner`), ...rawOwnerLines].join("\n") + "\n",
+    );
     for (const [rel, text] of Object.entries(files)) {
       mkdirSync(dirname(join(root, rel)), { recursive: true });
       writeFileSync(join(root, rel), text);
@@ -110,6 +113,37 @@ describe("check:urls — controls", () => {
     const r = check({ "src/a.ts": src(`for (const proto of ["http«C»", "file«C»", "blob«C»", "data«C»"]) {}\n`) });
     expect(r.status).toBe(0);
   });
+
+  it("leaves an object key named ws alone", () => {
+    const r = check({ "src/a.ts": src(`export const o = { ws«C»x };\nexport const p = {ws«C»socket};\n`) });
+    expect(r.out, r.out).toContain("Outbound-URL guard OK");
+    expect(r.status).toBe(0);
+  });
+
+  it("leaves a scheme word followed by a newline escape and a plain word alone", () => {
+    const r = check({ "src/a.ts": src(`export const m = "only https«C»\\nnext line";\n`) });
+    expect(r.out, r.out).toContain("Outbound-URL guard OK");
+    expect(r.status).toBe(0);
+  });
+
+  it("passes a look-alike host in a gated file — gating is the review, not a verdict on the host", () => {
+    const r = check({ "src/a.ts": src(`export const a = "https«C»«S»«S»p\u0430ypal.com/x";\n`) }, ["/src/a.ts"]);
+    expect(r.status).toBe(0);
+  });
+});
+
+describe("check:urls — CODEOWNERS lines that do not gate", () => {
+  it("does not count a pattern with no owner, which removes ownership", () => {
+    const r = check({ "src/a.ts": src(`export const a = "https«C»«S»«S»evil.example/x";\n`) }, ["*"], ["/src/a.ts"]);
+    expect(reasonOf(r.out), r.out).toBe(UNGATED);
+    expect(r.status).toBe(1);
+  });
+
+  it("names the catch-all line as not counting, instead of asking for a CODEOWNERS entry it already has", () => {
+    const r = check({ "src/a.ts": src(`export const a = "https«C»«S»«S»evil.example/x";\n`) }, ["*"]);
+    expect(r.out).toContain("the catch-all `*` line does not count");
+    expect(r.out).not.toContain("so changing\nit requires a maintainer review");
+  });
 });
 
 describe("check:urls — inputs that used to print OK", () => {
@@ -150,6 +184,20 @@ describe("check:urls — inputs that used to print OK", () => {
     ["base64 of a protocol-relative URL", `export const u = atob("${b64("«S»«S»evil.example")}");`, RUNTIME],
     ["base64url of a URL, via Buffer", `export const u = Buffer.from("${Buffer.from(src("https«C»«S»«S»evil.example/?a=>>")).toString("base64url")}", "base64url");`, RUNTIME],
     ["base64 torn in half across a plus", tornB64, RUNTIME],
+    // Each of these parses as an absolute URL with `new URL()`, and each printed
+    // OK while the host pattern wanted an ASCII first label and a dot.
+    ["a URL with userinfo before the host", `export const u = "https«C»«S»«S»x@evil.example/";`, UNGATED],
+    ["a percent-encoded host", `export const u = "https«C»«S»«S»%65vil.example/";`, UNGATED],
+    ["a dotless IPv4 host in decimal", `export const u = "https«C»«S»«S»3232235777/x";`, UNGATED],
+    ["a dotless IPv4 host in hex", `export const u = "https«C»«S»«S»0x7f000001/x";`, UNGATED],
+    ["an IPv6 host", `export const u = "https«C»«S»«S»[2001«C»db8«C»«C»1]/x";`, UNGATED],
+    ["a look-alike host whose first label is Cyrillic", `export const u = "https«C»«S»«S»p\u0430ypal.com/x";`, UNGATED],
+    // The URL parser deletes tab, newline and carriage return wherever they sit.
+    ["a tab escape inside the scheme", `export const u = "h\\tttps«C»«S»«S»evil.example/";`, RUNTIME],
+    ["a literal tab inside the scheme", `export const u = "h\tttps«C»«S»«S»evil.example/";`, RUNTIME],
+    ["a newline escape after the colon", `export const u = "https«C»\\n«S»«S»evil.example/";`, RUNTIME],
+    ["a carriage-return escape between the slashes", `export const u = "https«C»«S»\\r«S»evil.example/";`, RUNTIME],
+    ["a colon written as a braced unicode escape", `export const u = "https\\u{3a}«S»«S»evil.example/";`, RUNTIME],
   ];
 
   for (const [name, fixture, reason] of cases) {

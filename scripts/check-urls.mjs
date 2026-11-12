@@ -12,8 +12,18 @@
  * half: an absolute URL may appear ONLY in a file CODEOWNERS already gates.
  *
  * The allow-list is READ FROM CODEOWNERS rather than repeated here, so the two
- * cannot drift apart. Adding a URL to a new file fails CI until that file is
- * gated — and gating it is what pulls in the review.
+ * cannot drift apart. Since CODEOWNERS gained its catch-all `*` line, every file
+ * already needs an owner's review; what this guard adds is that a URL may only
+ * sit in a file a CODEOWNERS line NAMES (its own path, or a directory above it),
+ * so the places that can carry a destination stay a short, listed set.
+ *
+ * What this guard does not stop, stated so nobody mistakes it for more than it
+ * is: a URL its author is deliberately hiding. Hex fed to `Buffer.from(…, "hex")`,
+ * `String.fromCharCode(…)`, `decodeURIComponent` of a percent-encoded string, a
+ * scheme cut after its first two letters, a host computed from data — all of
+ * these build a working URL that no textual check can read. This catches the
+ * accident and the lazy shortcut. The author who is hiding is what code review
+ * is for.
  */
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -67,8 +77,25 @@ const CODEOWNERS = join(REPO, ".github", "CODEOWNERS");
  * `ws` at the end of `rows` reads as the scheme of `rows:data.length`, and a
  * type annotation in a plain source file failed the gate; `+` and `-` are
  * excluded for the same reason — `foo-https://` is prose, not a URL.
+ *
+ * After at least one slash, ANY host counts. An earlier version wanted an ASCII
+ * label and a dot, and the URL parser wants neither: userinfo
+ * (`x@evil.example`), a percent-encoded host, a dotless IPv4 address in decimal
+ * or hex, an IPv6 literal in brackets, and a look-alike whose first label is
+ * Cyrillic — the very homoglyph this guard exists for — each parse as an
+ * absolute URL, and each printed OK. A backslash that starts a JavaScript
+ * escape (`\n`, `\t`, `\x…`, `\u…`) is not read as a slash: those are
+ * decoded and read again by `hiddenInEscapes`.
+ *
+ * With no slash at all, `ws:x` is an object key, not a URL, so the host must
+ * then show a sign of being one — a dot, `@`, `%`, `[`, or a leading digit.
  */
-const URL_RE = /(?<![a-z0-9+.-])(?:https?|wss?):[\/\\]*[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+/gi;
+const HOST_CHAR = "[^\\s\"'`<>\\\\/…*$(){},;|^]";
+const URL_RE = new RegExp(
+  "(?<![a-z0-9+.-])(?:https?|wss?):" +
+    `(?:(?:/|\\\\(?![nrtvbfux0-9]))+${HOST_CHAR}+|[0-9]${HOST_CHAR}*|${HOST_CHAR}*[.@%[]${HOST_CHAR}*)`,
+  "gi",
+);
 
 /**
  * A host with no scheme, at the very start of a decoded string. Used only on
@@ -220,11 +247,26 @@ function hiddenInBase64(line) {
  * finds nothing — a URL that is already visible on the line is the URL_RE's
  * business, and a gated file may keep it.
  */
-const ESCAPE_HERE = /\\[xu][0-9a-f]/i;
-const ESCAPE_SEQ = /\\x([0-9a-f]{2})|\\u([0-9a-f]{4})/gi;
+/*
+ * `\u{…}` is the same escape with braces, and printed OK until it was read.
+ * `\t`, `\n` and `\r` decode to the three characters the URL parser deletes
+ * from its input before parsing, wherever they sit — so `h` + tab + `ttps:…` is
+ * `https:…` to `new URL()`. They decode to nothing here, and a literal tab in
+ * the source is deleted for the same reason.
+ */
+const ESCAPE_HERE = /\\(?:[xu][0-9a-f{]|[tnr])|\t/i;
+const ESCAPE_SEQ = /\\x([0-9a-f]{2})|\\u([0-9a-f]{4})|\\u\{([0-9a-f]{1,6})\}|\\[tnr]|\t/gi;
+function decodeEscapes(text) {
+  return text.replace(ESCAPE_SEQ, (_, x, u, cp) => {
+    const hex = x ?? u ?? cp;
+    if (hex === undefined) return "";
+    const n = parseInt(hex, 16);
+    return n <= 0x10ffff ? String.fromCodePoint(n) : "";
+  });
+}
 function hiddenInEscapes(text) {
   if (!ESCAPE_HERE.test(text) || URL_ONCE.test(text)) return false;
-  const decoded = text.replace(ESCAPE_SEQ, (_, x, u) => String.fromCharCode(parseInt(x ?? u, 16)));
+  const decoded = decodeEscapes(text);
   return URL_ONCE.test(decoded) || PROTOCOL_RELATIVE_START.test(decoded);
 }
 
@@ -257,8 +299,13 @@ function gatedPaths() {
   for (const raw of readFileSync(CODEOWNERS, "utf8").split("\n")) {
     const line = raw.trim();
     if (!line || line.startsWith("#")) continue;
-    const [pattern] = line.split(/\s+/);
+    const [pattern, ...owners] = line.split(/\s+/);
     if (!pattern) continue;
+    // A pattern with no owner after it REMOVES ownership from its files —
+    // GitHub applies the last matching line, and an ownerless one overrides
+    // the `*` floor. Reading it as "gated" would let a URL sit in exactly the
+    // file nobody has to review.
+    if (!owners.some((o) => o.includes("@"))) continue;
     rules.push(pattern.replace(/^\//, ""));
   }
   return rules;
@@ -366,8 +413,10 @@ if (offenders.length) {
     for (const u of urls) console.error(`      ${u}`);
   }
   console.error(
-    "\nEither drop the URL, or add the file to .github/CODEOWNERS so changing" +
-      "\nit requires a maintainer review.",
+    "\nEither drop the URL, or name the file in .github/CODEOWNERS — its own path or" +
+      "\na directory above it, with an owner; the catch-all `*` line does not count." +
+      "\nThose lines are the list of files allowed to carry a URL, and adding one is" +
+      "\nitself a change an owner has to approve.",
   );
   process.exit(1);
 }
