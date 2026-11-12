@@ -229,3 +229,65 @@ describe("tài sản thế chấp 10.000 ADA không có phần trả lại", () 
     expect(() => signForeignTx(tx(body), a, view, true)).toThrow(/^sign_foreign_collateral_over_cap: /);
   });
 });
+
+/**
+ * Vòng soát 3, đòn 3: script chạy cạnh một đầu vào không phải của ví. Script đó
+ * có thể mở khoá tài sản cho bất kỳ ai mang chữ ký của khoá ví, nên chữ ký của
+ * ví là thứ tiêu đầu vào lạ — mà giá trị của nó không nằm trong `net`. Không
+ * chặn (claim LAMP đúng là hình này), nhưng bản tóm tắt phải đếm ra để màn
+ * hình cảnh báo.
+ */
+describe("script chạy cạnh đầu vào lạ", () => {
+  const OWN_SMALL = "bb".repeat(32);
+  const body = (mine: string, extra: [number, unknown][]) =>
+    new Map<number, unknown>([
+      [0, [[Buffer.from(OWN_SMALL, "hex"), 0], [Buffer.from(THEIR_TXID, "hex"), 7]]],
+      [1, [[Buffer.from(addrHex(ATTACKER), "hex"), 1_002_000_000], [Buffer.from(addrHex(mine), "hex"), 2_000_000]]],
+      [2, 300_000],
+      ...extra,
+    ]);
+  const viewOf = (a: Account): WalletView => ({
+    ownAddressesHex: a.external.map((d) => addrHex(d.address)),
+    held: new Map([[`${OWN_SMALL}#0`, { address: a.external[0]!.address, lovelace: BigInt(3_000_000), assets: new Map() }]]),
+  });
+  const summary = (a: Account, b: Map<number, unknown>, witnesses: Map<number, unknown> = new Map()) =>
+    summariseTx(Encoder.encode([b, witnesses, true, null]).toString("hex"), viewOf(a).ownAddressesHex, viewOf(a).held, 0);
+
+  it("PoC3: script_data_hash + collateral + một đầu vào lạ: đếm 1, và vẫn ký (cảnh báo, không chặn)", async () => {
+    const a = await acct();
+    const mine = a.external[0]!.address;
+    const pkh = (tyUtils.getAddressFromString(mine) as unknown as { paymentCredential: { hash: Buffer } }).paymentCredential.hash;
+    const b = body(mine, [
+      [11, Buffer.alloc(32, 2)],
+      [13, [[Buffer.from(OWN_SMALL, "hex"), 0]]],
+      [14, [pkh]],
+    ]);
+    const s = summary(a, b);
+    expect(s.foreignInputsUnderScript).toBe(1);
+    expect(s.ownInputs).toBe(1);
+    expect(s.totalInputs).toBe(2);
+    expect(() => signForeignTx(tx(b), a, viewOf(a), true)).not.toThrow();
+  });
+
+  it("mỗi dấu hiệu script một mình đều đủ: redeemer, trường 11, trường 13", async () => {
+    const a = await acct();
+    const mine = a.external[0]!.address;
+    expect(summary(a, body(mine, []), new Map([[5, [[0, 1, 0, [1, 1]]]]])).foreignInputsUnderScript).toBe(1);
+    expect(summary(a, body(mine, [[11, Buffer.alloc(32, 2)]])).foreignInputsUnderScript).toBe(1);
+    expect(summary(a, body(mine, [[13, [[Buffer.from(OWN_SMALL, "hex"), 0]]]])).foreignInputsUnderScript).toBe(1);
+  });
+
+  it("không có script thì không đếm, dù có đầu vào lạ", async () => {
+    const a = await acct();
+    expect(summary(a, body(a.external[0]!.address, [])).foreignInputsUnderScript).toBe(0);
+  });
+
+  it("có script mà mọi đầu vào đều của ví thì không đếm", async () => {
+    const a = await acct();
+    const mine = a.external[0]!.address;
+    const b = body(mine, [[11, Buffer.alloc(32, 2)]]);
+    b.set(0, [[Buffer.from(OWN_SMALL, "hex"), 0]]);
+    b.set(1, [[Buffer.from(addrHex(mine), "hex"), 2_700_000]]);
+    expect(summary(a, b).foreignInputsUnderScript).toBe(0);
+  });
+});

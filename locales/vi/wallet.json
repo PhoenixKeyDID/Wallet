@@ -394,6 +394,7 @@
   "cip30_fee": "Phí",
   "cip30_withdrawal": "Phần thưởng staking bị rút khỏi tài khoản bạn",
   "cip30_unknown_inputs": "Ví nhận ra {{known}} trong {{total}} đầu vào. Số ở trên chỉ tính phần ví nhận ra, nên số tiền thật sự mất có thể cao hơn.",
+  "cip30_script_foreign_inputs": "Giao dịch này chạy một hợp đồng thông minh và tiêu {{n}} đầu vào không phải của bạn. Chữ ký của bạn có thể chính là thứ hợp đồng đó kiểm: nếu ở đó có tài sản khoá theo ví của bạn, ký là cho phép chuyển nó đi, và con số phía trên không tính phần đó. Chỉ ký khi bạn tin trang web này.",
   "cip30_paying": "Trả cho",
   "cip30_extra_actions": "Giao dịch này còn rút phần thưởng staking của bạn. Chỉ duyệt nếu đó đúng là việc bạn nhờ trang web làm.",
   "cip30_foreign_withdrawal": "Giao dịch này còn rút phần thưởng staking của một tài khoản thưởng khác, không phải của ví này. Chỉ duyệt nếu bạn biết vì sao trang web làm vậy.",

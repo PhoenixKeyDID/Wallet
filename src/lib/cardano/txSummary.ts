@@ -102,6 +102,18 @@ export type TxSummary = {
   /** How many of the transaction's inputs are this wallet's. */
   ownInputs: number;
   totalInputs: number;
+  /**
+   * Inputs that are not this wallet's, counted only when a script runs in this
+   * transaction (a redeemer in the witness set, a `script_data_hash` in field
+   * 11, or collateral in field 13); `0` otherwise.
+   *
+   * A script can be written to unlock whatever it holds for anyone carrying a
+   * signature from this wallet's key. Such an input is not this wallet's —
+   * its value is not in `net` — yet this wallet's signature is what spends it.
+   * It is a warning, not a refusal: a LAMP drip-pot claim spends the pot's
+   * script input exactly this way, and that is the point of the claim.
+   */
+  foreignInputsUnderScript: number;
   withdrawals: number;
   /**
    * How many of `withdrawals` take rewards out of a reward account that is not
@@ -618,6 +630,12 @@ export function summariseTx(
     net.push(toNetChange(unit, delta));
   }
 
+  // ── a script runs, next to inputs that are not this wallet's ─────────────
+  const witnesses = decoded.length >= 2 ? decoded[1] : undefined;
+  const hasRedeemers = witnesses instanceof Map && (witnesses as Map<unknown, unknown>).has(5);
+  const scriptRuns = hasRedeemers || b.has(11) || b.has(13);
+  const foreignInputsUnderScript = scriptRuns ? inputList.length - mineCount : 0;
+
   const countOf = (v: unknown): number => {
     if (v === undefined) return 0;
     if (Array.isArray(v)) return v.length;
@@ -633,6 +651,7 @@ export function summariseTx(
     fee,
     ownInputs: mineCount,
     totalInputs: inputList.length,
+    foreignInputsUnderScript,
     withdrawals: countOf(b.get(5)),
     foreignWithdrawals,
     ownRewardKeyHashes,
