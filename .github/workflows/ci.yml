@@ -31,11 +31,23 @@ jobs:
     # The self-hosted runner is persistent and lives on a production machine.
     # Code from a fork is code from anyone: running it there would let a
     # drive-by pull request execute on that machine and leave something behind
-    # for the next job. Fork PRs therefore run on a throwaway GitHub-hosted VM.
-    # Pushes and PRs from branches of this repo — which only people with write
-    # access can create — keep the self-hosted runner. A PR whose head repo is
-    # gone reads as `null` here, which is not this repo, so it also goes to the
-    # hosted VM: the unknown case falls to the side that cannot hurt the host.
+    # for the next job.
+    #
+    # The expression below is a DEFAULT, not a barrier. For `pull_request`,
+    # GitHub reads this workflow from the pull request's own commit, so a fork
+    # can rewrite this line to name the self-hosted labels and its job will be
+    # routed there. What it does: an honest fork PR runs on a throwaway
+    # GitHub-hosted VM, and pushes and PRs from branches of this repo — which
+    # only people with write access can create — keep the self-hosted runner. A
+    # PR whose head repo is gone reads as `null`, which is not this repo, so it
+    # also goes to the hosted VM.
+    #
+    # Nothing in this file can stop a fork that edits it. Keeping fork code off
+    # the machine has to be enforced where the workflow cannot reach: on the
+    # runner host (a job-started hook that refuses a job whose event payload is
+    # a pull request from a fork, or a runner group restricted to this workflow
+    # on `main`), plus the repository setting that requires approval before
+    # workflows from outside contributors run.
     runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","tiger","isolated"]') || 'ubuntu-latest' }}
     # The whole suite takes a few minutes; a hung step should not hold the
     # runner for GitHub's six-hour default.
