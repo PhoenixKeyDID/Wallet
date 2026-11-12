@@ -53,6 +53,27 @@ const ALLOWED = [
 ];
 
 /**
+ * What a file OUTSIDE the allow-list may take from a file ON it.
+ *
+ * The allow-list is a list of edges, and an edge is not a wall: an allowed file
+ * that re-exports the keystore hands it to whoever imports that file. Measured:
+ * `extension/smoke/relay.ts` re-exporting the vault, imported by a Connect
+ * panel, printed OK; so did a re-export added to `LocalWalletPanel.tsx`. So an
+ * import from outside into one of these may name only the exports listed here —
+ * a named import (`import { LocalWalletPanel } from …`) or a named re-export.
+ * Everything else is refused: `*`, a default or namespace import, a bare
+ * side-effect import, and any `import()`, `require()`, glob or `new URL` of it,
+ * because none of those says which names it takes. An empty list means nothing
+ * outside may import the entry at all. The keystore module itself is not here:
+ * importing it from outside is already the failure.
+ */
+const SEALED = [
+  ["src/components/wallet/LocalWalletPanel.tsx", ["LocalWalletPanel"]],
+  ["extension/smoke/", []],
+  ["extension/src/approve.tsx", []],
+];
+
+/**
  * Every top-level directory that holds JavaScript or TypeScript. `scripts` was
  * missing: a panel re-exporting `../../scripts/relay`, with `scripts/relay.ts`
  * re-exporting the keystore, printed OK, because the one file that touched the
@@ -133,6 +154,20 @@ const GLOB_RE = new RegExp(
   "g",
 );
 const STRING_RE = /["'`]([^"'`]+)["'`]/g;
+
+/**
+ * `new URL("…", import.meta.url)`, and `new Worker("…")` / `new SharedWorker("…")`
+ * with a literal path. Vite reads the first as an asset or worker entry and
+ * bundles the module it names, so `new Worker(new URL("../lib/keystore/vault.ts",
+ * import.meta.url))` — the natural way to move key derivation off the main
+ * thread — put the vault into a chunk while this gate printed OK. The path is
+ * resolved like any other specifier; a URL with a scheme resolves nowhere near
+ * the keystore and is left alone. Comments may sit between the tokens.
+ */
+const URL_CTOR_RE = new RegExp(
+  String.raw`\bnew${GAP}+(?:URL|Worker|SharedWorker)${GAP}*\(${GAP}*["'\`]([^"'\`]+)["'\`]`,
+  "g",
+);
 
 /**
  * Where an import specifier lands, decided by resolving it — not by what it
@@ -321,16 +356,62 @@ function assertNoUnscannedSourceRoot() {
 }
 assertNoUnscannedSourceRoot();
 
-/** Specifiers in `text`, each with the offset of the statement that names it. */
+/**
+ * Specifiers in `text`, each with the offset of the statement that names it and,
+ * for a static `import`/`export … from`, the clause between the keyword and the
+ * specifier (`null` for every form that does not name what it takes).
+ */
 function* specifiers(text) {
-  for (const re of [IMPORT_RE, DYNAMIC_RE]) {
-    re.lastIndex = 0; // these are /g and shared across files
-    for (const m of text.matchAll(re)) yield [m[1], m.index];
+  IMPORT_RE.lastIndex = 0; // these are /g and shared across files
+  for (const m of text.matchAll(IMPORT_RE)) yield [m[1], m.index, m[0].slice(0, m[0].length - m[1].length - 2)];
+  for (const re of [DYNAMIC_RE, URL_CTOR_RE]) {
+    re.lastIndex = 0;
+    for (const m of text.matchAll(re)) yield [m[1], m.index, null];
   }
   GLOB_RE.lastIndex = 0;
   for (const m of text.matchAll(GLOB_RE)) {
-    for (const s of m[1].matchAll(STRING_RE)) if (!s[1].startsWith("!")) yield [s[1], m.index];
+    for (const s of m[1].matchAll(STRING_RE)) if (!s[1].startsWith("!")) yield [s[1], m.index, null];
   }
+}
+
+const noExt = (p) => p.replace(/\.(m|c)?[jt]sx?$/, "");
+const SEALED_ABS = SEALED.map(([entry, names]) => [
+  entry,
+  entry.endsWith("/") ? canonical(join(REPO, entry)) : noExt(canonical(join(REPO, entry))),
+  new Set(names),
+]);
+
+/** The sealed entry a specifier lands on, or undefined. */
+function sealedTarget(spec, fromFile) {
+  for (const c of candidates(spec, fromFile)) {
+    const real = canonical(c);
+    for (const s of SEALED_ABS) {
+      const hit = s[0].endsWith("/") ? inside(real, s[1]) : noExt(real).toLowerCase() === s[1].toLowerCase();
+      if (hit) return s;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The names a static import or re-export clause takes, or null when it takes
+ * something a name list cannot describe (`*`, a default, a namespace, nothing).
+ */
+function namedImports(clause) {
+  if (clause === null) return null;
+  const body = clause
+    .replace(new RegExp(String.raw`\/\*[\s\S]*?\*\/|\/\/[^\n]*`, "g"), " ")
+    .replace(/^\s*(?:import|export)\b/, "")
+    .replace(/\bfrom\s*$/, "")
+    .replace(/^\s*type\b/, "")
+    .trim();
+  const m = /^\{([^{}]*)\}$/.exec(body);
+  if (!m) return null;
+  const names = m[1]
+    .split(",")
+    .map((n) => n.trim().replace(/^type\s+/, "").split(/\s+as\s+/)[0].trim())
+    .filter(Boolean);
+  return names.length ? names : null;
 }
 
 const offenders = [];
@@ -350,13 +431,24 @@ for (const file of [...rootFiles, ...SCAN.flatMap((d) => (existsSync(join(REPO, 
   if (allowed(r)) continue;
   const text = readFileSync(file, "utf8");
   const seen = new Set();
-  for (const [spec, index] of specifiers(text)) {
-    if (!reachesKeystore(spec, file)) continue;
-    // A static import can match more than one pattern; report the site once.
+  for (const [spec, index, clause] of specifiers(text)) {
     const at = `${r}:${lineOf(text, index)}`;
+    let why = null;
+    if (reachesKeystore(spec, file)) why = `imports "${spec}"`;
+    else {
+      const sealed = sealedTarget(spec, file);
+      const names = sealed && namedImports(clause);
+      const extra = sealed && (names === null ? ["(not a named import)"] : names.filter((n) => !sealed[2].has(n)));
+      if (sealed && extra.length) {
+        const may = sealed[2].size ? `only { ${[...sealed[2]].join(", ")} }` : "nothing";
+        why = `takes ${extra.join(", ")} from allowed "${spec}" (${sealed[0]}), which may hand out ${may}`;
+      }
+    }
+    if (!why) continue;
+    // A static import can match more than one pattern; report the site once.
     if (seen.has(`${at} ${spec}`)) continue;
     seen.add(`${at} ${spec}`);
-    offenders.push(`${at} imports "${spec}"`);
+    offenders.push(`${at} ${why}`);
   }
 }
 

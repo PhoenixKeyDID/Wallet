@@ -204,6 +204,70 @@ describe("check:keystore-boundary — controls for the widened patterns", () => 
   }
 });
 
+describe("check:keystore-boundary — worker and asset URLs", () => {
+  const cases: [string, string][] = [
+    ["a module worker built from new URL", `export const w = new Worker(new URL("../lib/keystore/vault.ts", import.meta.url), { type: "module" });`],
+    ["a shared worker, with comments between every token", `export const w = new /* a */ SharedWorker( /* b */ new /* c */ URL( /* d */ "../lib/keystore/vault.ts", import.meta.url));`],
+    ["a worker given a literal path", `export const w = new Worker("../lib/keystore/vault.ts");`],
+    ["a bare new URL naming the keystore", `export const u = new URL(\`../lib/keystore/vault.ts\`, import.meta.url);`],
+  ];
+  for (const [name, text] of cases) {
+    it(`refuses ${name}`, () => {
+      const r = check({ "src/components/P.tsx": text + "\n" });
+      expect(r.out, r.out).toContain("src/components/P.tsx:1");
+      expect(r.status).toBe(1);
+    });
+  }
+
+  it("passes a new URL that resolves outside the keystore", () => {
+    const r = check({ "src/components/P.tsx": `export const w = new Worker(new URL("../lib/other.ts", import.meta.url));\n` });
+    expect(r.out, r.out).toContain("Keystore boundary OK");
+    expect(r.status).toBe(0);
+  });
+});
+
+describe("check:keystore-boundary — allowed files used as relays", () => {
+  const PANEL = "src/components/wallet/LocalWalletPanel.tsx";
+  const LEAKY_PANEL = `import { vault } from "../../lib/keystore/vault";\nexport { vault };\nexport function LocalWalletPanel() { return vault; }\n`;
+  const CLEAN_PANEL = `import { vault } from "../../lib/keystore/vault";\nexport function LocalWalletPanel() { return vault; }\n`;
+
+  const refused: [string, Record<string, string>][] = [
+    ["a re-export of a module under extension/smoke/", {
+      "extension/smoke/relay.ts": `export * from "../../src/lib/keystore";\n`,
+      "src/components/connect/P.tsx": `export * from "../../../extension/smoke/relay";\n`,
+    }],
+    ["a named import from a module under extension/smoke/", {
+      "extension/smoke/relay.ts": `export { vault } from "../../src/lib/keystore/vault";\n`,
+      "src/components/connect/P.tsx": `import { vault } from "../../../extension/smoke/relay";\nexport const v = vault;\n`,
+    }],
+    ["a name LocalWalletPanel re-exports from the keystore", { [PANEL]: LEAKY_PANEL, "src/components/connect/P.tsx": `import { vault } from "../wallet/LocalWalletPanel";\nexport const v = vault;\n` }],
+    ["a star re-export of LocalWalletPanel", { [PANEL]: LEAKY_PANEL, "src/components/connect/P.tsx": `export * from "../wallet/LocalWalletPanel";\n` }],
+    ["a namespace import of LocalWalletPanel", { [PANEL]: CLEAN_PANEL, "src/components/connect/P.tsx": `import * as L from "../wallet/LocalWalletPanel";\nexport const v = L;\n` }],
+    ["a dynamic import of LocalWalletPanel", { [PANEL]: CLEAN_PANEL, "src/components/connect/P.tsx": `export const l = () => import("../wallet/LocalWalletPanel");\n` }],
+    ["any import of the approval window", { "extension/src/approve.tsx": CLEAN_PANEL.replace("../../lib", "../../src/lib"), "src/components/connect/P.tsx": `import { LocalWalletPanel } from "../../../extension/src/approve";\nexport const v = LocalWalletPanel;\n` }],
+  ];
+  for (const [name, files] of refused) {
+    it(`refuses ${name}`, () => {
+      const r = check(files);
+      expect(r.out, r.out).toContain("src/components/connect/P.tsx:1");
+      expect(r.status).toBe(1);
+    });
+  }
+
+  const passed: [string, Record<string, string>][] = [
+    ["the panel imported by its own name", { [PANEL]: CLEAN_PANEL, "src/components/wallet/WalletHub.tsx": `import { LocalWalletPanel } from "./LocalWalletPanel";\nexport const h = LocalWalletPanel;\n` }],
+    ["the panel re-exported by name, renamed, as a type", { [PANEL]: CLEAN_PANEL, "src/components/wallet/index.ts": `export { LocalWalletPanel as Panel } from "./LocalWalletPanel";\nimport { type LocalWalletPanel } from "./LocalWalletPanel";\nexport type T = typeof LocalWalletPanel;\n` }],
+    ["an allowed file importing another allowed file wholesale", { [PANEL]: CLEAN_PANEL, "extension/smoke/entry.ts": `import * as L from "../../src/components/wallet/LocalWalletPanel";\nexport const l = L;\n` }],
+  ];
+  for (const [name, files] of passed) {
+    it(`passes ${name}`, () => {
+      const r = check(files);
+      expect(r.out, r.out).toContain("Keystore boundary OK");
+      expect(r.status).toBe(0);
+    });
+  }
+});
+
 describe("check:keystore-boundary — this repo", () => {
   it("passes", () => {
     const r = spawnSync(process.execPath, [SCRIPT], { encoding: "utf8" });
