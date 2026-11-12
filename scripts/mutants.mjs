@@ -1800,9 +1800,16 @@ const MUTANTS = [
   {
     name: "signData message text box is cut to a height again in popup.css",
     file: POPUP_CSS,
-    from: ".approve-sign-data { white-space: pre-wrap; word-break: break-all; margin: 0; }",
-    to: ".approve-sign-data { white-space: pre-wrap; word-break: break-all; margin: 0; max-height: 160px; overflow-y: auto; /* MUT_POPUP_SIGN_DATA_CUT */ }",
+    from: ".approve-sign-data { white-space: pre-wrap; word-break: break-all; overflow-wrap: anywhere; margin: 0; }",
+    to: ".approve-sign-data { white-space: pre-wrap; word-break: break-all; overflow-wrap: anywhere; margin: 0; max-height: 160px; overflow-y: auto; /* MUT_POPUP_SIGN_DATA_CUT */ }",
     marker: "MUT_POPUP_SIGN_DATA_CUT",
+  },
+  {
+    name: "signData text box lets a no-break-space run push the letters out of the box again",
+    file: POPUP_CSS,
+    from: ".approve-sign-data { white-space: pre-wrap; word-break: break-all; overflow-wrap: anywhere; margin: 0; }",
+    to: ".approve-sign-data { white-space: pre-wrap; word-break: break-all; margin: 0; /* MUT_POPUP_SIGN_DATA_NO_WRAP_ANYWHERE */ }",
+    marker: "MUT_POPUP_SIGN_DATA_NO_WRAP_ANYWHERE",
   },
   {
     name: "collateral that can lose more than 5 ADA is described and signed",

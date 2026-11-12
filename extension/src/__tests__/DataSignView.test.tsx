@@ -78,7 +78,11 @@ describe("text or hex", () => {
       expect(m, `${sel} rule`).not.toBeNull();
       return m![2]!;
     };
-    expect(rule(".approve-sign-data")).not.toMatch(/max-height|overflow|text-overflow|line-clamp/);
+    expect(rule(".approve-sign-data")).not.toMatch(/max-height|overflow(-x|-y)?\s*:|text-overflow|line-clamp/);
+    // A run of no-break spaces (U+00A0, U+202F, U+2007) gives the line no break
+    // point, and word-break alone does not break inside it: the letters after it
+    // were laid out at x≈2529 in a 400 px box. overflow-wrap: anywhere breaks it.
+    expect(rule(".approve-sign-data")).toMatch(/overflow-wrap:\s*anywhere/);
     expect(rule(".approve-sign-data-scroll")).toMatch(/max-height/);
   });
 });

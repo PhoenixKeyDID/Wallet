@@ -309,7 +309,7 @@ body.approve-page {
 /* signData: a long address, message or hex is wrapped, never cut — the cut-off part is where a look-alike hides.
    The message text has no height limit: the window scrolls, the box does not hide its own end. Only the hex
    (up to 32 768 characters) scrolls inside its box, and the byte and line count above it says how much there is. */
-.approve-sign-data { white-space: pre-wrap; word-break: break-all; margin: 0; }
+.approve-sign-data { white-space: pre-wrap; word-break: break-all; overflow-wrap: anywhere; margin: 0; }
 .approve-sign-data-scroll { max-height: 160px; overflow-y: auto; }
 
 .approve-actions { display: flex; gap: 10px; margin-top: 2px; }
