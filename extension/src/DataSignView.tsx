@@ -15,8 +15,9 @@ import { useTranslation } from "react-i18next";
  * - **the address**, in full, because it goes into the signed header;
  * - **the bytes**: as text only when the text is exactly what is signed
  *   (`printableText` refuses control, format, separator, private-use,
- *   unassigned and default-ignorable characters, right-to-left letters, and
- *   blank space that pushes text out of sight), and always as hex — with the
+ *   unassigned and default-ignorable characters, right-to-left letters,
+ *   blank space that pushes text out of sight, stacked combining marks and
+ *   over-long grapheme clusters), and always as hex — with the
  *   byte and line count printed beside them, so the size of what is signed
  *   can be checked whatever the box shows. The text box is never cut to a
  *   height: the part of a message that matters can sit at its end.

@@ -360,4 +360,87 @@ describe("the screen shows text only when the text is what is signed", () => {
     const mild = "abc\n\u00a0\nde" + "\u00a0".repeat(16);
     expect(printableText(Buffer.from(mild, "utf8"))).toBe(mild);
   });
+
+  // In the middle of a line a blank run needs no line break to hide what
+  // follows: the box wraps anywhere, and 8 000 NBSP become ~3 000 px of empty
+  // lines (measured in headless Chrome at a 400 px box, round 6).
+  const MID_RUN_CASES: [string, string, number][] = [
+    ["no-break space", "00A0", 8000],
+    ["em space", "2003", 5300],
+    ["Braille pattern blank", "2800", 5300],
+    ["space", "0020", 16000],
+  ];
+  it.each(MID_RUN_CASES)("shows hex only for a long run of %s (U+%s) in the middle of a line", (_name, cp, n) => {
+    const c = String.fromCodePoint(parseInt(cp, 16));
+    const msg = "Login to example.com" + c.repeat(n) + "I authorise transfer";
+    expect(printableText(Buffer.from(msg, "utf8"))).toBeNull();
+  });
+  it.each(MID_RUN_CASES)("draws the line between 16 and 17 %s (U+%s) in a row in the middle", (_name, cp) => {
+    const c = String.fromCodePoint(parseInt(cp, 16));
+    const at16 = `pay${c.repeat(16)}10 ADA`;
+    expect(printableText(Buffer.from(at16, "utf8"))).toBe(at16);
+    expect(printableText(Buffer.from(`pay${c.repeat(17)}10 ADA`, "utf8"))).toBeNull();
+    // A line break does not reset the count only by being there: two short
+    // runs either side of it are each counted on their own.
+    const split = `pay${c.repeat(8)}\n${c.repeat(8)}10 ADA`;
+    expect(printableText(Buffer.from(split, "utf8"))).toBe(split);
+  });
+  it("still shows indentation and a table's aligned columns as text", () => {
+    const indented = "Terms:\n    - pay 10 ADA\n        - to Alice\n\tdone";
+    expect(printableText(Buffer.from(indented, "utf8"))).toBe(indented);
+    const table = "Name        Amount\nAlice       10 ADA\nBob          2 ADA";
+    expect(printableText(Buffer.from(table, "utf8"))).toBe(table);
+  });
+
+  // A run of combining marks is drawn over one letter and spills over the
+  // lines above and below it, the size line included.
+  it("shows hex only for more than three combining marks in a row", () => {
+    expect(printableText(Buffer.from("I do NOT authorise\n" + "x" + "\u0301".repeat(400), "utf8"))).toBeNull();
+    const bar = "I do NOT authorise\n" + "\u00a0".repeat(5) + ("\u00a0" + "\u0305".repeat(14)).repeat(3);
+    expect(printableText(Buffer.from(bar, "utf8"))).toBeNull();
+    const three = "pa\u0301\u0302\u0303y";
+    expect(printableText(Buffer.from(three, "utf8"))).toBe(three);
+    // Four marks on one letter is a cluster of five code points: only the
+    // mark rule refuses it, not the cluster rule.
+    expect(printableText(Buffer.from("pa\u0301\u0302\u0303\u0304y", "utf8"))).toBeNull();
+    expect(printableText(Buffer.from("pa\u0e31\u0e48\u0e4c\u0e47y", "utf8"))).toBeNull(); // Thai marks, four
+  });
+  it("still shows written languages that stack marks as text", () => {
+    const samples = [
+      "Ký thông điệp: nghiệm thu, chuyển 10 ADA".normalize("NFD"), // Vietnamese, decomposed: up to two marks
+      "नमस्ते, क्षत्रिय, स्त्री, क़्त्र", // Devanagari conjuncts, nukta + virama
+      "สวัสดีครับ ขอบคุณที่ช่วย กี่ ปั้น", // Thai: vowel + tone mark
+      "བསྒྲུབས་ བཀྲ་ཤིས་", // Tibetan stacks, three marks
+      "안녕하세요 한글", // Hangul syllables
+    ];
+    for (const t of samples) expect(printableText(Buffer.from(t, "utf8"))).toBe(t);
+    expect("Ký thông điệp".normalize("NFD")).toContain("ệ"); // the sample is decomposed
+  });
+
+  // One grapheme cluster is drawn as one unbreakable group, so a long one runs
+  // out of the box sideways and no CSS wraps it.
+  it("shows hex only for a grapheme cluster longer than 16 code points", () => {
+    expect(printableText(Buffer.from("Login\n" + "\u0915\u094d".repeat(150) + "\u0915 tail", "utf8"))).toBeNull();
+    expect(printableText(Buffer.from("Login\n" + "\u1100".repeat(300) + "\u1161 tail", "utf8"))).toBeNull();
+    expect(printableText(Buffer.from("\u0f40" + "\u0f90".repeat(200) + "\nI do NOT authorise", "utf8"))).toBeNull();
+    // Conjoining jamo: n leading L then one V is one cluster of n + 1 code points.
+    const at16 = "pay " + "\u1100".repeat(15) + "\u1161 10";
+    expect(printableText(Buffer.from(at16, "utf8"))).toBe(at16);
+    expect(printableText(Buffer.from("pay " + "\u1100".repeat(16) + "\u1161 10", "utf8"))).toBeNull();
+    // Devanagari: 8 consonants joined by 7 viramas = 15 code points, one cluster.
+    const deva15 = "\u0915\u094d".repeat(7) + "\u0915";
+    expect(printableText(Buffer.from(deva15, "utf8"))).toBe(deva15);
+    expect(printableText(Buffer.from("\u0915\u094d".repeat(8) + "\u0915", "utf8"))).toBeNull();
+  });
+  it("shows hex only when the engine has no Intl.Segmenter to measure clusters", () => {
+    const intl = Intl as { Segmenter?: unknown };
+    const saved = intl.Segmenter;
+    try {
+      intl.Segmenter = undefined;
+      expect(printableText(Buffer.from("Login to example.com", "utf8"))).toBeNull();
+    } finally {
+      intl.Segmenter = saved;
+    }
+    expect(printableText(Buffer.from("Login to example.com", "utf8"))).toBe("Login to example.com");
+  });
 });

@@ -83,7 +83,7 @@ const hexOfBech32 = (a: string) => addressBytes(a)?.toString("hex") ?? "";
 /**
  * UTF-8 text a person can read, or null — in which case the screen shows hex
  * alone. Text is shown only when what is on screen is, character for
- * character and in order, what is signed. Three things break that, and each is
+ * character and in order, what is signed. Each thing that breaks that is
  * refused by Unicode class rather than by a hand-kept list, because a list is
  * only as complete as the day it was written (the last one missed U+00AD,
  * U+180E, U+2028/2029, the tag characters and Adlam):
@@ -123,14 +123,35 @@ const hexOfBech32 = (a: string) => addressBytes(a)?.toString("hex") ?? "";
  *    "❤️" is a heart followed by U+FE0F, and refusing it would send ordinary
  *    messages to hex.
  * 5. **Blank space that pushes text out of sight**: three or more blank lines
- *    in a row, or a long blank run at the start or the end (more than 16
- *    characters, or two or more line breaks). "Blank" is `INKLESS`: any
+ *    in a row, a run of more than 16 blank characters anywhere — at the
+ *    start, at the end or in the middle of a line — or two or more line breaks
+ *    in the blank run at the start or the end. In the middle of a line the run
+ *    does not need a line break to hide what follows: the text box wraps
+ *    anywhere (`overflow-wrap: anywhere` in `popup.css`), so 8 000 no-break
+ *    spaces become some 3 000 px of empty lines and the end of the sentence
+ *    sits below the fold. Indentation and a table's aligned columns stay well
+ *    under 16. "Blank" is `INKLESS`: any
  *    `\p{White_Space}` — NBSP and the ideographic space too, not only space
  *    and tab — plus the Braille blank U+2800 and the Hangul fillers, so a
  *    line of U+2800 counts as an empty line. A message that ends after a
  *    page of newlines reads as finished while the part that matters sits below
  *    — the screen also prints the byte and line count, so even what is shown
  *    as text has a size that can be checked.
+ * 6. **Stacked combining marks**: more than 3 `\p{M}` in a row. A run of
+ *    marks is drawn on top of one base letter and spills over the lines above
+ *    and below it — over the size line, over other words. Written languages
+ *    stay under it: Vietnamese in decomposed form is at most two marks on a
+ *    vowel ("ệ" = e + U+0323 + U+0302), Thai a vowel and a tone mark,
+ *    Devanagari a nukta and a virama.
+ * 7. **Grapheme clusters longer than 16 code points**
+ *    (`Intl.Segmenter`, granularity "grapheme"). One cluster is drawn as one
+ *    unbreakable glyph group, and no CSS wraps inside it, so a cluster of 150
+ *    virama-joined Devanagari consonants or 300 conjoining Hangul jamo runs
+ *    out of the box sideways. A conjunct of three or four consonants, an old
+ *    Hangul syllable or a Tibetan stack is well under 16; rule 6 already caps
+ *    the marks, so what this adds is the clusters built from letters. Where
+ *    `Intl.Segmenter` does not exist, the clusters cannot be measured and the
+ *    payload is shown as hex alone.
  */
 export function printableText(bytes: Uint8Array): string | null {
   let text: string;
@@ -146,7 +167,14 @@ export function printableText(bytes: Uint8Array): string | null {
   if (NOT_DRAWN_AS_ITSELF.test(text)) return null;
   if (RIGHT_TO_LEFT.test(text)) return null;
   if (DRAWN_AS_NOTHING.test(text.replace(EMOJI_PRESENTATION, "$1"))) return null;
+  if (STACKED_MARKS.test(text)) return null;
+  // Not measurable means not shown as text.
+  if (typeof Intl === "undefined" || typeof Intl.Segmenter !== "function") return null;
+  for (const { segment } of new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text)) {
+    if ([...segment].length > MAX_CLUSTER_CODE_POINTS) return null;
+  }
   if (BLANK_LINES.test(text)) return null;
+  if (LONG_INKLESS_RUN.test(text)) return null;
   const edges = [LEADING_BLANK.exec(text)?.[0] ?? "", TRAILING_BLANK.exec(text)?.[0] ?? ""];
   if (edges.some((w) => w.length > MAX_EDGE_WHITESPACE || w.split("\n").length > 2)) return null;
   return text;
@@ -173,6 +201,12 @@ const BLANK_LINES = new RegExp(String.raw`\n${INKLESS}*\n${INKLESS}*\n${INKLESS}
 const LEADING_BLANK = new RegExp(String.raw`^(?:${INKLESS}|\n)+`, "u");
 const TRAILING_BLANK = new RegExp(String.raw`(?:${INKLESS}|\n)+$`, "u");
 const MAX_EDGE_WHITESPACE = 16;
+/** More than `MAX_EDGE_WHITESPACE` inkless characters in a row, anywhere in the text. */
+const LONG_INKLESS_RUN = new RegExp(String.raw`${INKLESS}{${MAX_EDGE_WHITESPACE + 1}}`, "u");
+/** Four combining marks in a row: more than any written language stacks on one letter. */
+const STACKED_MARKS = /\p{M}{4}/u;
+/** The longest grapheme cluster shown as text (see rule 7 above). */
+const MAX_CLUSTER_CODE_POINTS = 16;
 
 /** Format, line/paragraph separator, private-use and unassigned code points. */
 const NOT_DRAWN_AS_ITSELF = /[\p{Cf}\p{Zl}\p{Zp}\p{Co}\p{Cn}]/u;
