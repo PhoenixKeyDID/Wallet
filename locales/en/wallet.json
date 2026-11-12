@@ -408,6 +408,7 @@
   "cip30_not_a_tx": "What the site sent is not a transaction.",
   "cip30_cannot_read_tx": "This transaction could not be read, so nothing was signed.",
   "cip30_sign_data_hex": "Exact bytes signed (hex):",
+  "cip30_sign_data_size": "Message size: {{bytes}} bytes, {{lines}} lines.",
   "cip30_sign_data_warning": "Sign only if you understand the message and it names addresses that are yours.",
   "cip30_sign_data_bad_address": "The address in this request is not a Cardano address.",
   "cip30_sign_data_bad_payload": "The message must be hex bytes, at most 16 KiB.",

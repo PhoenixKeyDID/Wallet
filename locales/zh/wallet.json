@@ -408,6 +408,7 @@
   "cip30_not_a_tx": "网站发来的不是一笔交易。",
   "cip30_cannot_read_tx": "无法读取这笔交易，因此没有签任何东西。",
   "cip30_sign_data_hex": "被签名的确切字节（十六进制）：",
+  "cip30_sign_data_size": "消息大小：{{bytes}} 字节，{{lines}} 行。",
   "cip30_sign_data_warning": "只有在理解消息内容且其中地址属于你时才签名。",
   "cip30_sign_data_bad_address": "此请求中的地址不是 Cardano 地址。",
   "cip30_sign_data_bad_payload": "消息必须是十六进制字节，最多 16 KiB。",

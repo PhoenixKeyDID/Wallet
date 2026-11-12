@@ -408,6 +408,7 @@
   "cip30_not_a_tx": "Thứ trang web gửi sang không phải một giao dịch.",
   "cip30_cannot_read_tx": "Không đọc được giao dịch này, nên không ký gì cả.",
   "cip30_sign_data_hex": "Đúng các byte được ký (hex):",
+  "cip30_sign_data_size": "Kích thước thông điệp: {{bytes}} byte, {{lines}} dòng.",
   "cip30_sign_data_warning": "Chỉ ký khi bạn hiểu thông điệp và các địa chỉ trong đó là của bạn.",
   "cip30_sign_data_bad_address": "Địa chỉ trong yêu cầu này không phải địa chỉ Cardano.",
   "cip30_sign_data_bad_payload": "Thông điệp phải là byte dạng hex, tối đa 16 KiB.",

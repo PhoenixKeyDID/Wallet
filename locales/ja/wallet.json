@@ -408,6 +408,7 @@
   "cip30_not_a_tx": "サイトが送ってきたものは取引ではありません。",
   "cip30_cannot_read_tx": "この取引を読み取れなかったため、何も署名していません。",
   "cip30_sign_data_hex": "署名される正確なバイト(16進):",
+  "cip30_sign_data_size": "メッセージのサイズ: {{bytes}} バイト、{{lines}} 行。",
   "cip30_sign_data_warning": "メッセージを理解し、記載のアドレスが自分のものである場合のみ署名してください。",
   "cip30_sign_data_bad_address": "このリクエストのアドレスは Cardano アドレスではありません。",
   "cip30_sign_data_bad_payload": "メッセージは16進のバイト列で、16 KiB 以下である必要があります。",
