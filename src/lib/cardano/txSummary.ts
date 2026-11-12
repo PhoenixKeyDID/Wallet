@@ -47,8 +47,34 @@ export type Recipient = {
   /** bech32, always in full — a truncated address is where the swap hides. */
   address: string;
   lovelace: bigint;
+  /**
+   * Every token this output carries. Without these, a transaction splitting
+   * tokens across several addresses shows only where the ADA goes, and the
+   * tokens leave unseen.
+   */
+  assets: NetChange[];
   /** True when this output comes back to one of the wallet's own addresses. */
   mine: boolean;
+  /**
+   * The output carries a datum (inline, or by hash). Sending to a script with
+   * a datum is how a contract keeps its state, so it is shown rather than
+   * refused — the address and the amount are still what the person decides on.
+   */
+  datum: boolean;
+};
+
+/**
+ * What the transaction can take from this wallet if its script fails.
+ *
+ * When a Plutus script in the transaction fails, the ledger ignores the inputs
+ * and outputs and takes the collateral instead, handing back only the
+ * collateral return. That is a second, separate cost, and it is shown as one.
+ */
+export type CollateralRisk = {
+  /** Lovelace lost if the script fails: collateral inputs minus the return. */
+  riskLovelace: bigint;
+  /** How many collateral inputs — every one of them this wallet's. */
+  inputs: number;
 };
 
 export type TxSummary = {
@@ -60,10 +86,11 @@ export type TxSummary = {
   /** How many of the transaction's inputs are this wallet's. */
   ownInputs: number;
   totalInputs: number;
-  /** Set when the transaction does something this decoder will not describe. */
-  certificates: number;
   withdrawals: number;
-  mints: number;
+  /** Tokens this transaction destroys, `amount` positive. Creating tokens is refused. */
+  burns: NetChange[];
+  /** Present when the transaction puts up collateral. */
+  collateral: CollateralRisk | null;
   /**
    * Staking rewards this transaction pulls out of *this wallet's* reward
    * account. It is money that arrives and can leave in the same transaction,
@@ -133,28 +160,69 @@ function readValue(v: unknown): { lovelace: bigint; assets: Map<string, bigint> 
   return { lovelace, assets };
 }
 
+/** A mint quantity: a whole number that may be negative (a burn). */
+function asSignedBigInt(v: unknown, what: string): bigint {
+  if (typeof v === "number") {
+    if (!Number.isSafeInteger(v)) bad(`${what} is not a whole number`);
+    return BigInt(v);
+  }
+  if (typeof v === "bigint") return v;
+  if (v && typeof v === "object" && typeof (v as { toFixed?: unknown }).toFixed === "function") {
+    const s = (v as { toFixed(n: number): string }).toFixed(0);
+    if (!/^-?\d+$/.test(s)) bad(`${what} is not a whole number`);
+    return BigInt(s);
+  }
+  return bad(`${what} is not a number this wallet can read`);
+}
+
+type ReadOutput = { addressHex: string; lovelace: bigint; assets: Map<string, bigint>; datum: boolean };
+
 /** Decode one output into an address and a value, refusing shapes we cannot read. */
-function readOutput(o: unknown): { addressHex: string; lovelace: bigint; assets: Map<string, bigint> } {
+function readOutput(o: unknown): ReadOutput {
   if (Array.isArray(o)) {
     // Legacy: [address, value, ?datum_hash]
-    if (o.length < 2) bad("an output has an unexpected shape");
+    if (o.length < 2 || o.length > 3) bad("an output has an unexpected shape");
     const addressHex = Buffer.from(o[0] as Buffer).toString("hex");
-    return { addressHex, ...readValue(o[1]) };
+    return { addressHex, ...readValue(o[1]), datum: o.length === 3 };
   }
   if (o instanceof Map) {
     // Babbage+: {0: address, 1: value, 2: datum_option, 3: script_ref}
     const m = o as Map<unknown, unknown>;
     if (!m.has(0) || !m.has(1)) bad("an output has an unexpected shape");
-    // An inline datum or a reference script means the output is doing something
-    // beyond paying an address, and this decoder cannot say what. Refuse rather
-    // than describe it as an ordinary payment.
-    if (m.has(2)) bad("an output carries a datum — this wallet cannot describe what it is for");
+    for (const k of m.keys()) {
+      if (![0, 1, 2, 3].includes(Number(k))) bad("an output has a field this wallet cannot describe");
+    }
+    // A reference script means the output publishes code, and this decoder
+    // cannot say what that code does. A datum is different: it is the state a
+    // contract keeps beside the money, and the money still goes where the
+    // address says — so it is shown, not refused.
     if (m.has(3)) bad("an output carries a script — this wallet cannot describe what it does");
     const addressHex = Buffer.from(m.get(0) as Buffer).toString("hex");
-    return { addressHex, ...readValue(m.get(1)) };
+    return { addressHex, ...readValue(m.get(1)), datum: m.has(2) };
   }
   return bad("an output has an unexpected shape");
 }
+
+/**
+ * The network an address is for, from its header byte; `null` for Byron.
+ *
+ * Shelley headers carry the network in the low nibble (`0` testnets, `1`
+ * mainnet). Byron addresses (`0x8_`) encode it elsewhere and are left to the
+ * ledger.
+ */
+function addressNetwork(addressHex: string): number | null {
+  const header = parseInt(addressHex.slice(0, 2), 16);
+  if (Number.isNaN(header)) bad("an output pays an address this wallet cannot read");
+  if (header >> 4 === 0x8) return null;
+  return header & 0x0f;
+}
+
+const toNetChange = (unit: string, amount: bigint): NetChange => ({
+  unit,
+  policyId: unit.slice(0, 56),
+  assetNameHex: unit.slice(56),
+  amount,
+});
 
 /**
  * Body fields this decoder understands well enough to sign in the presence of.
@@ -177,42 +245,121 @@ const KNOWN_BODY_KEYS = new Set([
   8, // validity_interval_start
   9, // mint
   11, // script_data_hash
+  13, // collateral inputs — described below, never ignored
   14, // required_signers
   15, // network_id
+  16, // collateral return
+  17, // total collateral
   18, // reference_inputs
 ]);
 
 /**
- * Collateral (13 inputs, 16 return, 17 total) is deliberately NOT on the list
- * above, and the reason is that it is a second way for the transaction to spend.
+ * Collateral (13 inputs, 16 return, 17 total) is a second way for the
+ * transaction to spend, so it is described as one — or the transaction is
+ * refused.
  *
  * When a script in the transaction fails, the ledger ignores the inputs and
  * outputs entirely and takes the collateral inputs instead, handing back only
  * the collateral return — to whatever address the transaction names. None of
  * that appears in `net` or `toOthers`, which are computed from fields 0 and 1.
  * So a page can put a large UTxO of this wallet into field 13, point the return
- * at itself, attach a script built to fail, and the screen truthfully reports
- * the ordinary path: *"leaves the wallet: 0.2 ADA"*. The ledger spends the rest.
+ * at itself, attach a script built to fail, and a screen reading only the
+ * ordinary path truthfully reports *"leaves the wallet: 0.2 ADA"*. The ledger
+ * spends the rest. The signature comes for free: a witness authorises a key,
+ * not an input.
  *
- * The signature comes for free. A witness authorises a key, not an input; once
- * the transaction also spends an ordinary input at the same address, the key
- * that signs it covers the collateral too. The check on required signers does
- * not help, because nothing here is an extra signer.
+ * So the amount at risk is computed and shown, and every way of making that
+ * number wrong is a refusal rather than a guess:
  *
- * Describing collateral instead of refusing it would need to know which
- * collateral inputs are this wallet's, and that set is open — a UTxO the wallet
- * holds but has not scanned would be counted as someone else's and vanish from
- * the total. Refusing needs no attribution at all. It also costs nothing honest
- * today: this wallet answers `getCollateral` with a refusal and does not sign
- * smart-contract transactions, and a transaction running a script is invalid on
- * chain without collateral. When smart-contract signing is built, this is the
- * place that has to learn to describe the failure path first.
+ * - a collateral input this wallet cannot value — the set of UTxOs it holds is
+ *   open, and one it has not scanned would otherwise count as nobody's;
+ * - a collateral return paying anyone but this wallet — then the whole
+ *   collateral is at risk, and "minus the return" would understate it;
+ * - tokens in the collateral that the return does not give back in full, or a
+ *   return naming tokens the collateral never held;
+ * - a declared total that disagrees with inputs minus return;
+ * - a transaction that declares its own script fails (`is_valid = false`):
+ *   that is not a risk, it is the collateral being spent.
  */
-const WHY_REFUSED: Record<number, string> = {
-  13: "this transaction puts up collateral — if its script fails, those funds are spent instead of what is shown, and this wallet does not sign smart-contract transactions",
-  16: "this transaction names where collateral goes if its script fails — this wallet does not sign smart-contract transactions",
-  17: "this transaction declares collateral — this wallet does not sign smart-contract transactions",
-};
+function readCollateral(
+  b: Map<number, unknown>,
+  own: Set<string>,
+  ownInputs: Map<string, { lovelace: bigint; assets: Map<string, bigint> }>,
+  networkId: 0 | 1,
+): CollateralRisk | null {
+  const raw = b.get(13);
+  if (raw === undefined) {
+    if (b.has(16) || b.has(17)) bad("this transaction names a collateral return or total but no collateral");
+    return null;
+  }
+  const list = raw instanceof Set ? [...raw] : raw;
+  if (!Array.isArray(list) || list.length === 0) bad("this transaction's collateral has an unexpected shape");
+
+  let inLovelace = BigInt(0);
+  const inAssets = new Map<string, bigint>();
+  const seen = new Set<string>();
+  for (const i of list) {
+    if (!Array.isArray(i) || i.length < 2) bad("a collateral input has an unexpected shape");
+    const ref = `${Buffer.from(i[0] as Buffer).toString("hex")}#${Number(i[1])}`;
+    if (seen.has(ref)) bad("this transaction names the same collateral input twice");
+    seen.add(ref);
+    const held = ownInputs.get(ref);
+    if (!held) {
+      bad("this transaction puts up collateral this wallet cannot account for — it cannot say what you would lose if the script fails");
+    }
+    inLovelace += held.lovelace;
+    for (const [unit, qty] of held.assets) inAssets.set(unit, (inAssets.get(unit) ?? BigInt(0)) + qty);
+  }
+
+  let retLovelace = BigInt(0);
+  let retAssets = new Map<string, bigint>();
+  if (b.has(16)) {
+    const r = readOutput(b.get(16));
+    if (!own.has(r.addressHex.toLowerCase())) {
+      bad("this transaction sends the collateral return to an address that is not this wallet — if the script fails, all of the collateral is lost");
+    }
+    if (r.datum) bad("this transaction's collateral return carries a datum — this wallet cannot describe what it is for");
+    if (addressNetwork(r.addressHex) !== networkId) bad("this transaction's collateral return is for another network");
+    retLovelace = r.lovelace;
+    retAssets = r.assets;
+  }
+
+  for (const [unit, qty] of inAssets) {
+    if ((retAssets.get(unit) ?? BigInt(0)) < qty) {
+      bad("this transaction puts up tokens as collateral and does not give them back — if the script fails, they are lost");
+    }
+  }
+  for (const [unit, qty] of retAssets) {
+    if (qty > (inAssets.get(unit) ?? BigInt(0))) bad("this transaction's collateral return names tokens the collateral does not hold");
+  }
+  if (retLovelace > inLovelace) bad("this transaction's collateral return is larger than its collateral");
+
+  const risk = inLovelace - retLovelace;
+  if (b.has(17) && asBigInt(b.get(17), "the collateral total") !== risk) {
+    bad("this transaction declares a collateral total that does not match its collateral and return");
+  }
+  return { riskLovelace: risk, inputs: list.length };
+}
+
+/** Read field 9, refusing any token created, and return what is destroyed. */
+function readBurns(raw: unknown): NetChange[] {
+  if (raw === undefined) return [];
+  if (!(raw instanceof Map)) bad("this transaction mints in a shape this wallet cannot read");
+  const burns: NetChange[] = [];
+  for (const [policyRaw, namesRaw] of raw as Map<unknown, unknown>) {
+    const policyId = Buffer.from(policyRaw as Buffer).toString("hex");
+    if (!/^[0-9a-f]{56}$/.test(policyId)) bad("this transaction mints under a malformed policy id");
+    if (!(namesRaw instanceof Map)) bad("this transaction mints in a shape this wallet cannot read");
+    for (const [nameRaw, qtyRaw] of namesRaw as Map<unknown, unknown>) {
+      const qty = asSignedBigInt(qtyRaw, "a mint quantity");
+      // Creating tokens is a minting policy saying yes, and a policy that asks
+      // for this wallet's key asks for a reason this screen cannot read.
+      if (qty >= BigInt(0)) bad("this transaction creates tokens — this wallet only signs transactions that destroy them");
+      burns.push(toNetChange(policyId + Buffer.from(nameRaw as Buffer).toString("hex"), -qty));
+    }
+  }
+  return burns;
+}
 
 /**
  * Describe a signed-or-unsigned transaction from the wallet's point of view.
@@ -221,11 +368,17 @@ const WHY_REFUSED: Record<number, string> = {
  * this wallet: without them "net change" is not defined. `ownInputRefs` is the
  * set of `txid#index` the wallet holds, so an input can be attributed without
  * asking the chain what it pays to.
+ *
+ * `networkId` is the ledger's number for the account's network — `1` mainnet,
+ * `0` every testnet. A body naming another one, or paying an address on
+ * another one, is refused before anything else is described: the person is
+ * looking at a wallet for one network and would be signing for another.
  */
 export function summariseTx(
   txCborHex: string,
   ownAddressesHex: Iterable<string>,
   ownInputs: Map<string, { lovelace: bigint; assets: Map<string, bigint> }>,
+  networkId: 0 | 1,
 ): TxSummary {
   let decoded: unknown;
   try {
@@ -240,7 +393,31 @@ export function summariseTx(
 
   for (const key of b.keys()) {
     if (!KNOWN_BODY_KEYS.has(Number(key)))
-      bad(WHY_REFUSED[Number(key)] ?? `this transaction uses a feature this wallet cannot describe (field ${String(key)})`);
+      bad(`this transaction uses a feature this wallet cannot describe (field ${String(key)})`);
+  }
+
+  // ── network, first ────────────────────────────────────────────────────────
+  const declaredNetwork = b.get(15);
+  if (declaredNetwork !== undefined && Number(declaredNetwork) !== networkId) {
+    bad(`this transaction is for another network (network id ${String(declaredNetwork)}, this wallet is on ${networkId})`);
+  }
+
+  // `is_valid = false` is the transaction saying its own script fails: the
+  // ledger then takes the collateral and nothing else happens.
+  if (decoded.length >= 3 && decoded[2] === false) {
+    bad("this transaction declares that its own script fails — signing it gives up its collateral");
+  }
+
+  // ── certificates: none ────────────────────────────────────────────────────
+  // A certificate does not move money on this screen; it hands over a standing
+  // right — the stake to a pool, the vote to a DRep — and this decoder cannot
+  // show the person whom it goes to. Counting it under a general warning was
+  // a summary that read "leaves the wallet: 0.2 ADA" for a transaction handing
+  // the whole voting power to someone else. So none is signed, of any kind.
+  const rawCerts = b.get(4);
+  if (rawCerts !== undefined) {
+    const n = rawCerts instanceof Set ? rawCerts.size : Array.isArray(rawCerts) ? rawCerts.length : -1;
+    if (n !== 0) bad("this transaction carries a certificate (staking, voting or registration) — this wallet does not sign those for a website");
   }
 
   const own = new Set<string>();
@@ -272,7 +449,9 @@ export function summariseTx(
   const returnedAssets = new Map<string, bigint>();
   const toOthers: Recipient[] = [];
   for (const o of rawOutputs) {
-    const { addressHex, lovelace, assets } = readOutput(o);
+    const { addressHex, lovelace, assets, datum } = readOutput(o);
+    const net = addressNetwork(addressHex);
+    if (net !== null && net !== networkId) bad("this transaction pays an address on another network");
     const mine = own.has(addressHex.toLowerCase());
     if (mine) {
       returnedLovelace += lovelace;
@@ -286,7 +465,13 @@ export function summariseTx(
       } catch {
         return bad("this transaction pays an address this wallet cannot read");
       }
-      toOthers.push({ address, lovelace, mine: false });
+      toOthers.push({
+        address,
+        lovelace,
+        assets: [...assets].map(([unit, qty]) => toNetChange(unit, qty)),
+        mine: false,
+        datum,
+      });
     }
   }
 
@@ -326,12 +511,7 @@ export function summariseTx(
   for (const unit of units) {
     const delta = (spentAssets.get(unit) ?? BigInt(0)) - (returnedAssets.get(unit) ?? BigInt(0));
     if (delta === BigInt(0)) continue;
-    net.push({
-      unit,
-      policyId: unit.slice(0, 56),
-      assetNameHex: unit.slice(56),
-      amount: delta,
-    });
+    net.push(toNetChange(unit, delta));
   }
 
   const countOf = (v: unknown): number => {
@@ -348,9 +528,9 @@ export function summariseTx(
     fee,
     ownInputs: mineCount,
     totalInputs: inputList.length,
-    certificates: countOf(b.get(4)),
     withdrawals: countOf(b.get(5)),
-    mints: countOf(b.get(9)),
+    burns: readBurns(b.get(9)),
+    collateral: readCollateral(b, own, ownInputs, networkId),
     withdrawalLovelace: withdrawnLovelace,
   };
 }

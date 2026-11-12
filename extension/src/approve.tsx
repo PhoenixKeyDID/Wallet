@@ -39,19 +39,101 @@ import { vaultStore, type StoredWallet } from "../../src/lib/keystore/storage";
 import { DEFAULT_LOCK_TIMEOUT_MS } from "../../src/lib/keystore/session";
 import { summariseTx, UndescribableTxError, type TxSummary } from "../../src/lib/cardano/txSummary";
 import { signForeignTx } from "../../src/lib/keystore/signForeign";
+import { encodeBalanceHex, encodeInputsAsUtxosHex } from "../../src/lib/cardano/utxoCbor";
+import { submitTx } from "../../src/lib/cardano/provider";
+import type { WalletPort } from "../../src/lib/cardano/walletPort";
 import { TxSummaryView } from "./TxSummaryView";
 import {
   displayOrigin,
   refused,
   declined,
   internal,
+  proofFailed,
   invalid,
+  dataSignUnsupported,
+  sendFailed,
+  sendRefused,
   WALLET_PORT,
   type ApiError,
 } from "./rpc/protocol";
 import "./popup.css";
 
-type Incoming = { type: "request"; id: number; origin: string; method: string; params: unknown[] };
+/** `id` is the worker's: unguessable, and only answerable on this window's port. */
+type Incoming = { type: "request"; id: string; origin: string; method: string; params: unknown[] };
+type Answer = { ok: true; value: unknown } | { ok: false; error: ApiError };
+
+/** A CIP-30 optional argument the page left out — `undefined` arrives as `null` after the wire. */
+const absent = (v: unknown) => v === undefined || v === null;
+
+/**
+ * Answer one read, for an unlocked account.
+ *
+ * Out here rather than inside the component so it can be tested without a
+ * window, a port or a password. `wp` is the same `WalletPort` the signing path
+ * resolves its inputs from: the UTxOs a dApp is shown are exactly the ones this
+ * wallet can sign for, read from one source rather than two that could drift.
+ */
+export async function serveRead(
+  acct: Account,
+  wp: Pick<WalletPort, "getInputs" | "getReceiveAddressHex" | "getRewardAddressHex">,
+  method: string,
+  params: unknown[],
+  t: (key: string) => string,
+): Promise<Answer> {
+  try {
+    switch (method) {
+      case "enable":
+        // `enable` is answered by the connect screen, not from here. Two
+        // code paths that can both say yes to the same question is one path
+        // too many: whichever is reached first decides, and the one with a
+        // button on it should be the only one there is.
+        return { ok: false, error: refused(t("cip30_declined")) };
+      case "getNetworkId":
+        // Preview and preprod are both `0` to CIP-30. That is the standard's
+        // limitation, not ours, and answering anything else would be a
+        // number no dApp knows how to read.
+        return { ok: true, value: acct.network === 1 ? 1 : 0 };
+      case "getUtxos":
+        // `amount` asks the wallet to do coin selection for the page, and
+        // `paginate` asks for a page of a list whose order CIP-30 does not
+        // pin. This wallet does neither yet, and answering the full list
+        // anyway would be answering a different question than the one asked
+        // — a dApp that passed `amount` reads a non-null answer as "this
+        // covers it". So either is a refusal, by code, never a guess.
+        if (!absent(params[0]) || !absent(params[1])) {
+          return { ok: false, error: invalid(t("cip30_utxos_args_unsupported")) };
+        }
+        return { ok: true, value: encodeInputsAsUtxosHex(await wp.getInputs()) };
+      case "getBalance":
+        return { ok: true, value: encodeBalanceHex(await wp.getInputs()) };
+      case "getUsedAddresses":
+      case "getUnusedAddresses":
+        // Both answer with the receiving chain. Telling the two apart needs
+        // a chain query per address, which this wallet does not make here —
+        // so it answers the same honest superset to both rather than
+        // guessing. What it never answers with is the internal chain: see
+        // `externalAddressesHex`.
+        return { ok: true, value: externalAddressesHex(acct) };
+      case "getChangeAddress": {
+        const hex = await wp.getReceiveAddressHex();
+        return hex ? { ok: true, value: hex } : { ok: false, error: internal("no address") };
+      }
+      case "getRewardAddresses":
+        return { ok: true, value: [await wp.getRewardAddressHex()] };
+      case "getExtensions":
+        return { ok: true, value: [] };
+      case "getCollateral":
+        // Answering `[]` would read as "this wallet has no collateral",
+        // which a dApp treats as a fact and builds around. It is not a
+        // fact — this wallet does not choose collateral at all yet.
+        return { ok: false, error: refused(t("cip30_no_collateral")) };
+      default:
+        return { ok: false, error: refused(t("cip30_unsupported")) };
+    }
+  } catch (e) {
+    return { ok: false, error: internal(e instanceof Error ? e.message : String(e)) };
+  }
+}
 type Port = {
   postMessage(m: unknown): void;
   onMessage: { addListener(cb: (m: unknown) => void): void };
@@ -78,7 +160,7 @@ type Phase =
   | { at: "connect"; req: Incoming }
   | { at: "decide"; req: Incoming; summary?: TxSummary; undescribable?: string };
 
-function Approve() {
+export function Approve() {
   const { t } = useTranslation("wallet");
   const store = useMemo(() => vaultStore(), []);
 
@@ -111,6 +193,14 @@ function Approve() {
    * value an attacker needs.
    */
   const decidingRef = useRef(false);
+  /**
+   * The account the port listener answers with, read at the moment a request
+   * arrives. The listener lives as long as its port; reading `account` from its
+   * closure would answer with whichever account was unlocked when the port
+   * opened — a wiped one after an idle lock, or another wallet after re-unlock.
+   */
+  const accountRef = useRef<Account | null>(null);
+  accountRef.current = account;
 
   useEffect(() => {
     void store.list().then((ws) => {
@@ -119,59 +209,16 @@ function Approve() {
     });
   }, [store]);
 
-  /**
-   * Answer one request, using the unlocked account.
-   *
-   * Reads go straight through the same `WalletPort` the wallet's own tabs use,
-   * so a website and the wallet's own screens cannot disagree about what this
-   * account holds. Signing does not: it goes through the decide screen below.
-   */
+  /** Answer one read, using the unlocked account. Signing goes through the decide screen below. */
   const serve = useCallback(
-    async (acct: Account, req: Incoming): Promise<{ ok: true; value: unknown } | { ok: false; error: ApiError }> => {
-      const wp = localPort(acct);
-      try {
-        switch (req.method) {
-          case "enable":
-            // `enable` is answered by the connect screen, not from here. Two
-            // code paths that can both say yes to the same question is one path
-            // too many: whichever is reached first decides, and the one with a
-            // button on it should be the only one there is.
-            return { ok: false, error: refused(t("cip30_declined")) };
-          case "getNetworkId":
-            // Preview and preprod are both `0` to CIP-30. That is the standard's
-            // limitation, not ours, and answering anything else would be a
-            // number no dApp knows how to read.
-            return { ok: true, value: acct.network === 1 ? 1 : 0 };
-          case "getUsedAddresses":
-          case "getUnusedAddresses":
-            // Both answer with the receiving chain. Telling the two apart needs
-            // a chain query per address, which this wallet does not make here —
-            // so it answers the same honest superset to both rather than
-            // guessing. What it never answers with is the internal chain: see
-            // `externalAddressesHex`.
-            return { ok: true, value: externalAddressesHex(acct) };
-          case "getChangeAddress": {
-            const hex = await wp.getReceiveAddressHex();
-            return hex ? { ok: true, value: hex } : { ok: false, error: internal("no address") };
-          }
-          case "getRewardAddresses":
-            return { ok: true, value: [await wp.getRewardAddressHex()] };
-          case "getExtensions":
-            return { ok: true, value: [] };
-          case "getCollateral":
-            // Answering `[]` would read as "this wallet has no collateral",
-            // which a dApp treats as a fact and builds around. It is not a
-            // fact — this wallet does not choose collateral at all yet.
-            return { ok: false, error: refused(t("cip30_no_collateral")) };
-          default:
-            return { ok: false, error: refused(t("cip30_unsupported")) };
-        }
-      } catch (e) {
-        return { ok: false, error: internal(e instanceof Error ? e.message : String(e)) };
-      }
-    },
+    (acct: Account, req: Incoming): Promise<Answer> =>
+      serveRead(acct, localPort(acct), req.method, req.params, t),
     [t],
   );
+  const serveRef = useRef(serve);
+  serveRef.current = serve;
+  const tRef = useRef(t);
+  tRef.current = t;
 
   /**
    * Lock this window back up after five idle minutes.
@@ -187,6 +234,7 @@ function Approve() {
     if (!account) return;
     let timer: ReturnType<typeof setTimeout>;
     const relock = () => {
+      accountRef.current = null;
       account.wipe();
       setAccount(null);
       decidingRef.current = false;
@@ -204,13 +252,20 @@ function Approve() {
     };
   }, [account]);
 
-  // Connect to the background once unlocked, and answer what it forwards.
+  // Connect to the background once unlocked, and answer what it forwards. One
+  // port per unlocked account: locking, or unlocking another wallet, closes it,
+  // and the background answers whatever this window still owed as refused.
   useEffect(() => {
-    if (!account || !chromeRuntime || port) return;
+    if (!account || !chromeRuntime) return;
     const p = chromeRuntime.connect({ name: WALLET_PORT });
     p.onMessage.addListener((raw) => {
       const req = raw as Incoming;
       if (req?.type !== "request") return;
+      const acct = accountRef.current;
+      if (acct !== account) {
+        p.postMessage({ type: "result", id: req.id, result: { ok: false, error: refused(tRef.current("cip30_window_locked")) } });
+        return;
+      }
       // A request naming a different origin than this window was opened for is
       // not something to reconcile — this window can only honestly describe one
       // site, so it answers for one site.
@@ -218,7 +273,20 @@ function Approve() {
         p.postMessage({ type: "result", id: req.id, result: { ok: false, error: refused("origin mismatch") } });
         return;
       }
-      if (req.method === "signTx" || req.method === "signData" || req.method === "submitTx") {
+      if (req.method === "signData") {
+        // No describer for arbitrary data exists in this wallet, and the rule
+        // above — nothing is signed that cannot be described — leaves exactly
+        // one honest answer. Given at once, by code: a screen whose approve
+        // button can never be enabled is a request that hangs until a person
+        // works out that the only button that works is Reject.
+        p.postMessage({
+          type: "result",
+          id: req.id,
+          result: { ok: false, error: dataSignUnsupported(tRef.current("cip30_sign_data_unsupported")) },
+        });
+        return;
+      }
+      if (req.method === "signTx" || req.method === "submitTx") {
         // One screen describes one transaction. A second request arriving while
         // the first is on screen used to overwrite it, and the summary a person
         // had just finished reading was replaced under their cursor — a page
@@ -254,20 +322,29 @@ function Approve() {
         setPhase({ at: "connect", req });
         return;
       }
-      void serve(account, req).then((result) =>
+      void serveRef.current(acct, req).then((result) =>
         p.postMessage({ type: "result", id: req.id, result }),
       );
     });
     p.postMessage({ type: "hello", origin });
     setPort(p);
     setPhase({ at: "idle" });
-  }, [account, origin, port, serve]);
+    return () => {
+      p.disconnect();
+      setPort((cur) => (cur === p ? null : cur));
+    };
+    // `serve` and `t` are read through refs: a language switch must not close
+    // the port, because closing it refuses whatever is on screen.
+  }, [account, origin]);
 
   // Describe a signing request as soon as it arrives, or say it cannot be.
   useEffect(() => {
     if (phase.at !== "decide" || phase.summary || phase.undescribable) return;
     const { req } = phase;
-    if (req.method !== "signTx" || !account) return;
+    // `submitTx` is described exactly like `signTx`: the bytes are a whole,
+    // already-signed transaction, and what the person approves is putting it
+    // on the network — so they are shown what it does first.
+    if ((req.method !== "signTx" && req.method !== "submitTx") || !account) return;
     const cbor = req.params[0];
     if (typeof cbor !== "string") {
       setPhase({ ...phase, undescribable: t("cip30_not_a_tx") });
@@ -292,7 +369,12 @@ function Approve() {
             },
           ]),
         );
-        const summary = summariseTx(cbor, await wp.getOwnedAddressesHex(), held);
+        const summary = summariseTx(
+          cbor,
+          await wp.getOwnedAddressesHex(),
+          held,
+          account.network === 1 ? 1 : 0,
+        );
         if (!cancelled) setPhase((cur) => (cur.at === "decide" ? { ...cur, summary } : cur));
       } catch (e) {
         const why =
@@ -313,7 +395,10 @@ function Approve() {
       const w = await store.get(pickedId);
       if (!w) throw new Error(t("local_wallet_missing"));
       const entropy = await openVault(w.vault, pw);
-      const acct = await accountFromEntropy(entropy, 0, w.network as 0 | 1 | 2);
+      // The account the person last used, as the wallet's own panel does —
+      // not account 0 for every dApp, which shows a site the wrong addresses
+      // and an empty balance while the funds sit in account 1.
+      const acct = await accountFromEntropy(entropy, w.accountIndex ?? 0, w.network as 0 | 1 | 2);
       entropy.fill(0);
       setAccount(acct);
       setPw("");
@@ -325,7 +410,7 @@ function Approve() {
     }
   };
 
-  const answer = (result: { ok: true; value: unknown } | { ok: false; error: ApiError }) => {
+  const answer = (result: Answer) => {
     if ((phase.at !== "decide" && phase.at !== "connect") || !port) return;
     port.postMessage({ type: "result", id: phase.req.id, result });
     decidingRef.current = false;
@@ -362,8 +447,36 @@ function Approve() {
       const key = (e as { key?: string })?.key;
       answer({
         ok: false,
-        error: internal(key ? t(key, { defaultValue: key }) : e instanceof Error ? e.message : String(e)),
+        error: proofFailed(key ? t(key, { defaultValue: key }) : e instanceof Error ? e.message : String(e)),
       });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
+   * Put an already-signed transaction on the network, after the person has
+   * read its description.
+   *
+   * No key is touched here: `submitTx` hands over bytes that were signed
+   * elsewhere, usually by this same window a moment earlier. It goes out
+   * through the same provider the wallet's own Send tab uses, and the answer is
+   * the hash the node reported — or `TxSendError.Failure` with the node's own
+   * reason, which is the one thing a developer can act on.
+   */
+  const broadcast = async () => {
+    if (phase.at !== "decide" || !account || !phase.summary) return;
+    const cbor = phase.req.params[0];
+    if (typeof cbor !== "string") {
+      answer({ ok: false, error: invalid(t("cip30_not_a_tx")) });
+      return;
+    }
+    setBusy(true);
+    try {
+      answer({ ok: true, value: await submitTx(account.network, cbor) });
+    } catch (e) {
+      const why = e instanceof Error ? e.message : String(e);
+      answer({ ok: false, error: sendFailed(why) });
     } finally {
       setBusy(false);
     }
@@ -429,7 +542,7 @@ function Approve() {
           </ul>
         </div>
         <div className="approve-actions">
-          <button onClick={() => answer({ ok: false, error: declined(t("cip30_declined")) })}>
+          <button onClick={() => answer({ ok: false, error: refused(t("cip30_declined")) })}>
             {t("cip30_reject")}
           </button>
           <button
@@ -451,7 +564,7 @@ function Approve() {
         <OriginLine />
         <p className="mono approve-account">{primaryAddress(account)}</p>
 
-        {req.method !== "signTx" && <p className="approve-error">{t("cip30_unsupported")}</p>}
+        {req.method === "submitTx" && <p className="approve-note">{t("cip30_submit_intro")}</p>}
 
         {undescribable && (
           <div className="approve-refuse">
@@ -463,15 +576,23 @@ function Approve() {
         {summary && <TxSummaryView summary={summary} />}
 
         <div className="approve-actions">
-          <button onClick={() => answer({ ok: false, error: declined(t("cip30_declined")) })}>
+          <button
+            onClick={() =>
+              answer({
+                ok: false,
+                // `submitTx` speaks `TxSendError`, where `2` means Failure.
+                error: req.method === "submitTx" ? sendRefused(t("cip30_declined")) : declined(t("cip30_declined")),
+              })
+            }
+          >
             {t("cip30_reject")}
           </button>
           <button
             disabled={busy || !summary || !!undescribable}
-            onClick={() => void sign()}
+            onClick={() => void (req.method === "submitTx" ? broadcast() : sign())}
             className="approve-primary"
           >
-            {t("cip30_approve")}
+            {req.method === "submitTx" ? t("cip30_submit_cta") : t("cip30_approve")}
           </button>
         </div>
       </div>
@@ -484,7 +605,7 @@ function Approve() {
       <p className="mono approve-account">{primaryAddress(account)}</p>
       <p>{t("cip30_connected")}</p>
       <p className="approve-note">{t("cip30_close_to_disconnect")}</p>
-      <p className="approve-note mono">{allAddresses(account).length} addresses</p>
+      <p className="approve-note mono">{t("cip30_address_count", { n: allAddresses(account).length })}</p>
     </div>
   );
 }

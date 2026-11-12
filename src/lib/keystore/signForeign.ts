@@ -94,6 +94,25 @@ function bodyBytes(txBytes: Buffer): Buffer {
   return Buffer.from(rest.subarray(0, found));
 }
 
+/** How many entries a CBOR list/set/map holds; anything else is not a transaction. */
+function countOf(v: unknown): number {
+  if (v === undefined) return 0;
+  if (Array.isArray(v)) return v.length;
+  if (v instanceof Set || v instanceof Map) return v.size;
+  throw new LocalSignError("sign_foreign_not_a_tx");
+}
+
+/** A mint quantity below zero — a burn. Zero and anything positive are not. */
+function isNegativeInteger(v: unknown): boolean {
+  if (typeof v === "number") return Number.isSafeInteger(v) && v < 0;
+  if (typeof v === "bigint") return v < BigInt(0);
+  // @stricahq/cbors hands large integers back as BigNumber-like objects.
+  if (v && typeof v === "object" && typeof (v as { toFixed?: unknown }).toFixed === "function") {
+    return /^-\d+$/.test((v as { toFixed(n: number): string }).toFixed(0)) && (v as { toFixed(n: number): string }).toFixed(0) !== "-0";
+  }
+  return false;
+}
+
 /**
  * Which keys this transaction needs from this wallet.
  *
@@ -126,25 +145,84 @@ export function requiredKeysFor(
     if (!need.includes(hashHex)) need.push(hashHex);
   };
 
-  const rawInputs = b.get(0);
-  const inputList = rawInputs instanceof Set ? [...rawInputs] : rawInputs;
-  if (!Array.isArray(inputList)) throw new LocalSignError("sign_foreign_not_a_tx");
-  for (const i of inputList) {
+  // ── What this wallet refuses to sign for a website, whatever the screen said ─
+  //
+  // The approval window refuses these too, and says why (`txSummary.ts`). They
+  // are repeated here because this is the function that touches the keys: a
+  // future screen that forgets to describe first must still not get a witness.
+
+  // The network the body names is the network the signature is for. A body for
+  // another network is refused before any key is looked at.
+  const ledgerNetworkId = account.network === 1 ? 1 : 0;
+  const declaredNetwork = b.get(15);
+  if (declaredNetwork !== undefined && Number(declaredNetwork) !== ledgerNetworkId) {
+    throw new LocalSignError("sign_foreign_wrong_network", String(declaredNetwork));
+  }
+
+  // Every certificate. A certificate does not move money on the screen, it
+  // hands over a standing right — the stake to a pool, the vote to a DRep —
+  // and this wallet cannot yet show the person whom it goes to. Until it can,
+  // no certificate from a website is signed, of any kind, aimed at anyone.
+  if (countOf(b.get(4)) > 0) throw new LocalSignError("sign_foreign_certificate");
+
+  // Minting. A burn takes tokens out of existence and is shown on the screen;
+  // creating tokens is a policy saying yes, and a policy that wants this
+  // wallet's key wants it for a reason the screen cannot read.
+  const mint = b.get(9);
+  if (mint !== undefined) {
+    if (!(mint instanceof Map)) throw new LocalSignError("sign_foreign_not_a_tx");
+    for (const names of mint.values()) {
+      if (!(names instanceof Map)) throw new LocalSignError("sign_foreign_not_a_tx");
+      for (const qty of names.values()) {
+        if (!isNegativeInteger(qty)) throw new LocalSignError("sign_foreign_mint");
+      }
+    }
+  }
+
+  const keyOfOwnInput = (i: unknown, what: "input" | "collateral"): string | null => {
     if (!Array.isArray(i) || i.length < 2) throw new LocalSignError("sign_foreign_not_a_tx");
     const ref = `${Buffer.from(i[0] as Buffer).toString("hex")}#${Number(i[1])}`;
     const addr = ownInputAddressByRef.get(ref);
-    if (!addr) continue;
+    if (!addr) {
+      // Somebody else's input is somebody else's to sign. Somebody else's
+      // collateral is not: the screen can only say what this wallet risks if
+      // every collateral input is one it can value.
+      if (what === "collateral") throw new LocalSignError("sign_foreign_collateral_not_own", ref);
+      return null;
+    }
     const parsed = tyUtils.getAddressFromString(addr) as {
       paymentCredential?: { hash?: Buffer | Uint8Array };
     };
     const hash = parsed.paymentCredential?.hash;
     if (!hash) throw new LocalSignError("sign_foreign_unreadable_own_address");
-    add(Buffer.from(hash).toString("hex"));
+    return Buffer.from(hash).toString("hex");
+  };
+
+  const rawInputs = b.get(0);
+  const inputList = rawInputs instanceof Set ? [...rawInputs] : rawInputs;
+  if (!Array.isArray(inputList)) throw new LocalSignError("sign_foreign_not_a_tx");
+  for (const i of inputList) {
+    const k = keyOfOwnInput(i, "input");
+    if (k) add(k);
+  }
+
+  // Collateral inputs need their key's witness exactly like spent inputs do —
+  // the ledger only takes collateral from key-locked outputs, and checks the
+  // key signed. A collateral UTxO at a different address than the fee input
+  // is the ordinary case, not an edge one.
+  const rawCollateral = b.get(13);
+  if (rawCollateral !== undefined) {
+    const list = rawCollateral instanceof Set ? [...rawCollateral] : rawCollateral;
+    if (!Array.isArray(list)) throw new LocalSignError("sign_foreign_not_a_tx");
+    for (const i of list) {
+      const k = keyOfOwnInput(i, "collateral");
+      if (k) add(k);
+    }
   }
 
   // Everything added above is justified by an input this wallet was able to
-  // attribute to itself. Two more keys can be justified, but only by the body
-  // saying what they are for — never by the transaction simply naming them.
+  // attribute to itself. One more key can be justified, but only by the body
+  // saying what it is for — never by the transaction simply naming it.
   const justified = new Set(need);
 
   // A withdrawal moves this wallet's staking rewards. Signing it needs the
@@ -157,25 +235,11 @@ export function requiredKeysFor(
       if (raw.length !== 29) continue;
       if (raw.subarray(1).toString("hex") === account.stakeKeyHashHex) {
         justified.add(account.stakeKeyHashHex);
-      }
-    }
-  }
-
-  // A certificate carries the credential it acts on as `[0, hash]` — `0` being
-  // a key hash rather than a script. Only that exact shape justifies a key; any
-  // other certificate layout is one this wallet cannot read, and a key it
-  // cannot explain is a key it must not use.
-  const certs = b.get(4);
-  const certList = certs instanceof Set ? [...certs] : certs;
-  if (Array.isArray(certList)) {
-    for (const c of certList) {
-      if (!Array.isArray(c)) continue;
-      for (const part of c) {
-        if (!Array.isArray(part) || part.length !== 2 || Number(part[0]) !== 0) continue;
-        const hashHex = Buffer.from(part[1] as Buffer).toString("hex");
-        if (hashHex === account.stakeKeyHashHex || hashHex === account.drepKeyHashHex) {
-          justified.add(hashHex);
-        }
+        // Justified AND needed: the ledger will not move these rewards without
+        // the stake key's witness, whether or not field 14 names it. Leaving it
+        // to field 14 meant every dApp that (correctly) omits it got back a
+        // witness set the node rejects.
+        add(account.stakeKeyHashHex);
       }
     }
   }

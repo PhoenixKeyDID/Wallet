@@ -48,9 +48,9 @@ function shown(overrides: Partial<TxSummary> = {}) {
     fee: BigInt(170_000),
     ownInputs: 1,
     totalInputs: 1,
-    certificates: 0,
+    burns: [],
+    collateral: null,
     withdrawals: 0,
-    mints: 0,
     withdrawalLovelace: BigInt(0),
     ...overrides,
   };
@@ -78,7 +78,7 @@ describe("TxSummaryView — what the approval window shows", () => {
   });
 
   it("prints every recipient that is not this wallet in full", () => {
-    const text = shown({ toOthers: [{ address: PAYEE, lovelace: BigInt(2_000_000), mine: false }] });
+    const text = shown({ toOthers: [{ address: PAYEE, lovelace: BigInt(2_000_000), assets: [], mine: false, datum: false }] });
     expect(text).toContain(PAYEE);
   });
 

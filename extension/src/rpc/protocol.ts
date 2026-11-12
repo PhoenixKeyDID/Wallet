@@ -141,10 +141,33 @@ export const TX_SIGN_ERROR = { ProofGeneration: 1, UserDeclined: 2 } as const;
 /** CIP-30 `TxSendError` codes. */
 export const TX_SEND_ERROR = { Refused: 1, Failure: 2 } as const;
 
+/** CIP-30 `DataSignError` codes. */
+export const DATA_SIGN_ERROR = { ProofGeneration: 1, AddressNotPK: 2, UserDeclined: 3 } as const;
+
 export const refused = (info: string): ApiError => ({ code: API_ERROR.Refused, info });
 export const invalid = (info: string): ApiError => ({ code: API_ERROR.InvalidRequest, info });
 export const internal = (info: string): ApiError => ({ code: API_ERROR.InternalError, info });
 export const declined = (info: string): ApiError => ({ code: TX_SIGN_ERROR.UserDeclined, info });
+/** `signTx` was approved but no witness could be produced — `TxSignError.ProofGeneration`. */
+export const proofFailed = (info: string): ApiError => ({ code: TX_SIGN_ERROR.ProofGeneration, info });
+/**
+ * `submitTx` answers with `TxSendError`, whose numbers mean something else:
+ * `2` there is *Failure*, not *UserDeclined*. A person pressing Reject on a
+ * broadcast is the wallet refusing to send, which is `1`.
+ */
+export const sendRefused = (info: string): ApiError => ({ code: TX_SEND_ERROR.Refused, info });
+export const sendFailed = (info: string): ApiError => ({ code: TX_SEND_ERROR.Failure, info });
+/**
+ * `signData` is not implemented. Its own error type has the code for exactly
+ * that — the wallet could not produce the proof — and a dApp reading
+ * `signData`'s error path understands it. `APIError.Refused` would instead read
+ * as "the wallet disconnected", and some dApps answer that by calling `enable`
+ * again, which here opens a window that then refuses again.
+ */
+export const dataSignUnsupported = (info: string): ApiError => ({
+  code: DATA_SIGN_ERROR.ProofGeneration,
+  info,
+});
 
 /**
  * Recognise a request without trusting it.

@@ -14,7 +14,7 @@ import { Buffer } from "buffer";
 import { Encoder } from "@stricahq/cbors";
 import { utils as tyUtils, types as tyTypes } from "@stricahq/typhonjs";
 import { accountFromEntropy, type Account } from "../derive";
-import { signForeignTx } from "../signForeign";
+import { requiredKeysFor, signForeignTx } from "../signForeign";
 import { summariseTx } from "../../cardano/txSummary";
 import { baseAddress, type PhoenixNetwork } from "../../cardano/address";
 
@@ -81,6 +81,7 @@ describe("rút sạch phần thưởng staking", () => {
       tx(body),
       a.external.map((d) => addrHex(d.address)),
       new Map(),
+      0,
     );
     const ada = s.net.find((n) => n.unit === "");
     // 500 ADA rời ví. Con số quyết định phải nói đúng chiều đó.
@@ -131,5 +132,29 @@ describe("đầu vào ví không tra được", () => {
     ]);
     // Bộ nhớ đệm rỗng: ví không tra được đầu vào nào.
     expect(() => signForeignTx(tx(body), a, new Map(), false)).toThrow();
+  });
+});
+
+/**
+ * Chiều ngược của các đòn trên: khoá stake mà ledger THẬT SỰ đòi phải được ký,
+ * kể cả khi trang không gọi tên nó ở trường 14. Trước đây khoản rút / chứng chỉ
+ * chỉ "biện minh" cho khoá mà không đưa nó vào tập cần ký ⇒ mọi dApp staking
+ * nhận về bộ chữ ký thiếu khoá stake và node từ chối giao dịch.
+ */
+describe("khoá stake của khoản rút thưởng thì phải ký, không cần trường 14", () => {
+  const base = () =>
+    new Map<number, unknown>([
+      [0, [[Buffer.from(THEIR_TXID, "hex"), 0]]],
+      [1, [[Buffer.from(addrHex(ATTACKER), "hex"), 1_000_000]]],
+      [2, 200_000],
+    ]);
+
+  it("rút thưởng của chính ví: khoá stake nằm trong tập cần ký", async () => {
+    const a = await acct();
+    const body = base();
+    body.set(5, new Map([[rewardAccount(a.stakeKeyHashHex), 5_000_000]]));
+    expect(requiredKeysFor(tx(body), a, new Map()).keyHashes).toEqual([a.stakeKeyHashHex]);
+    // Và chữ ký ra thật, không phải "không có gì để ký".
+    expect(() => signForeignTx(tx(body), a, new Map(), false)).not.toThrow();
   });
 });
