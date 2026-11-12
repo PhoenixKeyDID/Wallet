@@ -185,6 +185,20 @@ describe("check:tiers-codeowners", () => {
     expect(r.status).toBe(2);
   });
 
+  it("refuses a pattern over the marketplace's per-pattern caps", () => {
+    const long = check({ tiers: { forbidden: [...BASE_TIERS.forbidden, `gen/${"x".repeat(1021)}`] } });
+    expect(long.out).toContain("the table's reader stops at 1024");
+    expect(long.status).toBe(2);
+    // `**` counts once, like the marketplace's matcher: 1 + 16 = 17 is over.
+    const wild = check({ tiers: { forbidden: [...BASE_TIERS.forbidden, `**/${"*a".repeat(16)}`] } });
+    expect(wild.out).toContain("has 17 wildcards; the table's reader stops at 16");
+    expect(wild.status).toBe(2);
+    // At the caps exactly, the table is read.
+    const edge = check({ tiers: { forbidden: [...BASE_TIERS.forbidden, `gen/${"x".repeat(1020)}`, `**/${"*a".repeat(15)}`] } });
+    expect(edge.out).not.toContain("the table's reader stops at");
+    expect(edge.status).toBe(0);
+  });
+
   it("refuses a tier that is not a list of non-empty strings", () => {
     const r = check({ tiers: { mid: ["src/ui/Badge.tsx", ""] } });
     expect(r.out).toContain('tier "mid" is not a list of non-empty strings');

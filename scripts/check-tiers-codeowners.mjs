@@ -110,14 +110,28 @@ function segMatch(p, s) {
   return pi === p.length;
 }
 
+// The marketplace reader refuses the whole table (TIERS_BAD_SHAPE) when one
+// pattern is longer than 1024 characters or has more than 16 wildcards, `**`
+// counting once. Applying the same caps here keeps this gate from passing a
+// table that reader rejects.
+const MAX_PATTERN_LENGTH = 1024;
+const MAX_WILDCARDS = 16;
+
 function compileGlob(pattern) {
   if (typeof pattern !== "string" || !pattern.length) throw new Error("empty glob");
+  if (pattern.length > MAX_PATTERN_LENGTH) {
+    throw new Error(`glob is ${pattern.length} characters long; the table's reader stops at ${MAX_PATTERN_LENGTH}`);
+  }
   if (/[[\]{}]/.test(pattern) || pattern.startsWith("!") || pattern.startsWith("/")) {
     throw new Error(`glob "${pattern}" is outside the declared dialect`);
   }
   const segs = pattern.split("/");
   for (const seg of segs) {
     if (seg !== "**" && seg.includes("**")) throw new Error(`glob "${pattern}": "**" must be a whole segment`);
+  }
+  const wildcards = segs.reduce((n, seg) => n + (seg === "**" ? 1 : [...seg].filter((c) => c === "*" || c === "?").length), 0);
+  if (wildcards > MAX_WILDCARDS) {
+    throw new Error(`glob "${pattern}" has ${wildcards} wildcards; the table's reader stops at ${MAX_WILDCARDS}`);
   }
   return (path) => {
     const parts = path.split("/");
