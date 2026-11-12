@@ -25,6 +25,22 @@ beforeAll(async () => {
 
 afterAll(() => rmSync(out, { recursive: true, force: true }));
 
+/**
+ * The reason a classic script refuses `src`, or null when it compiles.
+ *
+ * Returned as the message rather than thrown: a failure here is the behaviour
+ * under test, and letting the `SyntaxError` escape would make it read, to the
+ * mutation runner, like a test file that failed to load.
+ */
+function classicScriptRefusal(src: string, filename: string): string | null {
+  try {
+    new vm.Script(src, { filename });
+    return null;
+  } catch (e) {
+    return e instanceof Error ? e.message : String(e);
+  }
+}
+
 describe("buildPageWorld", () => {
   it("writes exactly the two page-world files and the receipt, and no shared chunk", () => {
     expect(readdirSync(out).sort()).toEqual([PAGE_WORLD_RECEIPT, "content.js", "inpage.js"].sort());
@@ -34,7 +50,7 @@ describe("buildPageWorld", () => {
     it(`emits ${f} as a self-contained classic script`, () => {
       const src = readFileSync(join(out, f), "utf8");
       // The browser's rule: a classic script refuses import/export declarations.
-      expect(() => new vm.Script(src, { filename: f })).not.toThrow();
+      expect(classicScriptRefusal(src, f)).toBeNull();
       expect(src).not.toMatch(/(?:^|[\s;])(?:import|export)\s*[{*\w"']/m);
       expect(src).not.toMatch(/(?<![\w$.])import\s*\(/);
       expect(src.length).toBeLessThan(32 * 1024);
@@ -53,6 +69,7 @@ describe("buildPageWorld", () => {
     // A minimal page: the provider captures postMessage/addEventListener at load
     // and installs itself; isEnabled must settle once the bridge answers.
     const src = readFileSync(join(out, "inpage.js"), "utf8");
+    expect(classicScriptRefusal(src, "inpage.js")).toBeNull();
     const listeners: Array<(ev: { source: unknown; data: unknown }) => void> = [];
     const win: Record<string, unknown> = {};
     Object.assign(win, {
