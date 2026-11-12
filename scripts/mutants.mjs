@@ -67,6 +67,7 @@ const UTXO_CBOR = "src/lib/cardano/utxoCbor.ts";
 const APPROVE = "extension/src/approve.tsx";
 const UTXO_SELECT = "src/lib/cardano/utxoSelect.ts";
 const SIGN_DATA = "src/lib/keystore/signData.ts";
+const WORKER = "extension/background/worker.ts";
 // The one rule for which outputs at the wallet's addresses are its own money,
 // and the CIP-30 path that reads UTxOs back from another wallet.
 const OWN_UTXO = "src/lib/cardano/ownUtxo.ts";
@@ -100,6 +101,8 @@ const TESTS = [
   "src/lib/cardano/__tests__/ownUtxo.test.ts",
   "src/lib/cardano/__tests__/blockfrost.test.ts",
   "src/lib/cardano/__tests__/e2e-journey.test.ts",
+  "src/lib/keystore/__tests__/signForeign.test.ts",
+  "extension/background/__tests__/worker.test.ts",
 ];
 
 /**
@@ -1522,18 +1525,51 @@ const MUTANTS = [
     marker: "MUT_TS_COLL_RET_DATUM",
   },
   {
+    // The coin filter alone is redundant now (`consider` checks the total), so
+    // the mutant removes both: what it measures is "a single coin over the cap
+    // is offered", not "one of two equal checks was dropped".
     name: "getCollateral offers a single coin larger than the 5 ADA cap",
-    file: UTXO_SELECT,
-    from: "(i) => (i.tokens ?? []).length === 0 && lovelaceOf(i) <= COLLATERAL_CAP_LOVELACE,",
-    to: "(i) => (i.tokens ?? []).length === 0 /* MUT_COLL_COIN_CAP */,",
+    edits: [
+      {
+        file: UTXO_SELECT,
+        from: ".filter((i) => (i.tokens ?? []).length === 0 && lovelaceOf(i) <= COLLATERAL_CAP_LOVELACE)",
+        to: ".filter((i) => (i.tokens ?? []).length === 0)",
+      },
+      {
+        file: UTXO_SELECT,
+        from: "if (sum < target || sum > COLLATERAL_CAP_LOVELACE) return;",
+        to: "if (sum < target || (coins.length > 1 && sum > COLLATERAL_CAP_LOVELACE /* MUT_COLL_COIN_CAP */)) return;",
+      },
+    ],
     marker: "MUT_COLL_COIN_CAP",
   },
   {
     name: "getCollateral combines coins whose sum is over the 5 ADA cap",
     file: UTXO_SELECT,
-    from: "if (sum + lovelaceOf(i) > COLLATERAL_CAP_LOVELACE) continue;",
-    to: "if (false /* MUT_COLL_SUM_CAP */) continue;",
+    from: "if (sum < target || sum > COLLATERAL_CAP_LOVELACE) return;",
+    to: "if (sum < target || (coins.length === 1 && sum > COLLATERAL_CAP_LOVELACE /* MUT_COLL_SUM_CAP */)) return;",
     marker: "MUT_COLL_SUM_CAP",
+  },
+  {
+    name: "getCollateral never tries two coins (the greedy miss: 4 / 2.5 / 2.5 for 4.5 ADA)",
+    file: UTXO_SELECT,
+    from: "      consider([pool[a]!, pool[b]!]);",
+    to: "      void 0; /* MUT_COLL_PAIRS */",
+    marker: "MUT_COLL_PAIRS",
+  },
+  {
+    name: "getCollateral takes a single coin over a set with a smaller total",
+    file: UTXO_SELECT,
+    from: "if (single) consider([single]);",
+    to: "if (single) return [single]; /* MUT_COLL_SINGLE_FIRST */",
+    marker: "MUT_COLL_SINGLE_FIRST",
+  },
+  {
+    name: "getCollateral searches the smallest sub-target coins, which dust can fill",
+    file: UTXO_SELECT,
+    from: "below.slice(below.length - COLLATERAL_SEARCH_POOL)",
+    to: "below.slice(0, COLLATERAL_SEARCH_POOL) /* MUT_COLL_POOL_SMALLEST */",
+    marker: "MUT_COLL_POOL_SMALLEST",
   },
   {
     name: "screen: a withdrawal from someone else's reward account reads as 'your staking rewards'",
@@ -1545,9 +1581,81 @@ const MUTANTS = [
   {
     name: "signData shows right-to-left text as text",
     file: SIGN_DATA,
-    from: "if (RTL_SCRIPT.test(text)) return null;",
+    from: "if (RIGHT_TO_LEFT.test(text)) return null;",
     to: "if (false /* MUT_SD_RTL */) return null;",
     marker: "MUT_SD_RTL",
+  },
+  {
+    name: "signData's right-to-left check goes back to the seven scripts the old list named",
+    file: SIGN_DATA,
+    from: "const RIGHT_TO_LEFT = /[\\u0590-\\u08ff\\ufb1d-\\ufdff\\ufe70-\\ufeff\\u{10800}-\\u{10fff}\\u{1e800}-\\u{1efff}]/u;",
+    to: "const RIGHT_TO_LEFT = /* MUT_SD_RTL_SEVEN */ /[\\p{Script=Hebrew}\\p{Script=Arabic}\\p{Script=Syriac}\\p{Script=Thaana}\\p{Script=Nko}\\p{Script=Samaritan}\\p{Script=Mandaic}]/u;",
+    marker: "MUT_SD_RTL_SEVEN",
+  },
+  {
+    name: "signData shows format characters (Cf) as text",
+    file: SIGN_DATA,
+    from: "const NOT_DRAWN_AS_ITSELF = /[\\p{Cf}\\p{Zl}",
+    to: "const NOT_DRAWN_AS_ITSELF = /* MUT_SD_CF */ /[\\p{Zl}",
+    marker: "MUT_SD_CF",
+  },
+  {
+    name: "signData shows the line and paragraph separators (Zl, Zp) as text",
+    file: SIGN_DATA,
+    // The marker sits outside the regex: inside a character class, `/* … */`
+    // is a list of characters, and the class would refuse every letter.
+    from: "const NOT_DRAWN_AS_ITSELF = /[\\p{Cf}\\p{Zl}\\p{Zp}\\p{Co}",
+    to: "const NOT_DRAWN_AS_ITSELF = /* MUT_SD_ZLZP */ /[\\p{Cf}\\p{Co}",
+    marker: "MUT_SD_ZLZP",
+  },
+  {
+    name: "signData shows private-use code points (Co) as text",
+    file: SIGN_DATA,
+    from: "\\p{Co}\\p{Cn}]/u;",
+    to: "\\p{Cn}]/u; /* MUT_SD_CO */",
+    marker: "MUT_SD_CO",
+  },
+  {
+    name: "signData shows unassigned code points (Cn) as text",
+    file: SIGN_DATA,
+    from: "\\p{Co}\\p{Cn}]/u;",
+    to: "\\p{Co}]/u; /* MUT_SD_CN */",
+    marker: "MUT_SD_CN",
+  },
+  {
+    name: "Sign reads the wallet again instead of signing from the view the summary used",
+    file: APPROVE,
+    from: "const witnessSetHex = signForeignTx(cbor, account, phase.view, partial);",
+    to: "const witnessSetHex = signForeignTx(cbor, account, walletViewFrom(await localPort(account).getInputs(), await localPort(account).getOwnedAddressesHex()) /* MUT_SIGN_REREAD */, partial);",
+    marker: "MUT_SIGN_REREAD",
+  },
+  {
+    name: "the signer no longer applies the screen's refusals (field 22, foreign collateral return, …)",
+    file: SIGN_FOREIGN,
+    from: "    summariseTx(txCborHex, view.ownAddressesHex, view.held, ledgerNetworkId);",
+    to: "    void 0; /* MUT_SIGN_SHARED_RULES */",
+    marker: "MUT_SIGN_SHARED_RULES",
+  },
+  {
+    name: "a body naming the same input twice is counted twice",
+    file: TX_SUMMARY,
+    from: 'if (seenInputs.has(ref)) bad("this transaction names the same input twice");',
+    to: 'if (false /* MUT_TS_DUP_INPUT */) bad("this transaction names the same input twice");',
+    marker: "MUT_TS_DUP_INPUT",
+  },
+  {
+    name: "the worker lets any extension page's port attach as a site's wallet window",
+    file: WORKER,
+    from: "  if (!fromWalletWindow(port)) return;",
+    to: "  if (false /* MUT_WORKER_SENDER */) return;",
+    marker: "MUT_WORKER_SENDER",
+  },
+  {
+    name: "the worker accepts any sender URL that merely starts with approve.html",
+    file: WORKER,
+    from: "return url === page || url.startsWith(`${page}?`) || url.startsWith(`${page}#`);",
+    to: "return url.startsWith(page) /* MUT_WORKER_PREFIX */;",
+    marker: "MUT_WORKER_PREFIX",
   },
 ];
 
