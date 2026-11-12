@@ -440,9 +440,10 @@ describe("the screen shows text only when the text is what is signed", () => {
     expect(printableText(Buffer.from(`pay${"\u3000".repeat(9)}10 ADA`, "utf8"))).toBeNull();
   });
   it("counts wide inked characters as two columns, so a table aligned with ideographic spaces is text", () => {
-    // 16 × (2 ideographs + 2 U+3000) = 96 columns, 64 blank: 67 %. Counting
-    // the ideographs as one column each would make it 80 % and hex.
-    const table = "確認\u3000\u3000".repeat(16);
+    // A form spaced with ideographic spaces: 20 × (1 ideograph + 2 U+3000) =
+    // 120 columns, 80 blank: 67 %. Counting the ideograph as one column would
+    // make it 80 % and hex.
+    const table = "名\u3000\u3000".repeat(20);
     expect(printableText(Buffer.from(table, "utf8"))).toBe(table);
     const prose = "\u3000ログインを確認してください。署名するとこのサイトにログインします。\n\u3000送金は行われません。";
     expect(printableText(Buffer.from(prose, "utf8"))).toBe(prose);
