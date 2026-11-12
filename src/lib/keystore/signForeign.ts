@@ -26,7 +26,7 @@
  *
  * ## What it refuses
  *
- * Everything the approval screen refuses: `requiredKeysFor` ends by running
+ * Everything the approval screen refuses: `requiredKeysFor` runs
  * `summariseTx` over the same bytes and the same `WalletView`, so the two
  * layers share one list of refusals instead of keeping two.
  *
@@ -40,7 +40,7 @@ import { Buffer } from "buffer";
 import { Decoder, Encoder } from "@stricahq/cbors";
 import { utils as tyUtils } from "@stricahq/typhonjs";
 import { blake2b256, toHex } from "../cardano/hash";
-import { summariseTx, UndescribableTxError } from "../cardano/txSummary";
+import { summariseTx, UndescribableTxError, type TxSummary } from "../cardano/txSummary";
 import { LocalSignError, type Account } from "./index";
 
 /** One UTxO the wallet holds, as the approval screen valued it. */
@@ -299,6 +299,31 @@ export function requiredKeysFor(
     }
   }
 
+  // ── Every refusal the approval screen applies, applied here by the same code ─
+  //
+  // The checks above are this function's own and stay, because they name the
+  // reason precisely. They do not cover everything the screen refuses: a body
+  // field outside the allow-list (20, 21, 22 — treasury donations, proposals,
+  // votes — and anything later), a collateral return paid to an address that
+  // is not this wallet, a declared collateral total that disagrees with the
+  // collateral, collateral that can lose more than 5 ADA, the same input
+  // named twice. Re-implementing those here would be a second copy that
+  // drifts from the first. So the screen's own function is run over the same
+  // bytes and the same wallet view, and its refusal is this function's
+  // refusal. A screen that forgets to describe still cannot get a witness for
+  // a transaction the description would have refused. It runs before the
+  // withdrawal keys below, because which withdrawals are this wallet's is
+  // read from its answer.
+  let summary: TxSummary;
+  try {
+    summary = summariseTx(txCborHex, view.ownAddressesHex, view.held, ledgerNetworkId);
+  } catch (e) {
+    // A refusal the screen names by key (the collateral cap, tokens in the
+    // collateral) is refused here under the same key.
+    if (e instanceof UndescribableTxError) throw new LocalSignError(e.key ?? "sign_foreign_undescribable", e.message);
+    throw e;
+  }
+
   // Everything added above is justified by an input this wallet was able to
   // attribute to itself. One more key can be justified, but only by the body
   // saying what it is for — never by the transaction simply naming it.
@@ -307,12 +332,26 @@ export function requiredKeysFor(
   // A withdrawal moves this wallet's staking rewards. Signing it needs the
   // stake key, and the reward account in the body says whose rewards they are:
   // one header byte, then the 28-byte key hash.
+  //
+  // Two sources answer "is this withdrawal ours": the account's stake key,
+  // which decides whether a witness can be made, and the summary, which
+  // decided whether the screen counted the rewards as leaving this wallet
+  // (from the stake part of `view.ownAddressesHex`). A witness is added only
+  // when both say yes. When they disagree — a view with no addresses, an
+  // address list from another account — the screen described one transaction
+  // and the key would sign another, so it is a refusal.
+  const counted = new Set(summary.ownRewardKeyHashes);
   const withdrawals = b.get(5);
   if (withdrawals instanceof Map) {
     for (const rewardAccount of withdrawals.keys()) {
       const raw = Buffer.from(rewardAccount as Buffer);
       if (raw.length !== 29) continue;
-      if (raw.subarray(1).toString("hex") === account.stakeKeyHashHex) {
+      const stakeHash = raw.subarray(1).toString("hex");
+      const accountKey = stakeHash === account.stakeKeyHashHex;
+      if (accountKey !== counted.has(stakeHash)) {
+        throw new LocalSignError("sign_foreign_withdrawal_mismatch", stakeHash);
+      }
+      if (accountKey) {
         justified.add(account.stakeKeyHashHex);
         // Justified AND needed: the ledger will not move these rewards without
         // the stake key's witness, whether or not field 14 names it. Leaving it
@@ -342,27 +381,6 @@ export function requiredKeysFor(
       }
       add(hashHex);
     }
-  }
-
-  // ── Every refusal the approval screen applies, applied here by the same code ─
-  //
-  // The checks above are this function's own and stay, because they name the
-  // reason precisely. They do not cover everything the screen refuses: a body
-  // field outside the allow-list (20, 21, 22 — treasury donations, proposals,
-  // votes — and anything later), a collateral return paid to an address that
-  // is not this wallet, a declared collateral total that disagrees with the
-  // collateral, the same input named twice. Re-implementing those here would
-  // be a second copy that drifts from the first. So the screen's own function
-  // is run over the same bytes and the same wallet view, and its refusal is
-  // this function's refusal. A screen that forgets to describe still cannot
-  // get a witness for a transaction the description would have refused.
-  try {
-    summariseTx(txCborHex, view.ownAddressesHex, view.held, ledgerNetworkId);
-  } catch (e) {
-    // A refusal the screen names by key (the collateral cap, tokens in the
-    // collateral) is refused here under the same key.
-    if (e instanceof UndescribableTxError) throw new LocalSignError(e.key ?? "sign_foreign_undescribable", e.message);
-    throw e;
   }
 
   return { keyHashes: need, bodyHashHex };

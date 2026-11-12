@@ -356,6 +356,7 @@
   "sign_foreign_undescribable": "This transaction does something the approval screen refuses to describe. Nothing was signed.",
   "sign_foreign_collateral_over_cap": "This transaction could take more than 5 ADA of your collateral if its script fails. The site that built it decides whether the script fails, so this wallet never puts up more than 5 ADA. Nothing was signed.",
   "sign_foreign_collateral_tokens": "This transaction puts up your tokens as collateral and does not give them back if its script fails. Nothing was signed.",
+  "sign_foreign_withdrawal_mismatch": "This transaction withdraws staking rewards that the approval screen did not count as yours, so the wallet will not sign for them. Nothing was signed.",
   "sign_foreign_unreadable_own_utxo": "One of this wallet's coins could not be read. Nothing was signed.",
   "sign_foreign_declared_invalid": "This transaction declares that its own script fails, which would only give up its collateral. Nothing was signed.",
   "sign_foreign_unreadable_own_address": "One of this wallet's own addresses could not be read. Nothing was signed.",

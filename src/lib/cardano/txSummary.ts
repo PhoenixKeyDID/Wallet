@@ -109,6 +109,13 @@ export type TxSummary = {
    * somebody else's, and "this withdraws your staking rewards" would be false.
    */
   foreignWithdrawals: number;
+  /**
+   * The stake key hashes (hex) of the withdrawals counted as this wallet's —
+   * the ones whose rewards are in `withdrawalLovelace`. The signer adds a
+   * stake-key witness only for a withdrawal listed here, so a witness is never
+   * produced for rewards the screen did not count as leaving this wallet.
+   */
+  ownRewardKeyHashes: string[];
   /** Tokens this transaction destroys, `amount` positive. Creating tokens is refused. */
   burns: NetChange[];
   /** Present when the transaction puts up collateral. */
@@ -581,6 +588,7 @@ export function summariseTx(
   }
   let withdrawnLovelace = BigInt(0);
   let foreignWithdrawals = 0;
+  const ownRewardKeyHashes: string[] = [];
   const rawWithdrawals = b.get(5);
   if (rawWithdrawals !== undefined) {
     if (!(rawWithdrawals instanceof Map)) bad("this transaction withdraws in a shape this wallet cannot read");
@@ -589,11 +597,13 @@ export function summariseTx(
       if (raw.length !== 29) bad("this transaction withdraws from an account this wallet cannot read");
       // Somebody else's rewards are somebody else's money; they neither arrive
       // here nor leave here.
-      if (!ownStakeHashes.has(raw.subarray(1).toString("hex"))) {
+      const stakeHash = raw.subarray(1).toString("hex");
+      if (!ownStakeHashes.has(stakeHash)) {
         foreignWithdrawals += 1;
         continue;
       }
       withdrawnLovelace += asBigInt(amount, "a withdrawal amount");
+      ownRewardKeyHashes.push(stakeHash);
     }
   }
 
@@ -625,6 +635,7 @@ export function summariseTx(
     totalInputs: inputList.length,
     withdrawals: countOf(b.get(5)),
     foreignWithdrawals,
+    ownRewardKeyHashes,
     burns: readBurns(b.get(9)),
     collateral: readCollateral(b, own, ownInputs, networkId),
     withdrawalLovelace: withdrawnLovelace,

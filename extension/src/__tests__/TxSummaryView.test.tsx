@@ -53,6 +53,7 @@ function shown(overrides: Partial<TxSummary> = {}) {
     collateral: null,
     withdrawals: 0,
     foreignWithdrawals: 0,
+    ownRewardKeyHashes: [],
     withdrawalLovelace: BigInt(0),
     ...overrides,
   };

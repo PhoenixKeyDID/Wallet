@@ -30,6 +30,8 @@ const acct = async () => (account ??= await accountFromEntropy(ENTROPY, 0, NETWO
 
 const addrHex = (bech32: string) =>
   (tyUtils.getAddressFromString(bech32) as tyTypes.ShelleyAddress).getHex();
+/** The wallet's own addresses and no UTxO: what the screen needs to count this wallet's rewards as its own. */
+const addressesOnly = (a: Account): WalletView => ({ ownAddressesHex: a.external.map((d) => addrHex(d.address)), held: new Map() });
 
 /** `stake` reward account: một byte đầu (0xe0 | network) rồi 28 byte hash. */
 const rewardAccount = (stakeKeyHashHex: string) =>
@@ -66,8 +68,9 @@ describe("rút sạch phần thưởng staking", () => {
       [14, [Buffer.from(a.stakeKeyHashHex, "hex")]],
     ]);
     // Chữ ký hợp lệ ở đây là đúng: rút thưởng thật sự cần khoá stake. Thứ giữ
-    // cho nó an toàn là màn hình phải nói ra 500 ADA — bài ngay dưới.
-    expect(() => signForeignTx(tx(body), a, NO_VIEW, false)).not.toThrow();
+    // cho nó an toàn là màn hình phải nói ra 500 ADA — bài ngay dưới — nên
+    // view phải có địa chỉ của ví để màn hình tính khoản rút là của ví.
+    expect(() => signForeignTx(tx(body), a, addressesOnly(a), false)).not.toThrow();
   });
 
   it("số trên màn phải nói khoản rút đi ra ngoài, không nói 'không mất gì'", async () => {
@@ -155,9 +158,40 @@ describe("khoá stake của khoản rút thưởng thì phải ký, không cần
     const a = await acct();
     const body = base();
     body.set(5, new Map([[rewardAccount(a.stakeKeyHashHex), 5_000_000]]));
-    expect(requiredKeysFor(tx(body), a, NO_VIEW).keyHashes).toEqual([a.stakeKeyHashHex]);
+    expect(requiredKeysFor(tx(body), a, addressesOnly(a)).keyHashes).toEqual([a.stakeKeyHashHex]);
     // Và chữ ký ra thật, không phải "không có gì để ký".
-    expect(() => signForeignTx(tx(body), a, NO_VIEW, false)).not.toThrow();
+    expect(() => signForeignTx(tx(body), a, addressesOnly(a), false)).not.toThrow();
+  });
+
+  // Vòng soát 3, đòn 2: hàm ký thêm khoá stake theo `account.stakeKeyHashHex`,
+  // còn màn hình tính khoản rút là của ví theo phần stake trong
+  // `view.ownAddressesHex`. View rỗng ⟹ màn hình nói "thưởng của người khác,
+  // không rời ví này" trong khi hàm ký vẫn ký 500 ADA thưởng của ví đi.
+  it("view không có địa chỉ: màn hình không tính khoản rút là của ví, nên hàm ký từ chối", async () => {
+    const a = await acct();
+    const body = new Map<number, unknown>([
+      [0, [[Buffer.from(THEIR_TXID, "hex"), 0]]],
+      [1, [[Buffer.from(addrHex(ATTACKER), "hex"), 500_000_000]]],
+      [2, 200_000],
+      [5, new Map([[rewardAccount(a.stakeKeyHashHex), 500_000_000]])],
+    ]);
+    const s = summariseTx(tx(body), NO_VIEW.ownAddressesHex, NO_VIEW.held, 0);
+    expect(s.foreignWithdrawals).toBe(1);
+    expect(s.ownRewardKeyHashes).toEqual([]);
+    expect(() => requiredKeysFor(tx(body), a, NO_VIEW)).toThrow(/^sign_foreign_withdrawal_mismatch: /);
+    expect(() => signForeignTx(tx(body), a, NO_VIEW, true)).toThrow(/^sign_foreign_withdrawal_mismatch: /);
+  });
+
+  it("view của tài khoản khác: màn hình tính khoản rút của tài khoản kia là của ví, hàm ký từ chối", async () => {
+    const a = await acct();
+    const other = await accountFromEntropy(ENTROPY, 1, NETWORK);
+    const body = new Map<number, unknown>([
+      [0, [[Buffer.from(THEIR_TXID, "hex"), 0]]],
+      [1, [[Buffer.from(addrHex(ATTACKER), "hex"), 5_000_000]]],
+      [2, 200_000],
+      [5, new Map([[rewardAccount(other.stakeKeyHashHex), 5_000_000]])],
+    ]);
+    expect(() => signForeignTx(tx(body), a, addressesOnly(other), true)).toThrow(/^sign_foreign_withdrawal_mismatch: /);
   });
 });
 
