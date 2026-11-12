@@ -491,4 +491,27 @@ describe("an idle lock closes the port the unlocked account answered on", () => 
     expect(res.result).toMatchObject({ ok: false, error: { code: -3, info: en.cip30_window_locked } });
     expect(mocks.fetchUtxos).not.toHaveBeenCalled();
   });
+
+  it("refuses a request that lands after the lock fires but before the window re-renders", async () => {
+    mocks.fetchUtxos.mockResolvedValue(ourInputs());
+    const { port, view } = await unlocked();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      fireEvent.mouseDown(window);
+      // The lock and the request share one tick: React commits only when the
+      // act callback returns, so the listener still holds the old `account` and
+      // the port is still open. Only the ref says the account is gone.
+      act(() => {
+        vi.advanceTimersByTime(DEFAULT_LOCK_TIMEOUT_MS + 1);
+        expect(port.disconnected).toBe(false);
+        port.deliver({ type: "request", id: "gap1", origin: ORIGIN, method: "getUtxos", params: [] });
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+    await view.findByPlaceholderText(en.local_password);
+    const res = port.sent.find((m) => m.type === "result" && m.id === "gap1");
+    expect(res?.result).toMatchObject({ ok: false, error: { code: -3, info: en.cip30_window_locked } });
+    expect(mocks.fetchUtxos).not.toHaveBeenCalled();
+  });
 });
