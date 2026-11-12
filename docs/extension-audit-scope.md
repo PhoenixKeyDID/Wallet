@@ -91,7 +91,7 @@ The `scripts/check-*.mjs` gates and their tests are part of the system under rev
 | `scripts/check-extension-host.mjs` | the extension supplies what a host owes (`docs/host-contract.json`) |
 | `scripts/check-host-contract.mjs` | the host contract matches what the code imports |
 | `scripts/check-node-globals.mjs` | the Node-globals shim is imported before `@stricahq/*` |
-| `scripts/check-tiers-codeowners.mjs` | every path `.github/CODEOWNERS` gates is `forbidden` in `docs/contribution-tiers.json`, including a not-yet-existing file in each gated directory |
+| `scripts/check-tiers-codeowners.mjs` | in `docs/contribution-tiers.json`: every path `.github/CODEOWNERS` gates is `forbidden` (a CODEOWNERS line counts as a directory when git tracks a file under it, and each such directory is also probed with one not-yet-existing file name); every `low`/`mid` entry is one tracked file, not a pattern; no `low`/`mid` file is reached from a `forbidden` file through the static import graph of `src/` and `extension/` (`import`/`export … from`, `import()`, `new URL(…, import.meta.url)`, `@/` read as `src/`; test files left out). It does not see a dependency that is not an import — a component that only renders a warning, a value read at run time — so the table forbids those by hand |
 | `scripts/check-popup-css.mjs`, `check-locales.mjs`, `check-i18n-keys.mjs`, `check-readme-claims.mjs` | consistency of popup styles, locales, translation keys and README claims |
 | `scripts/mutants.mjs` | a list of exact edits that remove a guard, to show a named test goes red; not run in CI |
 | `extension/smoke/` | the browser bundle runs with no Node globals |
