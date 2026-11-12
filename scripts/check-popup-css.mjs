@@ -21,7 +21,10 @@
  *   - every variable initialised with a string or template that a `className`
  *     expression names (the `btnCls` / `card` idiom the panels use — the name
  *     does not matter, the reference does).
- * Then compare against the classes `popup.css` defines.
+ * Add the `class="…"` attributes of the two HTML pages themselves
+ * (`extension/popup.html`, `extension/approve.html`). Then compare against the
+ * classes `popup.css` defines — a class named there only inside `:not(…)` or
+ * `:has(…)` is not a rule for it (see `definedClasses`).
  *
  * ## What is NOT measured, said out loud
  *
@@ -180,14 +183,26 @@ export function scanSource(file, source) {
   return { imports, tokens, dynamic: dynamic.length, unreadable: dynamic };
 }
 
-/** The class names that `css` has at least one selector for. */
+/**
+ * The class names that `css` has at least one selector for.
+ *
+ * A class named only inside `:not(…)` or `:has(…)` is not counted: `.a:not(.b)`
+ * styles elements that do NOT carry `b`, and `.a:has(.b)` styles their parent,
+ * so neither is a rule for `b`. `:is(…)` / `:where(…)` do style what they name
+ * and are read as written.
+ *
+ * Not modelled: a rule inside `@media` counts as defined whatever the query, so
+ * a class styled only under `prefers-color-scheme: light` passes. Telling a
+ * query that can match the popup from one that cannot needs a media-query
+ * evaluator; the breakpoint variants it would matter for are exempted by name.
+ */
 export function definedClasses(css) {
   const stripped = css.replace(/\/\*[\s\S]*?\*\//g, "");
   const out = new Set();
   const prelude = /([^{}]+)\{/g;
   let m;
   while ((m = prelude.exec(stripped))) {
-    const sel = m[1];
+    const sel = withoutNegatedArguments(m[1]);
     if (sel.trim().startsWith("@")) continue;
     const cls = /\.((?:\\.|[A-Za-z0-9_-])+)/g;
     let c;
@@ -196,15 +211,62 @@ export function definedClasses(css) {
   return out;
 }
 
+/** `sel` with the argument of every `:not(…)` and `:has(…)` removed, nesting included. */
+function withoutNegatedArguments(sel) {
+  let out = "";
+  let i = 0;
+  const open = /:(?:not|has)\(/gi;
+  let m;
+  while ((m = open.exec(sel))) {
+    out += sel.slice(i, m.index);
+    let depth = 1;
+    let j = m.index + m[0].length;
+    for (; j < sel.length && depth > 0; j++) {
+      if (sel[j] === "\\") j++;
+      else if (sel[j] === "(") depth++;
+      else if (sel[j] === ")") depth--;
+    }
+    i = j;
+    open.lastIndex = j;
+  }
+  return out + sel.slice(i);
+}
+
+/** Class tokens from every `class="…"` / `class='…'` attribute in an HTML page. */
+export function htmlClasses(html) {
+  const stripped = html.replace(/<!--[\s\S]*?-->/g, "");
+  const out = new Set();
+  const attr = /<[^>]*?\sclass\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/gi;
+  let m;
+  while ((m = attr.exec(stripped))) {
+    for (const t of (m[1] ?? m[2] ?? m[3]).split(/\s+/)) if (t) out.add(t);
+  }
+  return out;
+}
+
 /**
- * @param {{entries: string[], css: string, root?: string, aliases?: [string,string][]}} o
+ * @param {{entries: string[], css: string, root?: string, aliases?: [string,string][], html?: string[]}} o
+ *   `html`: the pages that load the stylesheet; their own `class="…"` (the
+ *   approval window's `<body class="approve-page">`) is used as much as a
+ *   `className` is.
  */
-export function analyze({ entries, css, root = REPO, aliases = [] }) {
+export function analyze({ entries, css, root = REPO, aliases = [], html = [] }) {
   const seen = new Set();
   const queue = [...entries];
   const used = new Map(); // token -> first file
   const problems = [];
   const unreadable = [];
+  for (const page of html) {
+    let source;
+    try {
+      source = readFileSync(page, "utf8");
+    } catch (e) {
+      problems.push(`cannot read ${page}: ${e.code ?? e.message}`);
+      continue;
+    }
+    seen.add(page);
+    for (const t of htmlClasses(source)) if (!used.has(t)) used.set(t, page);
+  }
   while (queue.length) {
     const file = queue.pop();
     if (seen.has(file)) continue;
@@ -236,7 +298,7 @@ export function analyze({ entries, css, root = REPO, aliases = [] }) {
     }
     missing.push({ token, file });
   }
-  return { files: seen.size, used: used.size, missing, exempted, dynamic: unreadable.length, unreadable, problems };
+  return { files: seen.size, pages: html.length, used: used.size, missing, exempted, dynamic: unreadable.length, unreadable, problems };
 }
 
 /**
@@ -255,14 +317,15 @@ function main() {
   const entries = [join(REPO, "extension/src/popup.tsx"), join(REPO, "extension/src/approve.tsx")];
   const css = join(REPO, "extension/src/popup.css");
   const aliases = [["@/lib/toast", join(REPO, "extension/src/toast.ts")]];
-  const r = analyze({ entries, css, aliases });
+  const html = [join(REPO, "extension/popup.html"), join(REPO, "extension/approve.html")];
+  const r = analyze({ entries, css, aliases, html });
   if (r.problems.length) {
     console.error("popup CSS gate did NOT run to completion:");
     for (const p of r.problems) console.error(`  • ${p}`);
     process.exit(2);
   }
   console.log(
-    `popup CSS: ${r.files} source files reached from the popup and the approval window, ${r.used} class tokens, ` +
+    `popup CSS: ${r.files} files (${r.pages} HTML pages and the sources reached from the popup and the approval window), ${r.used} class tokens, ` +
       `${r.exempted.length} exempt (breakpoint variants + markers), ` +
       `${r.dynamic} className expression(s) not readable from source`,
   );

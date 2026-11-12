@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 // @ts-expect-error — plain .mjs script, no declaration file
-import { analyze, definedClasses, MAX_UNREADABLE, scanSource } from "../check-popup-css.mjs";
+import { analyze, definedClasses, htmlClasses, MAX_UNREADABLE, scanSource } from "../check-popup-css.mjs";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -145,6 +145,41 @@ describe("stylesheet reading", () => {
     const set = definedClasses(".a .b, .c:hover { x: y; }\n@media (min-width: 1px) { .d { x: y; } }");
     for (const c of ["a", "b", "c", "d"]) expect(set.has(c), c).toBe(true);
   });
+
+  // `.a:not(.b)` styles what does NOT carry `b`; `.a:has(.b)` styles the parent.
+  it("does not count a class named only inside :not() or :has()", () => {
+    const set = definedClasses(".a:not(.b) { x: y; }\n.c:has(.d) { x: y; }\n.e:not(:is(.f, .g)) { x: y; }");
+    for (const c of ["a", "c", "e"]) expect(set.has(c), c).toBe(true);
+    for (const c of ["b", "d", "f", "g"]) expect(set.has(c), c).toBe(false);
+  });
+
+  it("still counts a class that has its own rule as well as a :not() mention", () => {
+    const set = definedClasses(".a:not(.b) { x: y; }\n.b { x: y; }\n.h:is(.i) { x: y; }");
+    expect(set.has("b")).toBe(true);
+    expect(set.has("i")).toBe(true);
+  });
+});
+
+describe("HTML pages", () => {
+  it("reads class attributes in any quoting, and not from comments", () => {
+    const set = htmlClasses(`<body class="approve-page x"><div class='y'></div><p class=z></p><!-- <i class="ghost"> --></body>`);
+    expect([...set].sort()).toEqual(["approve-page", "x", "y", "z"]);
+  });
+
+  it("fails a class the page's own HTML uses with no rule", () => {
+    writeFileSync(join(dir, "src/popup.tsx"), `export const A = () => <div className="ok" />;`);
+    writeFileSync(join(dir, "page.html"), `<body class="approve-page"><div id="root"></div></body>`);
+    writeFileSync(join(dir, "popup.css"), ".ok { x: y; }");
+    const r = analyze({ entries: [join(dir, "src/popup.tsx")], css: join(dir, "popup.css"), root: dir, html: [join(dir, "page.html")] });
+    expect(missingOf(r)).toEqual(["approve-page"]);
+  });
+
+  it("reports an HTML page it cannot read rather than skipping it", () => {
+    writeFileSync(join(dir, "src/popup.tsx"), `export const A = () => <div />;`);
+    writeFileSync(join(dir, "popup.css"), "");
+    const r = analyze({ entries: [join(dir, "src/popup.tsx")], css: join(dir, "popup.css"), root: dir, html: [join(dir, "gone.html")] });
+    expect(r.problems.join("\n")).toContain("gone.html");
+  });
 });
 
 describe("exemptions", () => {
@@ -171,6 +206,8 @@ describe("the real popup", () => {
   it("every class it renders has a rule (CLI exits 0)", () => {
     const run = spawnSync("node", [join(REPO, "scripts", "check-popup-css.mjs")], { encoding: "utf8" });
     expect(run.stdout + run.stderr).toContain("popup CSS OK");
+    // Both pages, so a class on approve.html's own <body> is checked too.
+    expect(run.stdout).toContain("(2 HTML pages and");
     expect(run.status).toBe(0);
   });
 
