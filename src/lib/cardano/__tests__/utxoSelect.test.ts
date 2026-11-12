@@ -71,15 +71,35 @@ describe("paginate", () => {
 });
 
 describe("selectCollateral", () => {
-  it("prefers the single smallest pure-ADA coin that reaches the target", () => {
-    const got = selectCollateral([input(0, 20), input(1, 6), input(2, 5, [[POLICY, "", 1]])], COLLATERAL_CAP_LOVELACE);
-    expect(got!.map((i) => i.index)).toEqual([1]);
+  it("prefers the single smallest pure-ADA coin that reaches the target, within the 5 ADA cap", () => {
+    const got = selectCollateral(
+      [input(0, 20), input(1, 6), input(2, 5), input(3, 4.9, [[POLICY, "", 1]]), input(4, 4.8)],
+      COLLATERAL_CAP_LOVELACE,
+    );
+    expect(got!.map((i) => i.index)).toEqual([2]);
   });
   it("never offers a coin carrying tokens", () => {
     expect(selectCollateral([input(0, 50, [[POLICY, "", 1]])], COLLATERAL_CAP_LOVELACE)).toBeNull();
   });
-  it("combines at most three coins, else null", () => {
-    expect(selectCollateral([input(0, 2), input(1, 2), input(2, 2)], COLLATERAL_CAP_LOVELACE)!.length).toBe(3);
+  // Collateral that is taken takes the whole input. A wallet whose only coin
+  // is 1000 ADA has no collateral to offer under a 5 ADA cap.
+  it("answers null when the only coin is larger than the cap", () => {
+    expect(selectCollateral([input(0, 1000)], COLLATERAL_CAP_LOVELACE)).toBeNull();
+    expect(selectCollateral([input(0, 1000)], BigInt(1_000_000))).toBeNull();
+    expect(selectCollateral([input(0, 6)], COLLATERAL_CAP_LOVELACE)).toBeNull();
+  });
+  it("combines at most three coins whose sum stays under the cap, else null", () => {
+    expect(selectCollateral([input(0, 2), input(1, 1.5), input(2, 1.5)], COLLATERAL_CAP_LOVELACE)!.length).toBe(3);
     expect(selectCollateral([input(0, 1), input(1, 1), input(2, 1), input(3, 1), input(4, 1)], COLLATERAL_CAP_LOVELACE)).toBeNull();
+  });
+  it("skips a coin that would push the sum over the cap", () => {
+    // 4 + 4 = 8 ADA reaches the target and breaks the cap; 4 + 1 reaches it within.
+    const got = selectCollateral([input(0, 4), input(1, 4), input(2, 1)], COLLATERAL_CAP_LOVELACE);
+    expect(got!.map((i) => i.index).sort()).toEqual([0, 2]);
+    expect(selectCollateral([input(0, 4), input(1, 4)], COLLATERAL_CAP_LOVELACE)).toBeNull();
+    expect(selectCollateral([input(0, 2), input(1, 2), input(2, 2)], COLLATERAL_CAP_LOVELACE)).toBeNull();
+  });
+  it("answers null for a target above the cap", () => {
+    expect(selectCollateral([input(0, 3), input(1, 3)], COLLATERAL_CAP_LOVELACE + BigInt(1))).toBeNull();
   });
 });

@@ -133,14 +133,22 @@ export const COLLATERAL_CAP_LOVELACE = BigInt(5_000_000);
 export const MAX_COLLATERAL_INPUTS = 3;
 
 /**
- * Pure-ADA inputs that reach `target`, preferring one input as close above it
- * as possible, else the fewest largest ones up to the ledger's limit. `null`
- * when no such set exists. An input carrying tokens is never offered: collateral
- * that is taken takes everything in the input, and a site asking for 5 ADA of
- * collateral must not be able to put someone's tokens at stake with it.
+ * Pure-ADA inputs that reach `target` and together hold at most
+ * `COLLATERAL_CAP_LOVELACE`, preferring one input as close above `target` as
+ * possible, else the largest ones that still fit under the cap, up to the
+ * ledger's limit. `null` when no such set exists — CIP-30's answer for "this
+ * wallet has no suitable collateral".
+ *
+ * The cap bounds what is *offered*, not only what is asked for. Collateral that
+ * is taken takes the whole input, so a wallet holding a single 1000 ADA coin
+ * that answers a 5 ADA request with that coin has put 1000 ADA at stake. An
+ * input carrying tokens is never offered for the same reason: a site asking for
+ * 5 ADA of collateral must not be able to put someone's tokens at stake with it.
  */
 export function selectCollateral(inputs: tyTypes.Input[], target: bigint): tyTypes.Input[] | null {
-  const pure = inputs.filter((i) => (i.tokens ?? []).length === 0);
+  const pure = inputs.filter(
+    (i) => (i.tokens ?? []).length === 0 && lovelaceOf(i) <= COLLATERAL_CAP_LOVELACE,
+  );
   const single = pure
     .filter((i) => lovelaceOf(i) >= target)
     .sort((a, b) => {
@@ -152,6 +160,7 @@ export function selectCollateral(inputs: tyTypes.Input[], target: bigint): tyTyp
   let sum = ZERO;
   for (const i of [...pure].sort(byDesc(lovelaceOf))) {
     if (out.length === MAX_COLLATERAL_INPUTS) break;
+    if (sum + lovelaceOf(i) > COLLATERAL_CAP_LOVELACE) continue;
     out.push(i);
     sum += lovelaceOf(i);
     if (sum >= target) return out;
