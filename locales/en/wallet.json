@@ -394,7 +394,7 @@
   "cip30_fee": "Fee",
   "cip30_withdrawal": "Staking rewards this takes out of your account",
   "cip30_unknown_inputs": "This wallet recognised {{known}} of {{total}} inputs. The amount above counts only what it recognised, so the real cost to you may be higher.",
-  "cip30_script_foreign_inputs": "A smart contract runs in this transaction, and it spends {{n}} input(s) that are not yours. Your signature may be exactly what that contract checks: if something there is locked to your wallet, signing lets it be moved, and the amount above does not count it. Sign only if you trust this site.",
+  "cip30_foreign_inputs": "This transaction spends {{n}} input(s) that are not yours. Your signature may be exactly what unlocks them: a smart contract or a script address can release what it holds to whoever carries your wallet's signature. If something there is locked to your wallet, signing lets it be moved, and the amount above does not count it. Sign only if you trust this site.",
   "cip30_paying": "Paying",
   "cip30_extra_actions": "This also withdraws your staking rewards. Approve it only if that is what you asked the site to do.",
   "cip30_foreign_withdrawal": "This also withdraws staking rewards from another reward account, not this wallet's. Approve it only if you know why the site does that.",

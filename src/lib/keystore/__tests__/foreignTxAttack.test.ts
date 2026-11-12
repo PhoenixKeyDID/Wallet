@@ -253,8 +253,14 @@ describe("tài sản thế chấp 10.000 ADA không có phần trả lại", () 
  * ví là thứ tiêu đầu vào lạ — mà giá trị của nó không nằm trong `net`. Không
  * chặn (claim LAMP đúng là hình này), nhưng bản tóm tắt phải đếm ra để màn
  * hình cảnh báo.
+ *
+ * Vòng soát 8: đếm cả khi KHÔNG thấy dấu Plutus. Native script (vd.
+ * all[sig(pkh ví), after(slot)]) không cần redeemer, trường 11 hay 13, và mã
+ * của nó có thể nằm trong reference script của một reference input (khoá 18),
+ * nên witness set cũng không có khoá 1. Bản tóm tắt không biết địa chỉ của
+ * đầu vào lạ, nên đếm mọi đầu vào không phải của ví.
  */
-describe("script chạy cạnh đầu vào lạ", () => {
+describe("đầu vào lạ (script hay không)", () => {
   const OWN_SMALL = "bb".repeat(32);
   const body = (mine: string, extra: [number, unknown][]) =>
     new Map<number, unknown>([
@@ -280,7 +286,7 @@ describe("script chạy cạnh đầu vào lạ", () => {
       [14, [pkh]],
     ]);
     const s = summary(a, b);
-    expect(s.foreignInputsUnderScript).toBe(1);
+    expect(s.foreignInputs).toBe(1);
     expect(s.ownInputs).toBe(1);
     expect(s.totalInputs).toBe(2);
     expect(() => signForeignTx(tx(b), a, viewOf(a), true)).not.toThrow();
@@ -289,22 +295,38 @@ describe("script chạy cạnh đầu vào lạ", () => {
   it("mỗi dấu hiệu script một mình đều đủ: redeemer, trường 11, trường 13", async () => {
     const a = await acct();
     const mine = a.external[0]!.address;
-    expect(summary(a, body(mine, []), new Map([[5, [[0, 1, 0, [1, 1]]]]])).foreignInputsUnderScript).toBe(1);
-    expect(summary(a, body(mine, [[11, Buffer.alloc(32, 2)]])).foreignInputsUnderScript).toBe(1);
-    expect(summary(a, body(mine, [[13, [[Buffer.from(OWN_SMALL, "hex"), 0]]]])).foreignInputsUnderScript).toBe(1);
+    expect(summary(a, body(mine, []), new Map([[5, [[0, 1, 0, [1, 1]]]]])).foreignInputs).toBe(1);
+    expect(summary(a, body(mine, [[11, Buffer.alloc(32, 2)]])).foreignInputs).toBe(1);
+    expect(summary(a, body(mine, [[13, [[Buffer.from(OWN_SMALL, "hex"), 0]]]])).foreignInputs).toBe(1);
   });
 
-  it("không có script thì không đếm, dù có đầu vào lạ", async () => {
+  it("không dấu Plutus vẫn đếm đầu vào lạ", async () => {
     const a = await acct();
-    expect(summary(a, body(a.external[0]!.address, [])).foreignInputsUnderScript).toBe(0);
+    expect(summary(a, body(a.external[0]!.address, [])).foreignInputs).toBe(1);
   });
 
-  it("có script mà mọi đầu vào đều của ví thì không đếm", async () => {
+  it("native script qua reference input: không redeemer, không 11/13, witness rỗng — vẫn đếm, và ví vẫn ký", async () => {
     const a = await acct();
     const mine = a.external[0]!.address;
-    const b = body(mine, [[11, Buffer.alloc(32, 2)]]);
-    b.set(0, [[Buffer.from(OWN_SMALL, "hex"), 0]]);
-    b.set(1, [[Buffer.from(addrHex(mine), "hex"), 2_700_000]]);
-    expect(summary(a, b).foreignInputsUnderScript).toBe(0);
+    // Khoá 18: reference input mang reference script (native) mở khoá đầu vào lạ.
+    const b = body(mine, [[18, [[Buffer.alloc(32, 9), 0]]]]);
+    expect(b.has(11) || b.has(13)).toBe(false);
+    const s = summary(a, b);
+    expect(s.foreignInputs).toBe(1);
+    expect(s.ownInputs).toBe(1);
+    expect(s.totalInputs).toBe(2);
+    // Ví vẫn ký (cảnh báo, không chặn) — đúng vì thế màn hình phải nói ra.
+    expect(() => signForeignTx(tx(b), a, viewOf(a), false)).not.toThrow();
+  });
+
+  it("mọi đầu vào đều của ví thì không đếm, có script hay không", async () => {
+    const a = await acct();
+    const mine = a.external[0]!.address;
+    for (const extra of [[], [[11, Buffer.alloc(32, 2)]], [[18, [[Buffer.alloc(32, 9), 0]]]]] as [number, unknown][][]) {
+      const b = body(mine, extra);
+      b.set(0, [[Buffer.from(OWN_SMALL, "hex"), 0]]);
+      b.set(1, [[Buffer.from(addrHex(mine), "hex"), 2_700_000]]);
+      expect(summary(a, b).foreignInputs).toBe(0);
+    }
   });
 });

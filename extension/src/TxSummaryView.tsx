@@ -48,12 +48,13 @@ export function TxSummaryView({ summary }: { summary: TxSummary }) {
           })}
         </p>
       )}
-      {/* A script runs and spends inputs that are not this wallet's: the
-          signature may be what unlocks them, and their value is not in the
-          amount above. Shown, not refused — a drip-pot claim is this shape. */}
-      {summary.foreignInputsUnderScript > 0 && (
-        <p className="approve-error" data-testid="script-foreign-inputs">
-          {t("cip30_script_foreign_inputs", { n: summary.foreignInputsUnderScript })}
+      {/* The transaction spends inputs that are not this wallet's: a script
+          (Plutus or native, possibly supplied by a reference input) may be
+          what this signature unlocks, and their value is not in the amount
+          above. Shown, not refused — a drip-pot claim is this shape. */}
+      {summary.foreignInputs > 0 && (
+        <p className="approve-error" data-testid="foreign-inputs">
+          {t("cip30_foreign_inputs", { n: summary.foreignInputs })}
         </p>
       )}
       {summary.toOthers.length > 0 && (

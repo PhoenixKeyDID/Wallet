@@ -103,17 +103,24 @@ export type TxSummary = {
   ownInputs: number;
   totalInputs: number;
   /**
-   * Inputs that are not this wallet's, counted only when a script runs in this
-   * transaction (a redeemer in the witness set, a `script_data_hash` in field
-   * 11, or collateral in field 13); `0` otherwise.
+   * Inputs that are not this wallet's — every one of them, whether or not a
+   * script visibly runs.
    *
    * A script can be written to unlock whatever it holds for anyone carrying a
    * signature from this wallet's key. Such an input is not this wallet's —
    * its value is not in `net` — yet this wallet's signature is what spends it.
+   * That holds for a native script as much as for a Plutus one, and a native
+   * script leaves no mark on the body: no redeemer, no `script_data_hash`, no
+   * collateral, and its source can sit in a reference input's reference
+   * script so the witness set has none either. This summary does not know the
+   * address of an input that is not this wallet's, so it cannot tell a plain
+   * key-locked input of another party from a script address keyed to this
+   * wallet; it counts them all.
+   *
    * It is a warning, not a refusal: a LAMP drip-pot claim spends the pot's
    * script input exactly this way, and that is the point of the claim.
    */
-  foreignInputsUnderScript: number;
+  foreignInputs: number;
   withdrawals: number;
   /**
    * How many of `withdrawals` take rewards out of a reward account that is not
@@ -647,11 +654,11 @@ export function summariseTx(
     net.push(toNetChange(unit, delta));
   }
 
-  // ── a script runs, next to inputs that are not this wallet's ─────────────
-  const witnesses = decoded.length >= 2 ? decoded[1] : undefined;
-  const hasRedeemers = witnesses instanceof Map && (witnesses as Map<unknown, unknown>).has(5);
-  const scriptRuns = hasRedeemers || b.has(11) || b.has(13);
-  const foreignInputsUnderScript = scriptRuns ? inputList.length - mineCount : 0;
+  // ── inputs that are not this wallet's ─────────────────────────────────────
+  // Counted whether or not a script visibly runs: a native script needs no
+  // redeemer, no field 11 or 13, and can be supplied by a reference input, so
+  // "no Plutus marks" is not "nothing here is unlocked by this signature".
+  const foreignInputs = inputList.length - mineCount;
 
   const countOf = (v: unknown): number => {
     if (v === undefined) return 0;
@@ -668,7 +675,7 @@ export function summariseTx(
     fee,
     ownInputs: mineCount,
     totalInputs: inputList.length,
-    foreignInputsUnderScript,
+    foreignInputs,
     withdrawals: countOf(b.get(5)),
     foreignWithdrawals,
     ownRewardKeyHashes,

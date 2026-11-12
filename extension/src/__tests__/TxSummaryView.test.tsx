@@ -49,7 +49,7 @@ function shown(overrides: Partial<TxSummary> = {}) {
     fee: BigInt(170_000),
     ownInputs: 1,
     totalInputs: 1,
-    foreignInputsUnderScript: 0,
+    foreignInputs: 0,
     burns: [],
     collateral: null,
     withdrawals: 0,
@@ -122,12 +122,13 @@ describe("TxSummaryView — what the approval window shows", () => {
     expect(plain).not.toContain(en.cip30_output_datum);
   });
 
-  // A script spending an input that is not this wallet's can be unlocked by
-  // this wallet's signature, and its value is not in the amount on screen.
-  it("warns, with the count, when a script runs next to inputs that are not this wallet's", () => {
-    const text = shown({ ownInputs: 1, totalInputs: 3, foreignInputsUnderScript: 2 });
-    expect(text).toContain(en.cip30_script_foreign_inputs.replace("{{n}}", "2"));
-    expect(shown({ ownInputs: 1, totalInputs: 3 })).not.toContain(en.cip30_script_foreign_inputs.split("{{n}}")[0]!);
+  // An input that is not this wallet's can be unlocked by this wallet's
+  // signature (a Plutus or a native script), and its value is not in the
+  // amount on screen.
+  it("warns, with the count, when the transaction spends inputs that are not this wallet's", () => {
+    const text = shown({ ownInputs: 1, totalInputs: 3, foreignInputs: 2 });
+    expect(text).toContain(en.cip30_foreign_inputs.replace("{{n}}", "2"));
+    expect(shown({ ownInputs: 1, totalInputs: 1 })).not.toContain(en.cip30_foreign_inputs.split("{{n}}")[0]!);
   });
 
   it("says when it recognised only some of the inputs", () => {

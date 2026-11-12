@@ -106,9 +106,9 @@ describe("drip-pot claim: what the screen shows", () => {
     ]);
     expect(s.ownInputs).toBe(1);
     expect(s.totalInputs).toBe(2);
-    // The pot's script input is not this wallet's and a script runs: counted,
-    // so the screen warns — and the claim still signs (below).
-    expect(s.foreignInputsUnderScript).toBe(1);
+    // The pot's script input is not this wallet's: counted, so the screen
+    // warns — and the claim still signs (below).
+    expect(s.foreignInputs).toBe(1);
     expect(s.fee).toBe(BigInt(450_000));
   });
 });
