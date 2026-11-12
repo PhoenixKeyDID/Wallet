@@ -102,4 +102,22 @@ describe("selectCollateral", () => {
   it("answers null for a target above the cap", () => {
     expect(selectCollateral([input(0, 3), input(1, 3)], COLLATERAL_CAP_LOVELACE + BigInt(1))).toBeNull();
   });
+  // A greedy pick takes the 4, cannot add a 2.5 under the cap, and gives up.
+  it("finds 2.5 + 2.5 for a 4.5 ADA target when the largest coin is 4", () => {
+    const got = selectCollateral([input(0, 4), input(1, 2.5), input(2, 2.5)], BigInt(4_500_000));
+    expect(got!.map((i) => i.index).sort()).toEqual([1, 2]);
+  });
+  it("puts the least ADA at stake: a 4.6 ADA pair beats a 4.9 ADA single for a 4.5 ADA target", () => {
+    const got = selectCollateral([input(0, 4.9), input(1, 2.3), input(2, 2.3)], BigInt(4_500_000));
+    expect(got!.map((i) => i.index).sort()).toEqual([1, 2]);
+  });
+  it("on an equal total, fewer coins win", () => {
+    const got = selectCollateral([input(0, 2.5), input(1, 2.5), input(2, 5)], COLLATERAL_CAP_LOVELACE);
+    expect(got!.map((i) => i.index)).toEqual([2]);
+  });
+  it("still finds a pair among many dust coins: the search keeps the largest sub-target coins", () => {
+    const dust = Array.from({ length: 60 }, (_, k) => input(10 + k, 0.1));
+    const got = selectCollateral([...dust, input(0, 2.5), input(1, 2.5)], BigInt(4_500_000));
+    expect(got!.map((i) => i.index).sort()).toEqual([0, 1]);
+  });
 });
