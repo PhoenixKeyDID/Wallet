@@ -56,7 +56,7 @@ describe("check:tiers-codeowners", () => {
   it("passes a table whose paid files nothing forbidden depends on", () => {
     const r = check();
     expect(r.out).toContain("Tier/CODEOWNERS OK");
-    expect(r.out).toContain("3 guarded files and 1 new-file probes");
+    expect(r.out).toContain("2 CODEOWNERS entries, 3 guarded files,");
     expect(r.status).toBe(0);
   });
 
@@ -139,5 +139,162 @@ describe("check:tiers-codeowners", () => {
     });
     expect(r.out).toContain('src/ui/My Panel.tsx is guarded by .github/CODEOWNERS:2 but the tier table puts it in "mid"');
     expect(r.status).toBe(1);
+  });
+
+  // ─── CODEOWNERS input it must not skip ───────────────────────────────────────
+
+  it("fails a CODEOWNERS line in a form it does not parse", () => {
+    const r = check({ files: { ".github/CODEOWNERS": "/src/lib/guarded.ts  @owner\n/locales/  @owner\n*.ts  @owner\n" } });
+    expect(r.out).toContain(".github/CODEOWNERS:3: CODEOWNERS pattern `*.ts` is in a form this check does not parse");
+    expect(r.status).toBe(1);
+  });
+
+  it("fails a CODEOWNERS line that names no tracked file", () => {
+    const r = check({ files: { ".github/CODEOWNERS": "/src/lib/guarded.ts  @owner\n/src/lib/gaurded.ts  @owner\n" } });
+    expect(r.out).toContain(".github/CODEOWNERS:2: CODEOWNERS pattern `/src/lib/gaurded.ts` names no file git tracks");
+    expect(r.status).toBe(1);
+  });
+
+  it("reads CODEOWNERS at the repository root and in docs/, the other places GitHub looks", () => {
+    for (const place of ["CODEOWNERS", "docs/CODEOWNERS"]) {
+      const r = check({ files: { [place]: "/src/ui/Badge.tsx  @owner\n" } });
+      expect(r.out).toContain(`src/ui/Badge.tsx is guarded by ${place}:1 but the tier table puts it in "mid"`);
+      expect(r.status).toBe(1);
+    }
+  });
+
+  // ─── the table's shape ──────────────────────────────────────────────────────
+
+  it("refuses a tier key the marketplace does not know", () => {
+    const r = check({ tiers: { Mid: ["src/ui/Badge.tsx"] } as Partial<Tiers> });
+    expect(r.out).toContain("names tiers the marketplace does not know: Mid");
+    expect(r.status).toBe(2);
+  });
+
+  it("refuses a table over the marketplace's pattern limit", () => {
+    const many = Array.from({ length: 501 }, (_, i) => `gen/f${i}.ts`);
+    const r = check({ tiers: { forbidden: [...BASE_TIERS.forbidden, ...many] } });
+    expect(r.out).toContain("over the marketplace's 500");
+    expect(r.status).toBe(2);
+  });
+
+  it("refuses a table over the marketplace's size limit", () => {
+    const long = Array.from({ length: 300 }, (_, i) => `gen/${"x".repeat(240)}${i}.ts`);
+    const r = check({ tiers: { forbidden: [...BASE_TIERS.forbidden, ...long] } });
+    expect(r.out).toContain("is over 65536 bytes");
+    expect(r.status).toBe(2);
+  });
+
+  it("refuses a tier that is not a list of non-empty strings", () => {
+    const r = check({ tiers: { mid: ["src/ui/Badge.tsx", ""] } });
+    expect(r.out).toContain('tier "mid" is not a list of non-empty strings');
+    expect(r.status).toBe(2);
+  });
+
+  // ─── every form of dependency ───────────────────────────────────────────────
+
+  const viaGuarded = (src: string, extra: Record<string, string> = {}) =>
+    check({ files: { "src/lib/guarded.ts": src, ...extra } });
+  const BADGE_DEP = 'src/ui/Badge.tsx is "mid" but a forbidden file depends on it: src/lib/guarded.ts → src/ui/Badge.tsx';
+
+  it.each([
+    ["new URL(…, import.meta.url)", 'export const u = new URL("../ui/Badge.tsx", import.meta.url);\n'],
+    ["a .js specifier naming a .ts file", 'export { Badge } from "../ui/Badge.js";\n'],
+    ["a ?query suffix", 'export { default } from "../ui/Badge.tsx?raw";\n'],
+    ["a template literal in import()", "export const l = () => import(`../ui/Badge`);\n"],
+    ["require()", 'export const b = require("../ui/Badge");\n'],
+    ["a string-named import", 'import { "Badge" as B } from "../ui/Badge";\nexport const g = B;\n'],
+    ["import.meta.glob", 'export const m = import.meta.glob("../ui/*.tsx", { eager: true });\n'],
+    ["import.meta.glob behind a cast", 'export const m = (import.meta as any).glob(["../ui/Bad*.tsx"]);\n'],
+    ["import x = require()", 'import B = require("../ui/Badge");\nexport const g = B;\n'],
+    ["an import() type", 'export type B = typeof import("../ui/Badge");\n'],
+    ["a triple-slash reference", '/// <reference path="../ui/Badge.tsx" />\nexport const guarded = 1;\n'],
+  ])("follows %s", (_name, src) => {
+    const r = viaGuarded(src);
+    expect(r.out).toContain(BADGE_DEP);
+    expect(r.status).toBe(1);
+  });
+
+  it("follows an import that sits after an apostrophe in JSX text", () => {
+    const r = check({
+      files: {
+        "src/lib/guarded.tsx": 'export const A = () => <p>Don\'t</p>; export const l = () => import("../ui/Badge");\n',
+        ".github/CODEOWNERS": "/src/lib/guarded.tsx  @owner\n",
+      },
+      tiers: { forbidden: ["src/lib/guarded.ts", "src/lib/guarded.tsx", "locales/**", ".github/**", "docs/**"] },
+    });
+    expect(r.out).toContain('src/ui/Badge.tsx is "mid" but a forbidden file depends on it: src/lib/guarded.tsx → src/ui/Badge.tsx');
+    expect(r.status).toBe(1);
+  });
+
+  it("resolves a bare specifier through tsconfig baseUrl before calling it a package", () => {
+    const r = viaGuarded('export { Badge } from "src/ui/Badge";\n', {
+      "tsconfig.json": JSON.stringify({ compilerOptions: { baseUrl: ".", paths: { "@/*": ["./src/*"] } } }),
+    });
+    expect(r.out).toContain(BADGE_DEP);
+    expect(r.status).toBe(1);
+  });
+
+  it("resolves a tsconfig paths alias other than @/", () => {
+    const r = viaGuarded('export { Badge } from "~ui/Badge";\n', {
+      "tsconfig.json": JSON.stringify({ compilerOptions: { paths: { "~ui/*": ["./src/ui/*"] } } }),
+    });
+    expect(r.out).toContain(BADGE_DEP);
+    expect(r.status).toBe(1);
+  });
+
+  it("resolves a directory through its package.json, which is itself an edge", () => {
+    const r = check({
+      files: {
+        "src/lib/guarded.ts": 'export { Badge } from "../ui";\n',
+        "src/ui/package.json": '{"types":"./Badge.tsx","main":"./Badge.tsx"}\n',
+      },
+      tiers: { mid: ["src/ui/Badge.tsx", "src/ui/package.json"] },
+    });
+    expect(r.out).toContain(BADGE_DEP);
+    expect(r.out).toContain('src/ui/package.json is "mid" but a forbidden file depends on it: src/lib/guarded.ts → src/ui/package.json');
+    expect(r.status).toBe(1);
+  });
+
+  it("lets only new URL name a directory as a plain path", () => {
+    const ok = viaGuarded('export const u = new URL("../ui/", import.meta.url);\nexport const guarded = 1;\n');
+    expect(ok.out).toContain("Tier/CODEOWNERS OK");
+    expect(ok.status).toBe(0);
+    const bad = viaGuarded('export * from "../ui";\n');
+    expect(bad.out).toContain("src/lib/guarded.ts imports `../ui`, which resolves to no tracked file and no declared package");
+    expect(bad.status).toBe(1);
+  });
+
+  it("calls a bare specifier a package only when package.json declares it or Node ships it", () => {
+    const pkg = { "package.json": JSON.stringify({ dependencies: { react: "^19" }, devDependencies: { "@scope/tool": "1" } }) };
+    const ok = viaGuarded('import "react/jsx-runtime";\nimport "@scope/tool/sub";\nimport "node:fs";\nimport "path";\nexport const guarded = 1;\n', pkg);
+    expect(ok.out).toContain("Tier/CODEOWNERS OK");
+    expect(ok.status).toBe(0);
+    const bad = viaGuarded('import "lodash";\nexport const guarded = 1;\n', pkg);
+    expect(bad.out).toContain("src/lib/guarded.ts imports `lodash`, which resolves to no tracked file and no declared package");
+    expect(bad.status).toBe(1);
+  });
+
+  it.each([
+    ["import()", "export const l = (p: string) => import(p);\n", "`import(…)` of something that is not a constant string"],
+    ["a template import() with a substitution", "export const l = (p: string) => import(`../ui/${p}`);\n", "`import(…)` of something that is not a constant string"],
+    ["require()", "export const l = (p: string) => require(p);\n", "`require(…)` of something that is not a constant string"],
+    ["import.meta.glob", "const g = ['../ui/*.tsx'];\nexport const m = import.meta.glob(g);\n", "`import.meta.glob` of something that is not a constant string"],
+  ])("fails %s whose argument is not a constant string", (_name, src, msg) => {
+    const r = viaGuarded(src);
+    expect(r.out).toContain(msg);
+    expect(r.status).toBe(1);
+  });
+
+  it("fails a source file it cannot parse rather than reading part of it", () => {
+    const r = viaGuarded('export const = 1;\nexport const l = () => import("../ui/Badge");\n');
+    expect(r.out).toContain("src/lib/guarded.ts does not parse");
+    expect(r.status).toBe(1);
+  });
+
+  it("does not read imports out of comments", () => {
+    const r = viaGuarded('// do not import anything from "./legacy" here\n/* require("./gone") */\nexport const guarded = 1;\n');
+    expect(r.out).toContain("Tier/CODEOWNERS OK");
+    expect(r.status).toBe(0);
   });
 });

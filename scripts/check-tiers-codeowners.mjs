@@ -13,51 +13,82 @@
  *
  * Four rules, each one a hole an earlier version left open:
  *
- * 1. **Guarded paths.** Every tracked file under a guarded directory, and one
- *    file that does not exist yet in it, classifies as `forbidden`. Whether a
- *    CODEOWNERS line names a directory is read from `git ls-files` (some tracked
- *    file sits under it), not from a trailing `/`: GitHub guards `/locales` and
- *    `/locales/` alike, and reading the first as a single file dropped seven
- *    guarded files without a word.
+ * 1. **Guarded paths.** Every tracked file under a guarded directory classifies
+ *    as `forbidden`. Whether a CODEOWNERS line names a directory is read from
+ *    `git ls-files` (some tracked file sits under it), not from a trailing `/`:
+ *    GitHub guards `/locales` and `/locales/` alike, and reading the first as a
+ *    single file dropped seven guarded files without a word. A line that names
+ *    no tracked file fails: it guards nothing, and a misspelt path there reads
+ *    like protection that is not in force.
  *
  * 2. **Dependencies.** A `low` or `mid` file that a `forbidden` file imports,
  *    directly or through other files, fails. The second version of the table
  *    listed `TestnetBadge.tsx` as `mid` while the guarded `LocalWalletPanel.tsx`
  *    imported it: a paid change deleting the badge's mainnet guard was a change
  *    to the guarded screen, shipped in the extension popup, with no guarded file
- *    in the diff. The graph is read statically from `src/` and `extension/`
- *    (`import … from`, `export … from`, bare `import "…"`, `import("…")`,
- *    `new URL("…", import.meta.url)`), with `@/` resolved to `src/`. Test files
- *    are left out of the graph: a test that imports a file pins it, it does not
- *    give it a path into a running wallet (and test files are `forbidden`
- *    themselves). A relative or `@/` specifier that resolves to no tracked file
- *    fails the check rather than being skipped.
+ *    in the diff.
+ *
+ *    The graph is read from the TypeScript syntax tree of every file in `src/`
+ *    and `extension/`, not from a regular expression over its text: an earlier
+ *    version did that and missed `import(\`…\`)`, `require("…")`, string-named
+ *    imports and `import.meta.glob`, and read imports out of comments. (Nor from
+ *    `ts.preProcessFile`: its scanner does not know JSX, and an apostrophe in JSX
+ *    text hides every import after it on the line.) What counts as an edge:
+ *    import and export declarations, `import x = require("…")`, `import("…")`,
+ *    `require("…")`, `import("…")` types, `import.meta.glob("…")` (matched against
+ *    tracked files), and `new URL("…", import.meta.url)`. An `import(`, `require(`
+ *    or `import.meta.glob(` whose argument is not a constant string fails —
+ *    the check cannot know where it goes.
+ *
+ *    A specifier is resolved as the toolchain would: relative and root-relative
+ *    paths, the `@/` alias, then `paths` and `baseUrl` from `tsconfig.json`
+ *    (`baseUrl: "."` makes `"src/lib/x"` a file in this repository, not a
+ *    package). Only when none of those reaches a tracked file is a specifier a
+ *    package, and then only if `package.json` declares it or Node ships it.
+ *    Anything else fails. A directory resolves through its own `package.json`
+ *    (`types`, `typings`, `module`, `main`, `browser`, and the `package.json`
+ *    itself is an edge) and its `index.*`; only `new URL` may name a directory
+ *    as a plain path. Where bundlers could pick different files, every candidate
+ *    is an edge.
+ *
+ *    Test files are left out of the graph: a test that imports a file pins it,
+ *    it does not give it a path into a running wallet (and test files are
+ *    `forbidden` themselves).
  *
  * 3. **No wildcards in paid tiers.** A `low` or `mid` entry is one tracked file,
  *    named exactly. A pattern there (`*`, `?`, `[`, `{`) fails: a wildcard is
- *    where a new file inherits a tier nobody chose for it, and the new-file probe
- *    in rule 1 only tries one name, so it cannot be the thing that catches it.
+ *    where a new file inherits a tier nobody chose for it.
  *
  * 4. **Paid entries exist.** An entry naming a file git does not track fails —
  *    a typo there is a file left in `forbidden` while the table says otherwise.
+ *    Rules 3 and 4 together are why a file that does not exist yet is always
+ *    `forbidden`: no paid entry can name it.
  *
- * The glob matcher below follows the dialect the table declares (only `*`, `**`
- * and `?`, anchored at both ends, `**` as a whole segment). A pattern outside
- * that dialect, or a CODEOWNERS line in a form this script does not parse, fails
- * the check rather than being skipped: a gate that cannot read its input must
- * not report that the input is fine.
+ * The table must have the shape the marketplace's reader accepts (an object
+ * with a `tiers` object holding only `low`, `mid` and `forbidden`, each a list
+ * of non-empty strings, at most 500 patterns and 64 KiB): a table the reader
+ * rejects as a whole is not one this check may call fine. The glob matcher
+ * follows the dialect the table declares (only `*`, `**` and `?`, anchored at
+ * both ends, `**` as a whole segment). A pattern outside that dialect, or a
+ * CODEOWNERS line in a form this script does not parse, fails the check rather
+ * than being skipped: a gate that cannot read its input must not report that
+ * the input is fine.
  *
  * Usage: `node scripts/check-tiers-codeowners.mjs [repo-root]` — the root
  * defaults to the repository this script lives in; the tests pass a scratch one.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { builtinModules } from "node:module";
 import { fileURLToPath } from "node:url";
 import { dirname, join, posix, resolve } from "node:path";
+import ts from "typescript";
 
 const REPO = process.argv[2] ? resolve(process.argv[2]) : join(dirname(fileURLToPath(import.meta.url)), "..");
 const TIER_ORDER = ["low", "mid", "forbidden"];
-const PROBE_NAME = "__new_file_probe__.ts";
+// The marketplace reader's limits (`parseTierTable` in its contribution-tiers.js).
+const MAX_TABLE_PATTERNS = 500;
+const MAX_TABLE_BYTES = 64 * 1024;
 const problems = [];
 
 function cannotRun(why) {
@@ -119,21 +150,40 @@ try {
   cannotRun(`git ls-files failed in ${REPO}`);
 }
 const trackedSet = new Set(tracked);
+const isTrackedDir = (dir) => {
+  const prefix = dir.replace(/\/+$/, "") + "/";
+  return tracked.some((p) => p.startsWith(prefix));
+};
 
 // ─── the tier table ───────────────────────────────────────────────────────────
 
 const tablePath = join(REPO, "docs", "contribution-tiers.json");
 if (!existsSync(tablePath)) cannotRun("docs/contribution-tiers.json not found");
+if (statSync(tablePath).size > MAX_TABLE_BYTES) {
+  cannotRun(`docs/contribution-tiers.json is over ${MAX_TABLE_BYTES} bytes — the marketplace rejects it`);
+}
 let table;
 try {
   table = JSON.parse(readFileSync(tablePath, "utf8"));
 } catch (e) {
   cannotRun(`docs/contribution-tiers.json does not parse (${e.message})`);
 }
+// The same shape rules as the marketplace's reader: anything it would reject
+// as a whole is refused here too, rather than read in part.
+if (!table || typeof table !== "object" || Array.isArray(table)) cannotRun("the tier table is not a JSON object");
+if (!table.tiers || typeof table.tiers !== "object" || Array.isArray(table.tiers)) cannotRun('the tier table has no "tiers" object');
+const unknownTiers = Object.keys(table.tiers).filter((k) => !TIER_ORDER.includes(k));
+if (unknownTiers.length) {
+  cannotRun(`the tier table names tiers the marketplace does not know: ${unknownTiers.join(", ")} (only ${TIER_ORDER.join(", ")})`);
+}
+const patternCount = TIER_ORDER.reduce((n, t) => n + (Array.isArray(table.tiers[t]) ? table.tiers[t].length : 0), 0);
+if (patternCount > MAX_TABLE_PATTERNS) cannotRun(`the tier table has ${patternCount} patterns, over the marketplace's ${MAX_TABLE_PATTERNS}`);
 const tiers = {};
 for (const tier of TIER_ORDER) {
-  const list = table?.tiers?.[tier] ?? [];
-  if (!Array.isArray(list)) cannotRun(`tier "${tier}" is not a list`);
+  const list = table.tiers[tier] ?? [];
+  if (!Array.isArray(list) || list.some((g) => typeof g !== "string" || !g.length)) {
+    cannotRun(`tier "${tier}" is not a list of non-empty strings`);
+  }
   try {
     tiers[tier] = list.map((g) => ({ glob: g, test: compileGlob(g) }));
   } catch (e) {
@@ -190,19 +240,17 @@ for (const file of owners) {
     entries += 1;
     const rel = pattern.slice(1).replace(/\/+$/, "");
     const under = tracked.filter((p) => p.startsWith(rel + "/"));
-    const isDir = under.length > 0 || pattern.endsWith("/");
-    if (isDir) {
+    if (under.length) {
       for (const p of under) checked.set(p, where);
-      checked.set(rel + "/" + PROBE_NAME, where);
-    } else {
+    } else if (!pattern.endsWith("/") && trackedSet.has(rel)) {
       checked.set(rel, where);
+    } else {
+      problems.push(`${where}: CODEOWNERS pattern \`${raw}\` names no file git tracks — it guards nothing`);
     }
   });
 }
 
-let probes = 0;
 for (const [path, where] of checked) {
-  if (path.endsWith(PROBE_NAME)) probes += 1;
   const { tier, by } = classify(path);
   if (tier !== "forbidden") {
     problems.push(`${path} is guarded by ${where} but the tier table puts it in "${tier}" (pattern \`${by}\`)`);
@@ -211,48 +259,262 @@ for (const [path, where] of checked) {
 
 // ─── rule 2: what forbidden files import ──────────────────────────────────────
 
-const CODE = /^(src|extension)\/.+\.(ts|tsx|js|mjs)$/;
-const TEST = /(^|\/)__tests__\/|\.test\.(ts|tsx|js|mjs)$/;
-const SPECIFIER = [
-  /\b(?:import|export)\s+(?:type\s+)?(?:[^'"`;]*?\s+from\s+)?["']([^"'\n]+)["']/g,
-  /\bimport\s*\(\s*["']([^"'\n]+)["']\s*\)/g,
-  /\bnew\s+URL\s*\(\s*["']([^"'\n]+)["']\s*,\s*import\.meta\.url\s*\)/g,
-];
-const SUFFIXES = ["", ".ts", ".tsx", ".js", ".mjs", "/index.ts", "/index.tsx", "/index.js"];
+const CODE = /^(src|extension)\/.+\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;
+const TEST = /(^|\/)__tests__\/|\.test\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;
+// Node scripts that build or load a bundle rather than being part of one. Each
+// is named here on purpose: a new script that imports a computed path goes red
+// and somebody decides, instead of a pattern deciding for them.
+const RUNNERS = new Set([
+  "extension/smoke/run.mjs", // `import(bundle)` of the freshly built, untracked out/smoke.js
+]);
+const FILE_SUFFIXES = ["", ".ts", ".tsx", ".d.ts", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".json"];
+const JS_TO_TS = { ".js": [".ts", ".tsx", ".d.ts"], ".jsx": [".tsx"], ".mjs": [".mts", ".d.mts"], ".cjs": [".cts", ".d.cts"] };
+const INDEX_NAMES = ["index.ts", "index.tsx", "index.d.ts", "index.mts", "index.cts", "index.js", "index.jsx", "index.mjs", "index.cjs"];
+const PKG_FIELDS = ["types", "typings", "module", "main", "browser"];
 
-function resolveSpecifier(from, spec) {
-  let base;
-  if (spec.startsWith("@/")) base = "src/" + spec.slice(2);
-  else if (spec.startsWith("./") || spec.startsWith("../")) base = posix.normalize(posix.join(posix.dirname(from), spec));
-  else return null; // a package
-  base = base.replace(/\?.*$/, "");
-  const stems = [base];
-  if (/\.(js|mjs)$/.test(base)) stems.push(base.replace(/\.(js|mjs)$/, ""));
-  for (const stem of stems) {
-    for (const suffix of SUFFIXES) if (trackedSet.has(stem + suffix)) return stem + suffix;
+// Packages: only what package.json declares, or what Node ships.
+const declared = new Set();
+if (existsSync(join(REPO, "package.json"))) {
+  let pkg;
+  try {
+    pkg = JSON.parse(readFileSync(join(REPO, "package.json"), "utf8"));
+  } catch (e) {
+    cannotRun(`package.json does not parse (${e.message})`);
   }
-  // `new URL("../..", import.meta.url)` may name a directory; that is a path,
-  // not a module, and carries no code into the importer.
-  const dir = base.replace(/\/+$/, "") + "/";
-  if (tracked.some((p) => p.startsWith(dir))) return null;
-  return undefined;
+  for (const field of ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"]) {
+    for (const name of Object.keys(pkg?.[field] ?? {})) declared.add(name);
+  }
+}
+const builtins = new Set(builtinModules);
+function packageName(spec) {
+  const parts = spec.split("/");
+  return spec.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
+}
+function isPackage(spec) {
+  if (spec.startsWith("node:") || builtins.has(spec) || builtins.has(packageName(spec))) return true;
+  return declared.has(packageName(spec));
 }
 
-// Test files are read neither as importers nor as importees here (see rule 2).
-const code = tracked.filter((p) => CODE.test(p) && !TEST.test(p));
+// tsconfig.json `baseUrl` and `paths`: with `baseUrl` set, a bare specifier is
+// first looked up as a path, and only then as a package.
+let baseUrl = null;
+const pathMaps = []; // { prefix, suffix, star, targets }
+if (existsSync(join(REPO, "tsconfig.json"))) {
+  const cfg = ts.readConfigFile(join(REPO, "tsconfig.json"), (p) => readFileSync(p, "utf8"));
+  if (cfg.error) cannotRun(`tsconfig.json does not parse (${ts.flattenDiagnosticMessageText(cfg.error.messageText, " ")})`);
+  if (cfg.config?.extends) cannotRun("tsconfig.json uses `extends`, which this check does not follow — extend the check first");
+  const opts = cfg.config?.compilerOptions ?? {};
+  if (typeof opts.baseUrl === "string") baseUrl = posix.normalize(opts.baseUrl).replace(/^\.\/?$/, "");
+  const pathsBase = baseUrl ?? "";
+  for (const [key, targets] of Object.entries(opts.paths ?? {})) {
+    const star = key.indexOf("*");
+    pathMaps.push({
+      prefix: star < 0 ? key : key.slice(0, star),
+      suffix: star < 0 ? "" : key.slice(star + 1),
+      star: star >= 0,
+      targets: targets.map((t) => posix.join(pathsBase, t)),
+    });
+  }
+}
+
+/** Candidate repository paths a bare specifier maps to through tsconfig. */
+function viaTsconfig(spec) {
+  const out = [];
+  for (const m of pathMaps) {
+    if (m.star) {
+      if (spec.startsWith(m.prefix) && spec.endsWith(m.suffix) && spec.length >= m.prefix.length + m.suffix.length) {
+        const mid = spec.slice(m.prefix.length, spec.length - m.suffix.length);
+        for (const t of m.targets) out.push(posix.normalize(t.replace("*", mid)));
+      }
+    } else if (spec === m.prefix) {
+      for (const t of m.targets) out.push(posix.normalize(t));
+    }
+  }
+  if (baseUrl !== null) out.push(posix.normalize(posix.join(baseUrl, spec)));
+  return out;
+}
+
+/**
+ * Tracked files `base` (a repository path, no extension needed) stands for.
+ * Every candidate a bundler might pick is returned. With `dirOk`, a directory
+ * is a plain path and stands for no file.
+ */
+function resolveBase(base, dirOk, depth = 0) {
+  if (base.startsWith("../") || base === "..") return null;
+  const hits = new Set();
+  for (const s of FILE_SUFFIXES) if (trackedSet.has(base + s)) hits.add(base + s);
+  const ext = Object.keys(JS_TO_TS).find((e) => base.endsWith(e));
+  if (ext) for (const t of JS_TO_TS[ext]) if (trackedSet.has(base.slice(0, -ext.length) + t)) hits.add(base.slice(0, -ext.length) + t);
+  const dir = base.replace(/\/+$/, "");
+  if (isTrackedDir(dir)) {
+    if (dirOk) return hits.size ? [...hits] : [];
+    const pkgPath = posix.join(dir, "package.json");
+    if (trackedSet.has(pkgPath) && depth < 4) {
+      hits.add(pkgPath);
+      let pkg = null;
+      try { pkg = JSON.parse(readFileSync(join(REPO, pkgPath), "utf8")); } catch { /* reported below */ }
+      if (!pkg || typeof pkg !== "object") return null;
+      for (const f of PKG_FIELDS) {
+        if (typeof pkg[f] !== "string") continue;
+        const sub = resolveBase(posix.normalize(posix.join(dir, pkg[f])), false, depth + 1);
+        if (sub) for (const t of sub) hits.add(t);
+      }
+    }
+    for (const n of INDEX_NAMES) if (trackedSet.has(posix.join(dir, n))) hits.add(posix.join(dir, n));
+    // A directory whose package.json leads nowhere and has no index is not a
+    // module the toolchain can load; report it rather than calling it resolved.
+    if (hits.size === 1 && hits.has(pkgPath)) return null;
+  }
+  return hits.size ? [...hits] : null;
+}
+
+/**
+ * Resolves `spec` imported from `from`: an array of tracked files (empty for a
+ * package or a plain directory path), or null when it reaches nothing it may.
+ */
+function resolveSpecifier(from, spec, dirOk) {
+  const clean = spec.replace(/[?#].*$/, "");
+  if (!clean) return null;
+  if (clean.startsWith("./") || clean.startsWith("../") || clean === "." || clean === "..") {
+    return resolveBase(posix.normalize(posix.join(posix.dirname(from), clean)), dirOk);
+  }
+  if (clean.startsWith("/")) return resolveBase(posix.normalize(clean.slice(1)), dirOk);
+  if (clean.startsWith("@/")) return resolveBase(posix.normalize("src/" + clean.slice(2)), dirOk);
+  const found = new Set();
+  for (const cand of viaTsconfig(clean)) {
+    const r = resolveBase(cand, dirOk);
+    if (r) for (const t of r) found.add(t);
+  }
+  if (found.size) return [...found];
+  return isPackage(clean) ? [] : null;
+}
+
+/** Tracked files an `import.meta.glob` pattern matches, or null if it cannot be read. */
+function resolveGlob(from, pattern) {
+  if (pattern.startsWith("!")) return []; // an exclusion only removes files
+  if (/[[\]{}]/.test(pattern)) return null;
+  let full;
+  if (pattern.startsWith("./") || pattern.startsWith("../")) full = posix.normalize(posix.join(posix.dirname(from), pattern));
+  else if (pattern.startsWith("/")) full = posix.normalize(pattern.slice(1));
+  else if (pattern.startsWith("@/")) full = posix.normalize("src/" + pattern.slice(2));
+  else return null;
+  if (full.startsWith("../")) return null;
+  let test;
+  try { test = compileGlob(full); } catch { return null; }
+  return tracked.filter((p) => test(p));
+}
+
+const unwrap = (n) => {
+  while (n && (ts.isParenthesizedExpression(n) || ts.isAsExpression(n) || ts.isTypeAssertionExpression(n) ||
+    ts.isNonNullExpression(n) || (ts.isSatisfiesExpression && ts.isSatisfiesExpression(n)))) n = n.expression;
+  return n;
+};
+const isImportMeta = (n) => {
+  n = unwrap(n);
+  return !!n && ts.isMetaProperty(n) && n.keywordToken === ts.SyntaxKind.ImportKeyword && n.name.text === "meta";
+};
+const constString = (n) => {
+  n = unwrap(n);
+  return n && (ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n)) ? n.text : null;
+};
+/** `import.meta.glob(...)`, `import.meta["glob"](...)`, `(import.meta as any).globEager(...)`. */
+function globCallee(expr) {
+  expr = unwrap(expr);
+  if (ts.isPropertyAccessExpression(expr) && isImportMeta(expr.expression)) return expr.name.text.startsWith("glob");
+  if (ts.isElementAccessExpression(expr) && isImportMeta(expr.expression)) {
+    const key = constString(expr.argumentExpression);
+    return key === null ? true : key.startsWith("glob");
+  }
+  return false;
+}
+
+function scriptKind(file) {
+  if (/\.tsx$/.test(file)) return ts.ScriptKind.TSX;
+  if (/\.jsx$/.test(file)) return ts.ScriptKind.JSX;
+  if (/\.(js|mjs|cjs)$/.test(file)) return ts.ScriptKind.JS;
+  return ts.ScriptKind.TS;
+}
+
+/** Every module reference in `file`, as `{ spec, dirOk }` or `{ glob }`; unreadable ones go to `problems`. */
+function references(file, source) {
+  const sf = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, scriptKind(file));
+  const out = [];
+  if (sf.parseDiagnostics?.length) {
+    problems.push(`${file} does not parse (${ts.flattenDiagnosticMessageText(sf.parseDiagnostics[0].messageText, " ")}) — the dependency check cannot read it`);
+    return out;
+  }
+  for (const ref of sf.referencedFiles) out.push({ spec: ref.fileName.startsWith(".") ? ref.fileName : "./" + ref.fileName });
+  const where = (n) => `${file}:${sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1}`;
+  const visit = (n) => {
+    if ((ts.isImportDeclaration(n) || ts.isExportDeclaration(n)) && n.moduleSpecifier) {
+      const s = constString(n.moduleSpecifier);
+      if (s === null) problems.push(`${where(n)}: module specifier is not a constant string`);
+      else out.push({ spec: s });
+    } else if (ts.isImportEqualsDeclaration(n) && ts.isExternalModuleReference(n.moduleReference)) {
+      const s = constString(n.moduleReference.expression);
+      if (s === null) problems.push(`${where(n)}: \`require\` of something that is not a constant string — the dependency check cannot follow it`);
+      else out.push({ spec: s });
+    } else if (ts.isImportTypeNode(n)) {
+      const lit = ts.isLiteralTypeNode(n.argument) ? constString(n.argument.literal) : null;
+      if (lit === null) problems.push(`${where(n)}: \`import()\` type of something that is not a constant string`);
+      else out.push({ spec: lit });
+    } else if (ts.isCallExpression(n)) {
+      const callee = unwrap(n.expression);
+      const kind = n.expression.kind === ts.SyntaxKind.ImportKeyword ? "import"
+        : ts.isIdentifier(callee) && callee.text === "require" ? "require"
+        : globCallee(n.expression) ? "import.meta.glob"
+        : null;
+      if (kind === "import.meta.glob") {
+        const arg = n.arguments[0] && unwrap(n.arguments[0]);
+        const list = arg && ts.isArrayLiteralExpression(arg) ? arg.elements.map(constString) : [arg ? constString(arg) : null];
+        if (!list.length || list.some((s) => s === null)) {
+          problems.push(`${where(n)}: \`import.meta.glob\` of something that is not a constant string — the dependency check cannot follow it`);
+        } else {
+          for (const g of list) out.push({ glob: g });
+        }
+      } else if (kind) {
+        const s = n.arguments.length ? constString(n.arguments[0]) : null;
+        if (s === null) problems.push(`${where(n)}: \`${kind}(…)\` of something that is not a constant string — the dependency check cannot follow it`);
+        else out.push({ spec: s });
+      }
+    } else if (ts.isNewExpression(n)) {
+      const callee = unwrap(n.expression);
+      const args = n.arguments ?? [];
+      if (ts.isIdentifier(callee) && callee.text === "URL" && args.length >= 2) {
+        const second = unwrap(args[1]);
+        const s = constString(args[0]);
+        if (s !== null && ts.isPropertyAccessExpression(second) && second.name.text === "url" && isImportMeta(second.expression)) {
+          out.push({ spec: s, dirOk: true });
+        }
+      }
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  return out;
+}
+
+// Test files and the runners above are read neither as importers nor as
+// importees here (see rule 2); how many is printed with the result.
+const code = tracked.filter((p) => CODE.test(p) && !TEST.test(p) && !RUNNERS.has(p));
+const leftOut = tracked.filter((p) => CODE.test(p) && (TEST.test(p) || RUNNERS.has(p))).length;
 const deps = new Map();
 let edges = 0;
 for (const file of code) {
   const source = readFileSync(join(REPO, file), "utf8");
   const out = new Set();
-  for (const re of SPECIFIER) {
-    for (const m of source.matchAll(re)) {
-      const target = resolveSpecifier(file, m[1]);
-      if (target === undefined) {
-        problems.push(`${file} imports \`${m[1]}\`, which resolves to no tracked file — the dependency check cannot follow it`);
-      } else if (target) {
-        out.add(target);
-      }
+  for (const ref of references(file, source)) {
+    if (ref.glob !== undefined) {
+      const hits = resolveGlob(file, ref.glob);
+      if (hits === null) problems.push(`${file} globs \`${ref.glob}\`, a pattern the dependency check cannot read`);
+      else for (const t of hits) out.add(t);
+      continue;
+    }
+    const targets = resolveSpecifier(file, ref.spec, !!ref.dirOk);
+    if (targets === null) {
+      problems.push(`${file} imports \`${ref.spec}\`, which resolves to no tracked file and no declared package — the dependency check cannot follow it`);
+    } else {
+      for (const t of targets) if (t !== file) out.add(t);
     }
   }
   edges += out.size;
@@ -286,7 +548,7 @@ if (problems.length) {
 }
 
 console.log(
-  `Tier/CODEOWNERS OK — ${entries} CODEOWNERS entries, ${checked.size - probes} guarded files and ` +
-    `${probes} new-file probes, ${seeds.length} forbidden source files and ${edges} import edges followed, ` +
-    `all forbidden in docs/contribution-tiers.json`,
+  `Tier/CODEOWNERS OK — ${entries} CODEOWNERS entries, ${checked.size} guarded files, ` +
+    `${seeds.length} forbidden source files and ${edges} import edges followed ` +
+    `(${leftOut} test and runner files left out of the graph), all forbidden in docs/contribution-tiers.json`,
 );
