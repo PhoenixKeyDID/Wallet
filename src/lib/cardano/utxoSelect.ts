@@ -146,11 +146,16 @@ export const COLLATERAL_SEARCH_POOL = 40;
 /**
  * Pure-ADA inputs that reach `target` and together hold at most
  * `COLLATERAL_CAP_LOVELACE`, using at most `MAX_COLLATERAL_INPUTS` of them.
- * `null` when no such set exists — CIP-30's answer for "this wallet has no
- * suitable collateral".
+ * `null` when none of the sets looked at qualifies — CIP-30's answer for "this
+ * wallet has no suitable collateral".
  *
- * Every set of one, two and three coins is considered (pairs and triples
- * within `COLLATERAL_SEARCH_POOL`), and the winner is the smallest total, then
+ * The sets looked at are every single coin, and the pairs and triples among
+ * the `COLLATERAL_SEARCH_POOL` (40) largest coins below `target`. With more
+ * sub-target coins than that, a pair or triple holding a smaller one is never
+ * looked at, so `null` can come back while a qualifying set exists: forty
+ * 4.4 ADA coins and two 2.25 ADA coins against a 4.5 ADA target answer
+ * `null`, though 2.25 + 2.25 qualifies (pinned in the tests). Among the sets
+ * looked at, the winner is the smallest total, then
  * the fewest coins, then the lowest `txid#index` list — so the answer is
  * deterministic and puts the least ADA at stake. A greedy pick was not enough:
  * 4 / 2.5 / 2.5 ADA against a 4.5 ADA target took the 4, could not add a 2.5

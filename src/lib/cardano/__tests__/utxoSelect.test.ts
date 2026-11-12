@@ -11,6 +11,7 @@ import {
   selectCollateral,
   Cip30ArgumentError,
   COLLATERAL_CAP_LOVELACE,
+  COLLATERAL_SEARCH_POOL,
 } from "../utxoSelect";
 
 const POLICY = "ab".repeat(28);
@@ -71,6 +72,19 @@ describe("paginate", () => {
 });
 
 describe("selectCollateral", () => {
+  // The search's stated limit, pinned so the text and the code move together:
+  // pairs come only from the 40 largest coins below the target, so two small
+  // coins that would do are never paired once forty larger ones crowd them out.
+  it("answers null when the only qualifying pair lies outside the 40 largest sub-target coins", () => {
+    const crowd = Array.from({ length: COLLATERAL_SEARCH_POOL }, (_, i) => input(i, 4.4));
+    const small = [input(100, 2.25), input(101, 2.25)];
+    const target = BigInt(4_500_000);
+    expect(selectCollateral([...crowd, ...small], target)).toBeNull();
+    // Two fewer of the crowd: the forty largest now hold both small coins.
+    const got = selectCollateral([...crowd.slice(2), ...small], target);
+    expect(got!.map((i) => i.index).sort()).toEqual([100, 101]);
+  });
+
   it("prefers the single smallest pure-ADA coin that reaches the target, within the 5 ADA cap", () => {
     const got = selectCollateral(
       [input(0, 20), input(1, 6), input(2, 5), input(3, 4.9, [[POLICY, "", 1]]), input(4, 4.8)],
