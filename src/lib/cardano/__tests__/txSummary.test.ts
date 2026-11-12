@@ -14,7 +14,7 @@
 import { describe, it, expect } from "vitest";
 import { Buffer } from "buffer";
 import BigNumber from "bignumber.js";
-import { Encoder } from "@stricahq/cbors";
+import { CborTag, Encoder } from "@stricahq/cbors";
 import { utils as tyUtils, types as tyTypes } from "@stricahq/typhonjs";
 import { summariseTx, UndescribableTxError } from "../txSummary";
 import { buildMultiSend, buildSendOutputs } from "../send";
@@ -308,9 +308,9 @@ describe("summariseTx — what it refuses", () => {
     });
 
     // The return comes back to this wallet's address with the right amount;
-    // only the datum differs between these two cases. The wallet's UTxO reads
-    // skip an output carrying a datum, so a return under one is collateral the
-    // wallet never sees again.
+    // only the datum differs between these two cases. A return under a datum
+    // is refused outright: the screen does not describe what the datum is for,
+    // and a collateral return has no reason to carry one.
     const returnMapToMe = (datum?: unknown): [number, unknown] => [
       16,
       new Map<number, unknown>([
@@ -466,10 +466,12 @@ describe("summariseTx — it notices the things it will not describe in detail",
   });
 });
 
-describe("summariseTx — an output to this wallet that carries a datum has left it", () => {
+describe("summariseTx — an output to this wallet's key address under a datum is change", () => {
   // The wallet holds 100 ADA. The page takes 4.8 ADA and sends 95 ADA back to
-  // the wallet's own receiving address — under a datum. The wallet's UTxO reads
-  // skip every output with a datum, so those 95 ADA are gone from its view.
+  // the wallet's own key address — under a datum. The ledger ignores a datum on
+  // a key-locked input, so the wallet's UTxO reads keep that output and the
+  // wallet can spend it: the 95 ADA is change, and the cost is 5 ADA. The datum
+  // is still shown (`toSelfWithDatum`). This is the LAMP drip-pot claim's shape.
   const held = new Map([[`${TXID}#0`, { lovelace: BigInt(100_000_000), assets: new Map<string, bigint>() }]]);
   const addresses = [hexOf(MINE), hexOf(MY_CHANGE)];
   const encodeBody = (entries: [number, unknown][]) =>
@@ -481,31 +483,46 @@ describe("summariseTx — an output to this wallet that carries a datum has left
       [1, [[tyUtils.getAddressFromString(PAYEE).getBytes(), 4_800_000], back]],
       [2, 200_000],
     ]);
-  const backTo = (datum?: unknown) =>
+  const backTo = (datum?: unknown, to: Buffer = mineBytes()) =>
     new Map<number, unknown>([
-      [0, mineBytes()],
+      [0, to],
       [1, 95_000_000],
       ...(datum === undefined ? [] : ([[2, datum]] as [number, unknown][])),
     ]);
 
-  it("control: without a datum the 95 ADA is change and the cost is 5 ADA", () => {
+  it("control: without a datum the 95 ADA is change, the cost is 5 ADA, and nothing is flagged", () => {
     const s = summariseTx(tx(backTo()), addresses, held, 0);
     expect(s.net).toEqual([{ unit: "", policyId: "", assetNameHex: "", amount: BigInt(5_000_000) }]);
     expect(s.toOthers.map((r) => r.address)).toEqual([PAYEE]);
+    expect(s.toSelfWithDatum).toEqual([]);
   });
 
-  const leaves = (s: ReturnType<typeof summariseTx>) => {
-    expect(s.net).toEqual([{ unit: "", policyId: "", assetNameHex: "", amount: BigInt(100_000_000) }]);
-    expect(s.toOthers).toContainEqual({ address: MINE, lovelace: BigInt(95_000_000), assets: [], mine: false, datum: true });
+  const change = (s: ReturnType<typeof summariseTx>) => {
+    expect(s.net).toEqual([{ unit: "", policyId: "", assetNameHex: "", amount: BigInt(5_000_000) }]);
+    expect(s.toOthers.map((r) => r.address)).toEqual([PAYEE]);
+    expect(s.toSelfWithDatum).toEqual([{ address: MINE, lovelace: BigInt(95_000_000), assets: [], mine: true, datum: true }]);
   };
 
-  it("an inline datum: the whole 100 ADA leaves, and the own-address output is flagged", () => {
-    leaves(summariseTx(tx(backTo([1, Buffer.from("d87980", "hex")])), addresses, held, 0));
+  it("an inline datum: the 95 ADA is change, the cost is 5 ADA, and the datum is flagged", () => {
+    change(summariseTx(tx(backTo([1, new CborTag(Buffer.from("d87980", "hex"), 24)])), addresses, held, 0));
   });
   it("a datum hash (Babbage shape): the same", () => {
-    leaves(summariseTx(tx(backTo([0, Buffer.alloc(32, 0xab)])), addresses, held, 0));
+    change(summariseTx(tx(backTo([0, Buffer.alloc(32, 0xab)])), addresses, held, 0));
   });
   it("a datum hash (legacy shape): the same", () => {
-    leaves(summariseTx(tx([mineBytes(), 95_000_000, Buffer.alloc(32, 0xab)]), addresses, held, 0));
+    change(summariseTx(tx([mineBytes(), 95_000_000, Buffer.alloc(32, 0xab)]), addresses, held, 0));
+  });
+
+  // The other half of the rule. A script-locked output under a datum is the
+  // script's, not the wallet's, even if the caller counts the address as its
+  // own: the wallet holds no witness for it and its readers skip it, so here
+  // it is money that leaves, listed with the datum flag.
+  it("a datum at a script address the caller calls its own: the whole 100 ADA leaves", () => {
+    const script = Buffer.from("70" + "44".repeat(28), "hex");
+    const scriptBech = tyUtils.getAddressFromHex(script).getBech32();
+    const s = summariseTx(tx(backTo([1, new CborTag(Buffer.from("d87980", "hex"), 24)], script)), [...addresses, script.toString("hex")], held, 0);
+    expect(s.net).toEqual([{ unit: "", policyId: "", assetNameHex: "", amount: BigInt(100_000_000) }]);
+    expect(s.toOthers).toContainEqual({ address: scriptBech, lovelace: BigInt(95_000_000), assets: [], mine: false, datum: true });
+    expect(s.toSelfWithDatum).toEqual([]);
   });
 });

@@ -32,6 +32,7 @@ import "../node-globals";
 import { Buffer } from "buffer";
 import { Decoder } from "@stricahq/cbors";
 import { utils as tyUtils } from "@stricahq/typhonjs";
+import { walletOwnsOutput } from "./ownUtxo";
 
 /** One asset's movement, from the wallet's point of view. Negative = incoming. */
 export type NetChange = {
@@ -54,15 +55,18 @@ export type Recipient = {
    */
   assets: NetChange[];
   /**
-   * True when this output comes back to one of the wallet's own addresses
-   * without a datum. An own-address output carrying a datum is `false`: the
-   * wallet's UTxO reads skip it, so it is money that leaves.
+   * True when this output comes back to one of the wallet's own addresses and
+   * the wallet's UTxO reads will keep it (`walletOwnsOutput`). Always `false`
+   * on an entry of `toOthers`: an output that is the wallet's is counted as
+   * change, not listed.
    */
   mine: boolean;
   /**
    * The output carries a datum (inline, or by hash). Sending to a script with
    * a datum is how a contract keeps its state, so it is shown rather than
    * refused — the address and the amount are still what the person decides on.
+   * An output to one of this wallet's key addresses under a datum is counted
+   * as change and listed in `toSelfWithDatum`, with this flag set.
    */
   datum: boolean;
 };
@@ -86,6 +90,13 @@ export type TxSummary = {
   net: NetChange[];
   /** Outputs going somewhere that is not this wallet. */
   toOthers: Recipient[];
+  /**
+   * Outputs coming back to one of this wallet's addresses under a datum. They
+   * are change — counted in `net` as coming back, because the wallet's UTxO
+   * reads keep them and it can spend them — and they are still listed, so the
+   * screen can say a datum rides on them. `mine` and `datum` are `true` on each.
+   */
+  toSelfWithDatum: Recipient[];
   fee: bigint;
   /** How many of the transaction's inputs are this wallet's. */
   ownInputs: number;
@@ -186,6 +197,15 @@ function asSignedBigInt(v: unknown, what: string): bigint {
 }
 
 type ReadOutput = { addressHex: string; lovelace: bigint; assets: Map<string, bigint>; datum: boolean };
+
+/** An output address as bech32, in full, or a refusal when it is not one. */
+function bech32Of(addressHex: string): string {
+  try {
+    return tyUtils.getAddressFromHex(Buffer.from(addressHex, "hex")).getBech32();
+  } catch {
+    return bad("this transaction pays an address this wallet cannot read");
+  }
+}
 
 /** Decode one output into an address and a value, refusing shapes we cannot read. */
 function readOutput(o: unknown): ReadOutput {
@@ -468,34 +488,40 @@ export function summariseTx(
   let returnedLovelace = BigInt(0);
   const returnedAssets = new Map<string, bigint>();
   const toOthers: Recipient[] = [];
+  const toSelfWithDatum: Recipient[] = [];
   for (const o of rawOutputs) {
     const { addressHex, lovelace, assets, datum } = readOutput(o);
     const net = addressNetwork(addressHex);
     if (net !== null && net !== networkId) bad("this transaction pays an address on another network");
-    // An output to one of this wallet's addresses that carries a datum (inline
-    // or by hash) is not money coming back. The wallet's own UTxO reads skip
-    // every such output (`bfUtxos` skips inline datum and datum hash,
-    // `decodeUtxosToInputs` skips any Babbage datum), so after signing the
-    // wallet never sees it again — spendable or not, it has left. Counting it
-    // as change would let a page send 95 ADA to the wallet's own address under
-    // a datum and have the screen report a 5 ADA cost. It is shown as a
-    // recipient instead, with the datum flag, like any other one.
+    // Change is what the wallet will see and spend again after signing, and
+    // that is decided by the same function its UTxO reads use
+    // (`walletOwnsOutput`), never by a second copy of the rule here. An output
+    // to one of its key addresses under a datum is change: the readers keep
+    // it, because the ledger ignores a datum on a key-locked input — the LAMP
+    // drip-pot pays every claim that way. If the readers skipped it and this
+    // counted it, a page could send 95 ADA to the wallet's own address under a
+    // datum and the screen would report a 5 ADA cost; with one function the
+    // two cannot drift. `readOutput` refuses a reference script outright, so
+    // `referenceScript` is false for every output that reaches this line.
     const ownAddress = own.has(addressHex.toLowerCase());
-    const mine = ownAddress && !datum;
+    const mine = ownAddress && walletOwnsOutput({ addressHex, datum, referenceScript: false });
     if (mine) {
       returnedLovelace += lovelace;
       for (const [unit, qty] of assets) {
         returnedAssets.set(unit, (returnedAssets.get(unit) ?? BigInt(0)) + qty);
       }
-    } else {
-      let address: string;
-      try {
-        address = tyUtils.getAddressFromHex(Buffer.from(addressHex, "hex")).getBech32();
-      } catch {
-        return bad("this transaction pays an address this wallet cannot read");
+      if (datum) {
+        toSelfWithDatum.push({
+          address: bech32Of(addressHex),
+          lovelace,
+          assets: [...assets].map(([unit, qty]) => toNetChange(unit, qty)),
+          mine: true,
+          datum: true,
+        });
       }
+    } else {
       toOthers.push({
-        address,
+        address: bech32Of(addressHex),
         lovelace,
         assets: [...assets].map(([unit, qty]) => toNetChange(unit, qty)),
         mine: false,
@@ -558,6 +584,7 @@ export function summariseTx(
   return {
     net,
     toOthers,
+    toSelfWithDatum,
     fee,
     ownInputs: mineCount,
     totalInputs: inputList.length,

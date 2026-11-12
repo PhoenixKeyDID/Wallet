@@ -45,6 +45,7 @@ function shown(overrides: Partial<TxSummary> = {}) {
   const summary: TxSummary = {
     net: [],
     toOthers: [],
+    toSelfWithDatum: [],
     fee: BigInt(170_000),
     ownInputs: 1,
     totalInputs: 1,
@@ -81,6 +82,26 @@ describe("TxSummaryView — what the approval window shows", () => {
   it("prints every recipient that is not this wallet in full", () => {
     const text = shown({ toOthers: [{ address: PAYEE, lovelace: BigInt(2_000_000), assets: [], mine: false, datum: false }] });
     expect(text).toContain(PAYEE);
+  });
+
+  // A drip-pot claim pays LAMP to this wallet's own address under a datum. It
+  // is change — the wallet sees and spends it — but the datum on it must still
+  // be on the screen, with the amount, the token and the address.
+  it("lists change that carries a datum, with the datum note, and nothing for plain change", () => {
+    const text = shown({
+      toSelfWithDatum: [
+        { address: PAYEE, lovelace: BigInt(1_300_000), assets: [token(REAL, BigInt(7))], mine: true, datum: true },
+      ],
+    });
+    expect(text).toContain(en.cip30_to_self_with_datum);
+    expect(text).toContain(PAYEE);
+    expect(text).toContain(en.cip30_output_datum);
+    expect(text).toContain(`7 LAMP · ${policyIdShort(REAL)}`);
+    expect(text).not.toContain(en.cip30_paying);
+
+    const plain = shown();
+    expect(plain).not.toContain(en.cip30_to_self_with_datum);
+    expect(plain).not.toContain(en.cip30_output_datum);
   });
 
   it("says when it recognised only some of the inputs", () => {

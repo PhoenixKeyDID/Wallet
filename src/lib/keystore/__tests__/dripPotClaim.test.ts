@@ -63,26 +63,31 @@ function verifies(pub: Buffer, msg: Buffer, sig: Buffer): boolean {
 }
 
 describe("drip-pot claim: what the screen shows", () => {
-  // The claim pays the LAMP to this wallet's own address under an inline tag
-  // datum. The wallet's UTxO reads skip outputs carrying a datum, so that
-  // output is not counted as coming back: it is listed as a recipient with the
-  // datum flag, and its 1.3 ADA counts as leaving (5 ADA fee input − 3.2 ADA
-  // plain change = 1.8 ADA).
-  it("shows the auth-token burn, the collateral at risk, and the LAMP output under its datum", () => {
+  // The claim pays the LAMP to this wallet's own key address under an inline
+  // tag datum. The ledger ignores a datum on a key-locked input, and the
+  // wallet's UTxO reads keep such outputs (`walletOwnsOutput`), so the LAMP is
+  // coming in and its 1.3 ADA is change: the ADA cost is 5 ADA fee input −
+  // 3.2 ADA plain change − 1.3 ADA = 0.5 ADA. The output is still listed, with
+  // its datum flag, so the screen says a datum rides on it.
+  it("shows the auth-token burn, the collateral at risk, and the LAMP coming in under its datum", () => {
     const s = summary(claim());
     expect(s.burns).toEqual([
       expect.objectContaining({ policyId: AUTH_POLICY, assetNameHex: AUTH_NAME, amount: BigInt(1) }),
     ]);
     expect(s.collateral).toEqual({ riskLovelace: BigInt(1_500_000), inputs: 1 });
-    expect(s.net).toEqual([{ unit: "", policyId: "", assetNameHex: "", amount: BigInt(1_800_000) }]);
-    expect(s.toOthers).toEqual([
+    expect(s.net).toEqual([
+      { unit: "", policyId: "", assetNameHex: "", amount: BigInt(500_000) },
+      { unit: LAMP_POLICY + LAMP_NAME, policyId: LAMP_POLICY, assetNameHex: LAMP_NAME, amount: -BigInt(1_000_000_000) },
+    ]);
+    expect(s.toOthers).toEqual([]);
+    expect(s.toSelfWithDatum).toEqual([
       {
         address: account.external[0]!.address,
         lovelace: BigInt(1_300_000),
         assets: [
           { unit: LAMP_POLICY + LAMP_NAME, policyId: LAMP_POLICY, assetNameHex: LAMP_NAME, amount: BigInt(1_000_000_000) },
         ],
-        mine: false,
+        mine: true,
         datum: true,
       },
     ]);

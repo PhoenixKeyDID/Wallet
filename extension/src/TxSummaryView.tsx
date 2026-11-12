@@ -67,6 +67,26 @@ export function TxSummaryView({ summary }: { summary: TxSummary }) {
           </ul>
         </>
       )}
+      {/* Change under a datum: counted as coming back above, because the
+          wallet sees and can spend it, and still listed here so the datum on
+          it is not hidden. */}
+      {summary.toSelfWithDatum.length > 0 && (
+        <>
+          <p className="approve-heading">{t("cip30_to_self_with_datum")}</p>
+          <ul>
+            {summary.toSelfWithDatum.map((r, i) => (
+              <li key={i} className="approve-payout">
+                <b>{formatAda(r.lovelace)} ADA</b>
+                {r.assets.map((a) => (
+                  <b key={a.unit}>{` + ${a.amount.toString()} ${assetLabel(a)}`}</b>
+                ))}
+                <span className="mono approve-addr">{r.address}</span>
+                <span className="approve-note">{t("cip30_output_datum")}</span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
       {summary.burns.length > 0 && (
         <>
           <p className="approve-heading">{t("cip30_burns")}</p>

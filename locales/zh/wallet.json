@@ -410,6 +410,7 @@
   "cip30_submit_cta": "发送",
   "cip30_address_count": "此账户中的地址数：{{n}}",
   "cip30_output_datum": "此输出还附带合约数据（datum）。",
+  "cip30_to_self_with_datum": "返回你的钱包（附带 datum）",
   "cip30_burns": "将被销毁的代币",
   "cip30_collateral_risk": "如果合约在链上执行失败，你将损失 {{ada}} ADA 抵押品。",
   "cip30_collateral_explain": "只有合约脚本执行失败时才会扣除抵押品。按构建方式正常执行的交易不会损失它——但这笔交易由网站构建，是否可能失败由网站决定。",

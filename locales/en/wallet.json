@@ -410,6 +410,7 @@
   "cip30_submit_cta": "Send",
   "cip30_address_count": "Addresses in this account: {{n}}",
   "cip30_output_datum": "This output also carries data for a contract (a datum).",
+  "cip30_to_self_with_datum": "Coming back to your wallet, with a datum attached",
   "cip30_burns": "Tokens this destroys",
   "cip30_collateral_risk": "If the contract fails on chain, you lose {{ada}} ADA of collateral.",
   "cip30_collateral_explain": "Collateral is taken only when the contract's script fails. A transaction that runs as built does not lose it — but the site built this one, so the site decides whether it can fail.",

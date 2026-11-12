@@ -105,8 +105,9 @@ export type WalletPort = {
  * The send form used to read this from CIP-30 `getBalance()`, which no local
  * account has. Deriving it from the same inputs the transaction will be built
  * from is not just the portable answer, it is the more truthful one: a balance
- * call reports everything the wallet owns, including value locked in UTxOs that
- * carry a datum or a reference script — which the builder skips. Offering those
+ * call reports everything the wallet owns, including value in UTxOs the readers
+ * skip (`walletOwnsOutput`: a reference script, or a datum at a script address)
+ * — which the builder therefore never sees. Offering those
  * in a send form is offering to spend something the next step will not touch.
  */
 export function sumAssets(inputs: tyTypes.Input[]): AssetAmount[] {

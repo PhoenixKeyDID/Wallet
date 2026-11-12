@@ -134,22 +134,26 @@ describe("blockfrost adapter — the shapes that would be silent wrong numbers",
     await expect(bfAddressBalance(EP, [ADDR])).rejects.toThrow(/malformed asset unit/);
   });
 
-  it("skips unspent outputs carrying a datum by hash, not only an inline one", async () => {
-    // A datum attached by hash is still a datum: the output's meaning lives
-    // off-chain and is not ours to reinterpret. Skipping only `inline_datum`
-    // would spend exactly the outputs the wallet cannot read.
+  // Policy flipped: the address here is a key address (`addr_test1qz…`, header
+  // type 0), and the ledger ignores a datum on a key-locked input. So an output
+  // under a datum — by hash or inline — is the wallet's, and is kept with the
+  // datum it carries. The datum-free one stays exactly as before.
+  it("keeps unspent outputs at a key address carrying a datum by hash or inline, with the datum", async () => {
     routes({
       [`/addresses/${encodeURIComponent(ADDR)}/utxos`]: {
         body: [
           { tx_hash: "a".repeat(64), output_index: 0, address: ADDR, amount: [{ unit: "lovelace", quantity: "2000000" }], data_hash: "b".repeat(64) },
           { tx_hash: "c".repeat(64), output_index: 1, address: ADDR, amount: [{ unit: "lovelace", quantity: "3000000" }] },
+          { tx_hash: "d".repeat(64), output_index: 2, address: ADDR, amount: [{ unit: "lovelace", quantity: "4000000" }], inline_datum: "d87980", data_hash: "e".repeat(64) },
         ],
       },
     });
     const utxos = await bfUtxos(EP, [ADDR]);
-    expect(utxos).toHaveLength(1);
-    expect(utxos[0].txId).toBe("c".repeat(64));
-    expect(utxos[0].amount.toString()).toBe("3000000");
+    expect(utxos.map((u) => [u.txId, u.amount.toString(), u.chainDatum])).toEqual([
+      ["a".repeat(64), "2000000", { kind: "hash", hashHex: "b".repeat(64) }],
+      ["c".repeat(64), "3000000", undefined],
+      ["d".repeat(64), "4000000", { kind: "inline", cborHex: "d87980" }],
+    ]);
   });
 
   it("reads the tip slot as the absolute slot, which is what a TTL is measured in", async () => {

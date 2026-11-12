@@ -67,6 +67,10 @@ const UTXO_CBOR = "src/lib/cardano/utxoCbor.ts";
 const APPROVE = "extension/src/approve.tsx";
 const UTXO_SELECT = "src/lib/cardano/utxoSelect.ts";
 const SIGN_DATA = "src/lib/keystore/signData.ts";
+// The one rule for which outputs at the wallet's addresses are its own money,
+// and the CIP-30 path that reads UTxOs back from another wallet.
+const OWN_UTXO = "src/lib/cardano/ownUtxo.ts";
+const TX = "src/lib/cardano/tx.ts";
 // A gate is worth mutating too. "Is this guard pinned" and "is the thing that
 // checks the guard pinned" are different questions, and the second one has gone
 // unanswered here before: two table rows named after a detector were going red
@@ -93,6 +97,9 @@ const TESTS = [
   "src/lib/keystore/__tests__/dripPotClaim.test.ts",
   "src/lib/keystore/__tests__/signData.test.ts",
   "src/lib/cardano/__tests__/utxoSelect.test.ts",
+  "src/lib/cardano/__tests__/ownUtxo.test.ts",
+  "src/lib/cardano/__tests__/blockfrost.test.ts",
+  "src/lib/cardano/__tests__/e2e-journey.test.ts",
 ];
 
 /**
@@ -1400,11 +1407,112 @@ const MUTANTS = [
   // ── Review round on the CIP-30 claim: what counts as change, what a coin
   // offered as collateral may hold, and what the screen claims about money. ──
   {
-    name: "screen: an output to this wallet under a datum is counted as change",
+    // The screen grows its own copy of the rule — the old one, "a datum means
+    // it left" — and drifts from the readers, which keep a datum at a key
+    // address. The parity cases in ownUtxo.test.ts exist to catch exactly this.
+    name: "screen: change is decided by a second copy of the rule that skips every datum",
     file: TX_SUMMARY,
-    from: "const mine = ownAddress && !datum;",
-    to: "const mine = ownAddress; /* MUT_TS_OWN_DATUM */",
+    from: "const mine = ownAddress && walletOwnsOutput({ addressHex, datum, referenceScript: false });",
+    to: "const mine = ownAddress && !datum; /* MUT_TS_OWN_DATUM */",
     marker: "MUT_TS_OWN_DATUM",
+  },
+  {
+    name: "screen: change under a datum is counted but no longer listed with its datum flag",
+    file: TX_SUMMARY,
+    from: "      if (datum) {\n        toSelfWithDatum.push({",
+    to: "      if (false /* MUT_TS_SELF_DATUM_LIST */) {\n        toSelfWithDatum.push({",
+    marker: "MUT_TS_SELF_DATUM_LIST",
+  },
+  {
+    name: "approval window: the change-under-a-datum section is not rendered",
+    file: TX_SUMMARY_VIEW,
+    from: "{summary.toSelfWithDatum.length > 0 && (",
+    to: "{false /* MUT_VIEW_SELF_DATUM */ && (",
+    marker: "MUT_VIEW_SELF_DATUM",
+  },
+  // ── The one rule for own UTxOs, and every reader that must use it ──
+  {
+    name: "own-utxo rule: a UTxO carrying a reference script is the wallet's to spend",
+    file: OWN_UTXO,
+    from: "  if (o.referenceScript) return false;",
+    to: "  if (false /* MUT_OWN_REFSCRIPT */) return false;",
+    marker: "MUT_OWN_REFSCRIPT",
+  },
+  {
+    name: "own-utxo rule: a datum at a script address is the wallet's to spend",
+    file: OWN_UTXO,
+    from: "  if (o.datum && !paymentCredentialIsKey(o.addressHex)) return false;",
+    to: "  if (false /* MUT_OWN_SCRIPT_DATUM */) return false;",
+    marker: "MUT_OWN_SCRIPT_DATUM",
+  },
+  {
+    name: "own-utxo rule: an inline datum that is not hex is read as a datum",
+    file: OWN_UTXO,
+    from: '    if (typeof inline !== "string" || !HEX_RE.test(inline)) {',
+    to: "    if (false /* MUT_READ_DATUM_SHAPE */) {",
+    marker: "MUT_READ_DATUM_SHAPE",
+  },
+  {
+    name: "own-utxo rule: a datum hash that is not 32 bytes of hex is read as a datum",
+    file: OWN_UTXO,
+    from: '    if (typeof hash !== "string" || !/^[0-9a-f]{64}$/i.test(hash)) {',
+    to: "    if (false /* MUT_READ_HASH_SHAPE */) {",
+    marker: "MUT_READ_HASH_SHAPE",
+  },
+  {
+    name: "Koios reader: drifts back to skipping every inline datum",
+    file: PROVIDER,
+    from: "    const chainDatum = readChainDatum(inlineHex, r.datum_hash, where);",
+    to:
+      "    if (r.inline_datum != null) continue; /* MUT_KOIOS_OLD_SKIP */\n" +
+      "    const chainDatum = readChainDatum(inlineHex, r.datum_hash, where);",
+    marker: "MUT_KOIOS_OLD_SKIP",
+  },
+  {
+    name: "Koios reader: an inline datum not shaped { bytes } is read as no datum",
+    file: PROVIDER,
+    from: '      if (typeof d !== "object" || typeof d.bytes !== "string") {',
+    to: "      if (false /* MUT_KOIOS_DATUM_SHAPE */) {",
+    marker: "MUT_KOIOS_DATUM_SHAPE",
+  },
+  {
+    name: "Blockfrost reader: drifts back to skipping every datum",
+    file: BLOCKFROST,
+    from: "      const chainDatum = readChainDatum(r.inline_datum, r.data_hash, `${r.tx_hash}#${r.output_index}`);",
+    to:
+      "      if (r.inline_datum != null || r.data_hash != null) continue; /* MUT_BF_OLD_SKIP */\n" +
+      "      const chainDatum = readChainDatum(r.inline_datum, r.data_hash, `${r.tx_hash}#${r.output_index}`);",
+    marker: "MUT_BF_OLD_SKIP",
+  },
+  {
+    name: "CIP-30 reader: drifts back to skipping every datum",
+    file: TX,
+    from: '    if (!walletOwnsOutput({ addressHex: addrBuf.toString("hex"), datum, referenceScript })) continue;',
+    to:
+      "    if (datum) continue; /* MUT_CIP30_OLD_SKIP */\n" +
+      '    if (!walletOwnsOutput({ addressHex: addrBuf.toString("hex"), datum, referenceScript })) continue;',
+    marker: "MUT_CIP30_OLD_SKIP",
+  },
+  {
+    name: "getUtxos: an input under a datum is described to the dApp without it",
+    file: UTXO_CBOR,
+    from: '    if (d === undefined) return Encoder.encode([ref, [addr, value]]).toString("hex");',
+    to: '    if (true /* MUT_CBOR_DATUM */) return Encoder.encode([ref, [addr, value]]).toString("hex");',
+    marker: "MUT_CBOR_DATUM",
+  },
+  {
+    name: "getUtxos: an inline datum that is not hex is encoded anyway",
+    file: UTXO_CBOR,
+    from: '    if (d.kind === "inline" && HEX_RE.test(d.cborHex) && d.cborHex.length > 0) {',
+    to: '    if (d.kind === "inline" /* MUT_CBOR_INLINE_SHAPE */) {',
+    marker: "MUT_CBOR_INLINE_SHAPE",
+  },
+  {
+    name: "getUtxos: a datum hash that is not 32 bytes is encoded anyway",
+    file: UTXO_CBOR,
+    from: '    } else if (d.kind === "hash" && /^[0-9a-f]{64}$/i.test(d.hashHex)) {',
+    to: '    } else if (d.kind === "hash" /* MUT_CBOR_HASH_SHAPE */) {',
+    marker: "MUT_CBOR_HASH_SHAPE",
   },
   {
     name: "screen: a collateral return carrying a datum is described",

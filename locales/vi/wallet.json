@@ -410,6 +410,7 @@
   "cip30_submit_cta": "Gửi",
   "cip30_address_count": "Số địa chỉ trong tài khoản này: {{n}}",
   "cip30_output_datum": "Đầu ra này còn mang dữ liệu cho hợp đồng (datum).",
+  "cip30_to_self_with_datum": "Quay về ví bạn, kèm datum",
   "cip30_burns": "Token bị huỷ",
   "cip30_collateral_risk": "Nếu hợp đồng chạy hỏng trên chuỗi, bạn mất {{ada}} ADA tiền thế chấp.",
   "cip30_collateral_explain": "Tiền thế chấp chỉ bị lấy khi script của hợp đồng chạy hỏng. Giao dịch chạy đúng như đã dựng thì không mất — nhưng giao dịch này do trang web dựng, nên trang web quyết định nó có thể hỏng hay không.",

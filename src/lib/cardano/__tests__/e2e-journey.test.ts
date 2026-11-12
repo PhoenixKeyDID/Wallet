@@ -21,7 +21,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { Buffer } from "buffer";
 import BigNumber from "bignumber.js";
-import { Encoder } from "@stricahq/cbors";
+import { CborTag, Encoder } from "@stricahq/cbors";
 import { bech32 } from "bech32";
 import { utils as tyUtils, types as tyTypes } from "@stricahq/typhonjs";
 
@@ -113,8 +113,8 @@ function utxoHex(opts: {
   lovelace: string;
   form: "legacy" | "babbage";
   tokens?: Array<{ policyId: string; assetNameHex: string; quantity: number }>;
-  /** Babbage-only: an inline datum (key 2) marks a UTxO we must refuse to spend. */
-  inlineDatum?: boolean;
+  /** Babbage-only: a reference script (key 3) marks a UTxO we must refuse to spend. */
+  referenceScript?: boolean;
 }): string {
   const value: unknown =
     opts.tokens && opts.tokens.length > 0
@@ -135,8 +135,8 @@ function utxoHex(opts: {
       : new Map<number, unknown>([
           [0, addrBytes(OWNER_ADDR)],
           [1, value],
-          ...(opts.inlineDatum
-            ? ([[2, Buffer.from("d87980", "hex")]] as Array<[number, unknown]>)
+          ...(opts.referenceScript
+            ? ([[3, new CborTag(Encoder.encode([2, Buffer.from("4e4d01000033222220051200120011", "hex")]), 24)]] as Array<[number, unknown]>)
             : []),
         ]);
 
@@ -181,13 +181,15 @@ function makeExtension(opts: { holdEnable?: boolean } = {}): FakeExtension {
         form: "legacy",
         tokens: [{ policyId: POLICY_ID, assetNameHex: ASSET_NAME_HEX, quantity: 500 }],
       }),
-      // A reference-script/inline-datum UTxO the wallet must never casually spend.
+      // A reference-script UTxO the wallet must never casually spend: spending
+      // it destroys code other transactions may read by reference. (An inline
+      // datum at this key address is the wallet's — see `ownUtxo.test.ts`.)
       utxoHex({
         txId: "33".repeat(32),
         index: 0,
         lovelace: "3000000",
         form: "babbage",
-        inlineDatum: true,
+        referenceScript: true,
       }),
     ],
     balanceCborHex: hex(
@@ -361,7 +363,7 @@ describe("E2E — send", () => {
     const { api, networkId } = await connect();
     const inputs = await spendableInputs(api);
 
-    // The inline-datum UTxO is dropped; the two ordinary ones survive, one from
+    // The reference-script UTxO is dropped; the two ordinary ones survive, one from
     // each output encoding.
     expect(inputs).toHaveLength(2);
     expect(inputs.map((i) => i.txId)).toEqual(["11".repeat(32), "22".repeat(32)]);

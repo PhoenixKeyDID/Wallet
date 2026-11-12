@@ -16,8 +16,10 @@
  * the dApp never offers to spend.
  *
  * The consequence for `getBalance` is stated rather than hidden: it is the
- * balance of those inputs, so value parked in UTxOs carrying an inline datum or
- * a reference script — which `fetchUtxos` skips on purpose — is not in it.
+ * balance of those inputs, so value in UTxOs `fetchUtxos` skips on purpose
+ * (`walletOwnsOutput`: a reference script, or a datum on a script-locked
+ * output) is not in it. Value under a datum at one of this wallet's key
+ * addresses — the LAMP a drip-pot claim pays — is.
  *
  * ## Refuse, never round
  *
@@ -29,10 +31,11 @@
  */
 import "../node-globals";
 import { Buffer } from "buffer";
-import { Encoder } from "@stricahq/cbors";
+import { CborTag, Encoder } from "@stricahq/cbors";
 import type { types as tyTypes } from "@stricahq/typhonjs";
+import type { WalletInput } from "./ownUtxo";
 
-type Input = tyTypes.Input;
+type Input = WalletInput;
 
 const HEX_RE = /^(?:[0-9a-f]{2})*$/i;
 
@@ -73,9 +76,15 @@ function encodeValue(lovelace: bigint, tokens: tyTypes.Token[]): unknown {
  * CIP-30 `getUtxos()`: one hex `TransactionUnspentOutput` per input —
  * `[[tx_hash, index], [address, value]]`.
  *
- * The output is the legacy array form with no datum, which is truthful for
- * these inputs and no others: `fetchUtxos` drops every UTxO carrying an inline
- * datum or a reference script before it gets here.
+ * An input with no datum is encoded in the legacy array form, `[address,
+ * value]`. An input that carries one on chain (`chainDatum`) is encoded in the
+ * Babbage map form with the datum as the chain holds it — `[1, #6.24(bytes)]`
+ * inline, `[0, hash]` by hash. Dropping it would hand the dApp an output that
+ * is not the one on chain, and a dApp that evaluates a script in the same
+ * transaction builds the script context from these outputs: evaluated against
+ * the wrong one, the execution budget it declares can be short of what the
+ * node measures, and a script that fails at the node costs the collateral.
+ * No reference script is ever encoded: `fetchUtxos` skips those.
  */
 export function encodeInputsAsUtxosHex(inputs: Input[]): string[] {
   return inputs.map((i) => {
@@ -84,7 +93,23 @@ export function encodeInputsAsUtxosHex(inputs: Input[]): string[] {
     const lovelace = wholeAmount(i.amount, "lovelace amount", false);
     const addr = Buffer.from(i.address.getHex(), "hex");
     const value = encodeValue(lovelace, i.tokens ?? []);
-    return Encoder.encode([[Buffer.from(i.txId, "hex"), i.index], [addr, value]]).toString("hex");
+    const ref = [Buffer.from(i.txId, "hex"), i.index];
+    const d = i.chainDatum;
+    if (d === undefined) return Encoder.encode([ref, [addr, value]]).toString("hex");
+    let datumOption: unknown;
+    if (d.kind === "inline" && HEX_RE.test(d.cborHex) && d.cborHex.length > 0) {
+      datumOption = [1, new CborTag(Buffer.from(d.cborHex, "hex"), 24)];
+    } else if (d.kind === "hash" && /^[0-9a-f]{64}$/i.test(d.hashHex)) {
+      datumOption = [0, Buffer.from(d.hashHex, "hex")];
+    } else {
+      throw new Error(`malformed datum on ${i.txId}#${i.index}`);
+    }
+    const output = new Map<number, unknown>([
+      [0, addr],
+      [1, value],
+      [2, datumOption],
+    ]);
+    return Encoder.encode([ref, output]).toString("hex");
   });
 }
 

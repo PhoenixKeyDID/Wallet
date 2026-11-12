@@ -40,6 +40,7 @@ import { types as tyTypes, utils as tyUtils } from "@stricahq/typhonjs";
 import { ProviderUnreachableError } from "./provider";
 import type { AddressBalance } from "./provider";
 import { SubmitRejectedError } from "./submitError";
+import { addressHexOf, readChainDatum, walletOwnsOutput, type WalletInput } from "./ownUtxo";
 
 type ProtocolParams = tyTypes.ProtocolParams;
 
@@ -304,8 +305,8 @@ export async function bfAddressBalance(
 export async function bfUtxos(
   ep: BlockfrostEndpoint,
   addresses: string[],
-): Promise<tyTypes.Input[]> {
-  const out: tyTypes.Input[] = [];
+): Promise<WalletInput[]> {
+  const out: WalletInput[] = [];
   for (const addr of addresses) {
     let rows: Array<{
       tx_hash?: string;
@@ -323,15 +324,26 @@ export async function bfUtxos(
       throw e;
     }
     for (const r of rows) {
-      // Same rule as the Koios path and the CIP-30 path: a UTxO carrying a datum
-      // or a reference script usually belongs to a script. Spending it casually
-      // can destroy a reference script other people depend on, and the datum is
-      // not ours to reinterpret. `data_hash` is included because a datum can be
-      // attached by hash rather than inline, and a wallet that skips only the
-      // inline case would spend exactly the outputs whose meaning it cannot see.
-      if (r.inline_datum != null || r.data_hash != null || r.reference_script_hash != null) continue;
       if (typeof r.tx_hash !== "string" || typeof r.output_index !== "number") {
         throw new Error("the chain endpoint returned an unspent output with no id");
+      }
+      // The one rule the Koios path, the CIP-30 path and the approval screen
+      // share (`walletOwnsOutput`): a reference script is skipped; a datum —
+      // inline, or by hash in `data_hash` — is kept on a key-locked output,
+      // because the ledger ignores it there and the LAMP drip-pot pays every
+      // claim to a key address under one, and skipped on a script-locked one.
+      // Blockfrost sets `data_hash` beside `inline_datum` too (the hash of the
+      // inline one), so the inline datum is read first.
+      const chainDatum = readChainDatum(r.inline_datum, r.data_hash, `${r.tx_hash}#${r.output_index}`);
+      const address = tyUtils.getAddressFromString(r.address ?? addr) as tyTypes.ShelleyAddress;
+      if (
+        !walletOwnsOutput({
+          addressHex: addressHexOf(address),
+          datum: chainDatum !== undefined,
+          referenceScript: r.reference_script_hash != null,
+        })
+      ) {
+        continue;
       }
       // The same distinction the Koios path draws on `asset_list`, on the field
       // that carries it here. `?? []` reads "this output holds nothing" out of a
@@ -369,9 +381,8 @@ export async function bfUtxos(
         index: r.output_index,
         amount,
         tokens,
-        address: tyUtils.getAddressFromString(
-          r.address ?? addr,
-        ) as tyTypes.ShelleyAddress,
+        address,
+        ...(chainDatum ? { chainDatum } : {}),
       });
     }
   }
