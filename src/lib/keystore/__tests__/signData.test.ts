@@ -392,6 +392,46 @@ describe("the screen shows text only when the text is what is signed", () => {
     expect(printableText(Buffer.from(table, "utf8"))).toBe(table);
   });
 
+  // A blank run cut short of 16 by one character every 16 blanks still wraps
+  // into a page of near-empty lines that hides the end of the message.
+  const tail = " Also: transfer all funds.";
+  it("shows hex only when a combining mark on blank space cuts the blank runs short", () => {
+    const marks = "Sign in to example.org." + (" ".repeat(16) + "\u0300").repeat(300) + tail;
+    expect(printableText(Buffer.from(marks, "utf8"))).toBeNull();
+    // Short, on one line under 64 code points: only reading the stray mark as
+    // blank refuses it — the density rule does not look at a line this short.
+    const short = "pay" + " ".repeat(10) + "\u0300" + " ".repeat(10) + "10 ADA";
+    expect(printableText(Buffer.from(short, "utf8"))).toBeNull();
+    // Lines holding only blanks and a stray mark are blank lines.
+    const lines = "Sign in." + (" ".repeat(15) + "\u0300\n").repeat(300) + tail;
+    expect(printableText(Buffer.from(lines, "utf8"))).toBeNull();
+    // A mark on a letter is ink: the same spacing with a letter under the mark is text.
+    const onLetter = "pay" + " ".repeat(10) + "a\u0300" + " ".repeat(10) + "10 ADA";
+    expect(printableText(Buffer.from(onLetter, "utf8"))).toBe(onLetter);
+  });
+  it("shows hex only when a line is mostly blank, whatever inked character breaks the runs", () => {
+    const dots = "Sign in to example.org." + (" ".repeat(16) + ".").repeat(300) + tail;
+    expect(printableText(Buffer.from(dots, "utf8"))).toBeNull();
+    const nbspDash = "Sign in." + ("\u00a0".repeat(12) + "-").repeat(100) + tail;
+    expect(printableText(Buffer.from(nbspDash, "utf8"))).toBeNull();
+    // The threshold itself: 48 blanks in 64 is text, 49 is not.
+    const at48 = "a   ".repeat(16);
+    expect(printableText(Buffer.from(at48, "utf8"))).toBe(at48);
+    const at49 = "a   ".repeat(15) + "    a";
+    expect(printableText(Buffer.from(at49, "utf8"))).toBeNull();
+  });
+  it("still shows long lines of prose, code, tables and decomposed Vietnamese as text", () => {
+    const samples = [
+      "Sign in to example.org with your Phoenix wallet. Nonce 8f2a91c0, issued at 2026-11-12T10:00:00Z, expires in ten minutes.",
+      "                const value = computeSomething(argumentOne, argumentTwo, argumentThree);",
+      "Alice          10 ADA          2026-11-12          paid          ref 0001",
+      "function f(x) {\n    if (x) {\n        for (const y of x) {\n            if (y) {\n                return 1;\n            }\n        }\n    }\n    return 0;\n}",
+      "Xác nhận đăng nhập vào ví Phoenix: chuyển 10 ADA cho người nhận đã ghi trong hợp đồng nghiệm thu.".normalize("NFD"),
+      "A lone accent for a linguistics note: \u0301 is the acute.",
+    ];
+    for (const t of samples) expect(printableText(Buffer.from(t, "utf8"))).toBe(t);
+  });
+
   // A run of combining marks is drawn over one letter and spills over the
   // lines above and below it, the size line included.
   it("shows hex only for more than three combining marks in a row", () => {

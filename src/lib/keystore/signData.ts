@@ -133,10 +133,19 @@ const hexOfBech32 = (a: string) => addressBytes(a)?.toString("hex") ?? "";
  *    under 16. "Blank" is `INKLESS`: any
  *    `\p{White_Space}` — NBSP and the ideographic space too, not only space
  *    and tab — plus the Braille blank U+2800 and the Hangul fillers, so a
- *    line of U+2800 counts as an empty line. A message that ends after a
- *    page of newlines reads as finished while the part that matters sits below
- *    — the screen also prints the byte and line count, so even what is shown
- *    as text has a size that can be checked.
+ *    line of U+2800 counts as an empty line. A combining mark with no inked
+ *    letter under it (at the start, after a line break or after a blank) is
+ *    blank too, so one accent every 16 spaces does not cut the run short
+ *    (`inkShape`). And a line of 64 code points or more is refused when some
+ *    64 of them in a row are more than 75 % blank, whatever inked character
+ *    breaks the runs — 16 spaces and a dot, repeated, is 94 % (`mostlyBlank`;
+ *    prose is under 20 %, aligned table columns about 60 %, and indentation
+ *    sits in front of short lines, which this does not measure). A message
+ *    that ends after a page of newlines reads as finished while the part that
+ *    matters sits below — the screen also prints the byte count and the number
+ *    of lines the message itself has (its line breaks plus one, not the lines
+ *    the box wraps it into), so even what is shown as text has a size that can
+ *    be checked.
  * 6. **Stacked combining marks**: more than 3 `\p{M}` in a row. A run of
  *    marks is drawn on top of one base letter and spills over the lines above
  *    and below it — over the size line, over other words. Written languages
@@ -173,11 +182,83 @@ export function printableText(bytes: Uint8Array): string | null {
   for (const { segment } of new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text)) {
     if ([...segment].length > MAX_CLUSTER_CODE_POINTS) return null;
   }
-  if (BLANK_LINES.test(text)) return null;
-  if (LONG_INKLESS_RUN.test(text)) return null;
-  const edges = [LEADING_BLANK.exec(text)?.[0] ?? "", TRAILING_BLANK.exec(text)?.[0] ?? ""];
+  // The blank-space rules read the text as ink and no ink: a mark with no
+  // inked letter under it is no ink (see `inkShape`).
+  const shape = inkShape(text);
+  if (BLANK_LINES.test(shape)) return null;
+  if (LONG_INKLESS_RUN.test(shape)) return null;
+  const edges = [LEADING_BLANK.exec(shape)?.[0] ?? "", TRAILING_BLANK.exec(shape)?.[0] ?? ""];
   if (edges.some((w) => w.length > MAX_EDGE_WHITESPACE || w.split("\n").length > 2)) return null;
+  if (mostlyBlank(shape)) return null;
   return text;
+}
+
+/** One combining mark. */
+const MARK = /^\p{M}$/u;
+/** One inkless character (`INKLESS`, defined below). */
+const INKLESS_ONE = (c: string): boolean => INKLESS_ONE_RE.test(c);
+
+/**
+ * The text with every combining mark that sits on no inked letter — at the
+ * start, after a line break, or after an inkless character (directly or
+ * through other marks) — replaced by a space.
+ *
+ * Such a mark is drawn as a lone accent over blank space, which a reader does
+ * not see as text. Left as ink, one of them every 16 blanks cut every blank run
+ * short of the limit: `"Sign in." + (16 spaces + U+0300) × 300 + " Also:
+ * transfer all funds."` was shown as text with its end some 1 500 px down.
+ * A mark on a letter keeps the letter's ink, so Vietnamese in decomposed form
+ * is unchanged.
+ */
+function inkShape(text: string): string {
+  let out = "";
+  let onBlank = true;
+  for (const c of text) {
+    if (MARK.test(c)) {
+      out += onBlank ? " " : c;
+      continue;
+    }
+    onBlank = c === "\n" || INKLESS_ONE(c);
+    out += c;
+  }
+  return out;
+}
+
+/** Width of the window `mostlyBlank` slides along a line, in code points. */
+const DENSITY_WINDOW = 64;
+/** Most blanks a window may hold: 48 of 64, i.e. 75 %. */
+const MAX_BLANKS_PER_WINDOW = (DENSITY_WINDOW * 3) / 4;
+
+/**
+ * Whether some 64 code points in a row on one line are more than 75 % blank.
+ *
+ * The run rule alone counts blanks *in a row*, so a single inked character
+ * every 16 blanks — a dot, say — resets it, and 300 of those wrap into a page
+ * of near-empty lines that pushes the end of the message out of sight. Density
+ * catches that whatever the inked character is: 16 blanks and a dot is 94 %.
+ *
+ * Measured per line, and only on lines of at least 64 code points. Whitespace
+ * after a line break cannot wrap a short line into more lines, and the place a
+ * reader's text is most blank by nature — indentation in front of short lines
+ * of code, closing braces nested four deep — is exactly short lines: measured
+ * across line breaks, five closing braces at four-space steps are 80 % blank,
+ * past any threshold an attack would be held under. Ordinary prose is under
+ * 20 % blank, a table with aligned columns about 60 %, so 75 % leaves room on
+ * both sides. Many short blank-looking lines are the job of the blank-line
+ * rule, and a column of lines each holding one dot is ink a reader can see.
+ */
+function mostlyBlank(shape: string): boolean {
+  for (const line of shape.split("\n")) {
+    const cps = [...line];
+    if (cps.length < DENSITY_WINDOW) continue;
+    let blanks = 0;
+    for (let i = 0; i < cps.length; i++) {
+      if (INKLESS_ONE(cps[i])) blanks += 1;
+      if (i >= DENSITY_WINDOW && INKLESS_ONE(cps[i - DENSITY_WINDOW])) blanks -= 1;
+      if (i >= DENSITY_WINDOW - 1 && blanks > MAX_BLANKS_PER_WINDOW) return true;
+    }
+  }
+  return false;
 }
 
 /** Default-ignorable code points: Unicode's "draw as nothing" set. */
@@ -195,6 +276,7 @@ const EMOJI_PRESENTATION = /(\p{Extended_Pictographic})[\ufe0e\ufe0f]/gu;
  * refuse them first — so the newline is the only line break counted here.
  */
 const INKLESS = String.raw`(?:(?!\n)[\p{White_Space}\u2800\u115f\u1160\u3164\uffa0])`;
+const INKLESS_ONE_RE = new RegExp(String.raw`^${INKLESS}$`, "u");
 /** Three blank lines in a row: four line breaks with only inkless characters between them. */
 const BLANK_LINES = new RegExp(String.raw`\n${INKLESS}*\n${INKLESS}*\n${INKLESS}*\n`, "u");
 /** The inkless run, newlines included, at the start and at the end of the text. */
