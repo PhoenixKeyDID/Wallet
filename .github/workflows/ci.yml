@@ -56,6 +56,20 @@ jobs:
       # Actions are pinned to a commit, not a tag: a tag can be moved to point at
       # different code after it was reviewed, a commit hash cannot.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The default writes this run's token into `.git/config`, where it
+          # stays for every later step — and on the persistent runner, for
+          # whatever runs next in that workspace. Nothing here pushes.
+          persist-credentials: false
+
+      # `vitest` and every `check:*` script run under `node`. Without this the
+      # hosted VM ran whatever Node its image shipped that week, and the
+      # self-hosted runner whatever was first on its PATH — two runs of one
+      # commit on two different runtimes. This is the version the suite is
+      # run with locally; bump it in a reviewed diff.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.11.0
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
