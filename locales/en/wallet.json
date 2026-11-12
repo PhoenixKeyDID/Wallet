@@ -429,7 +429,6 @@
   "cip30_sign_data_message_hex": "Message (not readable text — shown as hex)",
   "cip30_sign_data_cta": "Sign message",
   "cip30_sign_data_not_mine": "This wallet holds no key for that address, so it cannot sign with it.",
-  "cip30_bad_request": "What the site sent could not be read.",
   "addr_unwatched_title": "Your wallet did not list this address",
   "addr_unwatched_body": "The key is yours, but the connected wallet did not name this address among the ones it watches. Money sent here can fail to appear in your balance and can be unspendable from this wallet — the funds are not lost, since the key derives them, but getting them back may need another wallet. Receive-only (enterprise) addresses and high indexes are the usual reasons. Unless you know why you need this one, use “Show my address” above.",
   "hist_source_note": "Read from a public chain indexer. Good for looking back at what you did; not proof that a payment arrived.",

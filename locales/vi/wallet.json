@@ -429,7 +429,6 @@
   "cip30_sign_data_message_hex": "Thông điệp (không phải chữ đọc được — hiện dạng hex)",
   "cip30_sign_data_cta": "Ký thông điệp",
   "cip30_sign_data_not_mine": "Ví không giữ khoá của địa chỉ đó nên không ký bằng nó được.",
-  "cip30_bad_request": "Không đọc được yêu cầu trang web gửi.",
   "addr_unwatched_title": "Ví của bạn không kể tên địa chỉ này",
   "addr_unwatched_body": "Khoá đúng là của bạn, nhưng ví đang kết nối không kể địa chỉ này trong số các địa chỉ nó theo dõi. Tiền gửi vào đây có thể không hiện trong số dư và có thể không tiêu được từ ví này — tiền không mất, vì khoá vẫn sinh ra được nó, nhưng muốn lấy lại có khi phải dùng ví khác. Thường là do địa chỉ chỉ-nhận (enterprise) hoặc chỉ số quá cao. Nếu không có lý do rõ ràng, hãy dùng “Hiện địa chỉ của tôi” ở trên.",
   "hist_source_note": "Đọc từ một dịch vụ tra cứu chuỗi khối công khai. Đủ để xem lại việc mình đã làm; không phải bằng chứng rằng một khoản đã tới.",

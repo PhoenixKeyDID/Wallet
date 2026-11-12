@@ -12,7 +12,8 @@
  *
  * ## What is measured
  *
- * Start at the popup's entry file and follow every relative or `@/` import (the
+ * Start at the entry files of both pages that load `popup.css` — the popup
+ * (`popup.tsx`) and the approval window (`approve.tsx`) — and follow every relative or `@/` import (the
  * same two spellings Vite resolves in `extension/vite.config.ts`). In each file
  * reached, collect the class tokens from
  *   - every `className` / `class` JSX attribute (all string and template pieces
@@ -248,7 +249,10 @@ export function analyze({ entries, css, root = REPO, aliases = [] }) {
 export const MAX_UNREADABLE = 2;
 
 function main() {
-  const entries = [join(REPO, "extension/src/popup.tsx")];
+  // Both pages that load popup.css: the toolbar popup and the approval window
+  // (`approve.tsx` imports the same stylesheet). A class only the approval
+  // window uses is as invisible without a rule as one in the popup.
+  const entries = [join(REPO, "extension/src/popup.tsx"), join(REPO, "extension/src/approve.tsx")];
   const css = join(REPO, "extension/src/popup.css");
   const aliases = [["@/lib/toast", join(REPO, "extension/src/toast.ts")]];
   const r = analyze({ entries, css, aliases });
@@ -258,7 +262,7 @@ function main() {
     process.exit(2);
   }
   console.log(
-    `popup CSS: ${r.files} source files reached from the popup, ${r.used} class tokens, ` +
+    `popup CSS: ${r.files} source files reached from the popup and the approval window, ${r.used} class tokens, ` +
       `${r.exempted.length} exempt (breakpoint variants + markers), ` +
       `${r.dynamic} className expression(s) not readable from source`,
   );
