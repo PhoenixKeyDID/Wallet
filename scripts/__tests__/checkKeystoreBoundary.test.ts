@@ -423,6 +423,71 @@ describe("check:keystore-boundary — a source file it cannot read as text", () 
   });
 });
 
+describe("check:keystore-boundary — read from the syntax tree, not the spelling", () => {
+  // Each of these compiles, esbuild bundles the vault for each, and each printed
+  // OK while the edges were read by patterns over the text: a clause pattern
+  // that knew only ASCII names, and specifiers compared before their escapes
+  // were decoded.
+  const PANEL = "src/components/wallet/LocalWalletPanel.tsx";
+  const CLEAN_PANEL = `import { vault } from "../../lib/keystore/vault";\nexport function LocalWalletPanel() { return vault; }\n`;
+  const refused: [string, string][] = [
+    ["a Vietnamese local name", `import { vault as độDài } from "../lib/keystore/vault";\nexport const n = độDài;`],
+    ["a Cyrillic namespace name", `import * as ключ from "../lib/keystore/vault";\nexport const n = ключ;`],
+    ["a local name spelled with a unicode escape", `import { vault as \\u006d } from "../lib/keystore/vault";\nexport const n = m;`],
+    ["a specifier with its dots as unicode escapes", `import { vault } from "\\u002e\\u002e/lib/keystore/vault";\nexport const n = vault;`],
+    ["a specifier with its slashes as hex escapes", `import { vault } from "..\\x2flib\\x2fkeystore\\x2fvault";\nexport const n = vault;`],
+    ["a dynamic import with an escaped specifier", `export const f = () => import("..\\u002flib/keystore/vault");`],
+    ["a re-export with an escaped specifier", `export * from "../lib/k\\u0065ystore";`],
+    ["an import after JSX text with an apostrophe", `export const A = () => <p>don't</p>;\nexport const f = () => import("../lib/keystore/vault");`],
+    ["a dynamic import of a variable", `export const f = (m: string) => import(m);`],
+    ["a dynamic import of a template that interpolates", `const d = "keystore";\nexport const f = () => import(\`../lib/\${d}/vault\`);`],
+    ["a require of a concatenation", `declare const require: (m: string) => unknown;\nexport const v = require("../lib/" + "keystore");`],
+  ];
+  for (const [name, text] of refused) {
+    it(`refuses ${name}`, () => {
+      const r = check({ "src/components/Panel.tsx": text + "\n" });
+      expect(r.out, r.out).toContain("Keystore boundary FAILED");
+      expect(r.out).toContain("src/components/Panel.tsx:");
+      expect(r.status).toBe(1);
+    });
+  }
+
+  it("reports the line of the statement, not of the comment before it or the name inside it", () => {
+    const r = check({
+      "src/components/Panel.tsx": `export const a = 1;\n/** doc */ import {\n  vault as độDài,\n} from "../lib/keystore/vault";\nexport const n = độDài;\n`,
+    });
+    expect(r.out, r.out).toContain("src/components/Panel.tsx:2 imports");
+    expect(r.status).toBe(1);
+  });
+
+  it("refuses a file it cannot parse, rather than reading nothing in it", () => {
+    const r = check({ "src/components/Panel.tsx": `export const a = (;\n` });
+    expect(r.out, r.out).toContain("src/components/Panel.tsx:1 does not parse");
+    expect(r.status).toBe(1);
+  });
+
+  it("refuses an escaped name the sealed panel may not hand out", () => {
+    const r = check({ [PANEL]: CLEAN_PANEL, "src/components/connect/P.tsx": `import { v\\u0061ult } from "../wallet/LocalWalletPanel";\nexport const x = vault;\n` });
+    expect(r.out, r.out).toContain("takes vault from allowed");
+    expect(r.status).toBe(1);
+  });
+
+  const ok: [string, Record<string, string>][] = [
+    ["the sealed panel imported by its name spelled with an escape", { [PANEL]: CLEAN_PANEL, "src/components/wallet/Hub.tsx": `import { L\\u006fcalWalletPanel as P } from "./LocalWalletPanel";\nexport const h = P;\n` }],
+    ["a non-ASCII name imported from beside the keystore", { "src/components/Panel.tsx": `import { other as khác } from "../lib/other";\nexport const n = khác;\n` }],
+    ["an import of the keystore spelled only in a comment", { "src/components/Panel.tsx": `// import { vault } from "../lib/keystore/vault";\nexport const a = 1;\n` }],
+    ["an import of the keystore spelled only inside a string", { "src/components/Panel.tsx": `export const doc = 'import { vault } from "../lib/keystore/vault"';\n` }],
+    ["a new URL of a variable, which names no module", { "src/components/Panel.tsx": `export const u = (h: string) => new URL(h);\n` }],
+  ];
+  for (const [name, files] of ok) {
+    it(`passes ${name}`, () => {
+      const r = check(files);
+      expect(r.out, r.out).toContain("Keystore boundary OK");
+      expect(r.status).toBe(0);
+    });
+  }
+});
+
 describe("check:keystore-boundary — this repo", () => {
   it("passes", () => {
     const r = spawnSync(process.execPath, [SCRIPT], { encoding: "utf8" });

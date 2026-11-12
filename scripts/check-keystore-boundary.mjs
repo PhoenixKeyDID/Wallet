@@ -18,6 +18,7 @@
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import ts from "typescript";
 
 /**
  * The repo this script lives in, unless a root is passed as the first argument
@@ -102,105 +103,105 @@ const NOT_SOURCE = new Set([".git", "node_modules", "dist-extension", ".claude",
 const EXCLUDED = /^scripts\/__tests__\/[^/]+\.test\.(m|c)?[jt]sx?$/;
 const EXCLUSION_NOTE = "test files matching scripts/__tests__/*.test.* are not read";
 
-/** A gap between tokens: whitespace, a block comment, or a line comment. */
-const GAP = String.raw`(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*)`;
 /**
- * Static `import`/`export … from`, wherever the statement starts.
+ * Every module reference is read from the TypeScript syntax tree.
  *
- * It used to be anchored at the start of a line or after a `;`, and each
- * anchor was a way past it: a block comment before the statement on the same
- * line (`/**\/ import …`) and an empty block (`{} import …`) both printed OK,
- * and both compile. The keyword is now matched anywhere it starts a word.
+ * It used to be a family of regular expressions over the text, and every one of
+ * them knew only the spellings its author thought of. Measured against the last
+ * of them: a clause with a non-ASCII name (`import { MIN_PASSWORD_LENGTH as độDài }`,
+ * `import * as ключ`) did not match the clause pattern, so the import was never
+ * read; a specifier spelled with escapes (`\u002e`, `\x2f`) or a name spelled
+ * with one (`as \u006d`) was compared as raw text, so it resolved nowhere and
+ * printed OK — while tsc and esbuild read all of them and bundled the vault.
+ * The parser decodes what the runtime decodes: a string literal's `.text` is
+ * its value, an identifier's `idText` is its name, and a comment or a string
+ * that merely spells an import is neither.
  *
- * What may sit between the keyword and the specifier is limited to what an
- * import clause is made of — names, `*`, braces, commas, `as`/`from`/`type`,
- * whitespace and comments. The old body was "anything, lazily", which let
- * `export { f };` on one line run on to a quote on a later line, report THAT
- * line, and catch an indented `import()` only by accident.
- */
-/*
- * A clause may also hold string names — `export { vault as "v" }` and
- * `import { "vault" as v }` are valid ES2022, and both stopped the old pattern
- * at the first quote, which it then took for the specifier, so the real one was
- * never read. The specifier is now the string after `from`; a side-effect
- * import, which has no `from`, is `BARE_IMPORT_RE` below.
- */
-const QUOTED = String.raw`"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'`;
-const IMPORT_RE = new RegExp(
-  String.raw`\b(import|export)((?:${GAP}|[\w$*{},]|${QUOTED})*?)\bfrom${GAP}*["'\`]([^"'\`]+)["'\`]`,
-  "g",
-);
-const BARE_IMPORT_RE = new RegExp(String.raw`\bimport${GAP}*["'\`]([^"'\`]+)["'\`]`, "g");
-/**
- * Dynamic `import("…")` and `require("…")`, anywhere, at any indentation.
+ * What is read, wherever it sits in the file:
+ *   • `import … from "…"`, `import "…"`, `export … from "…"` (type-only too);
+ *   • `import x = require("…")` and `import("…")` in a type position;
+ *   • `import("…")` and `require("…")` calls, comments between the tokens
+ *     included (`import(/* @vite-ignore *\/ "…")`);
+ *   • `import.meta.glob(…)` / `globEager(…)`, by property or by element access,
+ *     with one pattern or an array of them;
+ *   • `new URL("…", …)`, `new Worker("…")`, `new SharedWorker("…")` — Vite
+ *     reads the first as an asset or worker entry and bundles the module it
+ *     names, so `new Worker(new URL("../lib/keystore/vault.ts", import.meta.url))`
+ *     put the vault into a chunk while this gate printed OK. A URL with a scheme
+ *     resolves nowhere near the keystore and is left alone.
  *
- * Verified against this gate before it was added: a file containing only
- * `export const CLS = "probe";` and a dynamic import of the keystore's `port`
- * module through the `@/` alias, inside a function, was reported **OK**, as was
- * the same file using `require(...)`. The static pattern, as it stood then,
- * could reach neither — its `^` anchor skipped indented code, and its lazy body
- * stopped at the first quote it met, which in such a file is an unrelated
- * string literal. (The example is described rather than spelled out because
- * this file is now scanned too, and the spelled-out call is exactly what it
- * refuses.)
+ * A dynamic `import()`, `require()` or glob whose argument is not a constant
+ * string — a variable, a template that interpolates, a concatenation — is a
+ * failure: no file list can be derived from it, and "cannot tell" is not OK.
+ * A file the parser rejects is a failure for the same reason.
  *
- * The quotes may be backticks: `` import(`…`) `` with no interpolation is a
- * static specifier to the runtime and an invisible one to a pattern that only
- * read `'` and `"`. A template that interpolates (`…${m}…`) resolves to a path
- * this gate cannot spell, and stays a job for review.
- *
- * An invariant a document asserts and a machine only half-checks is still a
- * wish; it is just a wish that prints OK.
+ * Not `ts.preProcessFile`: its scanner does not know JSX, and an apostrophe in
+ * JSX text sends it into a string that swallows the imports after it.
  *
  * What this still does not stop, stated so nobody mistakes the gate for more
- * than it is: a specifier that is never written literally — `eval("require")(…)`,
- * a path assembled from variables, a re-export laundered through a third module.
- * This is a textual check, so it catches the accident and the shortcut, not the
- * author who is deliberately hiding. That author is what code review is for.
+ * than it is: a specifier that is never a constant in the syntax —
+ * `eval("require")(…)`, `globalThis["imp" + "ort"]`, a path the bundler
+ * rewrites through an alias this gate does not read (Vite `resolve.alias`).
+ * That author is what code review is for.
  */
-const DYNAMIC_RE = new RegExp(String.raw`\b(?:import|require)\s*\(${GAP}*["'\`]([^"'\`]+)["'\`]`, "g");
-// A comment between `(` and the specifier — `import(/* @vite-ignore */ "…")`,
-// the form Vite itself suggests — used to hide the call; `GAP` lets it through.
-
+const unwrap = (n) => {
+  while (
+    n &&
+    (ts.isParenthesizedExpression(n) ||
+      ts.isAsExpression(n) ||
+      ts.isTypeAssertionExpression(n) ||
+      ts.isNonNullExpression(n) ||
+      (ts.isSatisfiesExpression && ts.isSatisfiesExpression(n)))
+  ) {
+    n = n.expression;
+  }
+  return n;
+};
+const isImportMeta = (n) => {
+  n = unwrap(n);
+  return !!n && ts.isMetaProperty(n) && n.keywordToken === ts.SyntaxKind.ImportKeyword && n.name.text === "meta";
+};
+/** The decoded value of a constant string, or null. */
+const constString = (n) => {
+  n = unwrap(n);
+  return n && (ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n)) ? n.text : null;
+};
+/** `import.meta.glob(…)`, `import.meta["glob"](…)`, `(import.meta as any).globEager(…)`. */
+function globCallee(expr) {
+  expr = unwrap(expr);
+  if (ts.isPropertyAccessExpression(expr) && isImportMeta(expr.expression)) return ts.idText(expr.name).startsWith("glob");
+  if (ts.isElementAccessExpression(expr) && isImportMeta(expr.expression)) {
+    const key = constString(expr.argumentExpression);
+    return key === null ? true : key.startsWith("glob");
+  }
+  return false;
+}
+function scriptKind(file) {
+  if (/\.tsx$/.test(file)) return ts.ScriptKind.TSX;
+  if (/\.jsx$/.test(file)) return ts.ScriptKind.JSX;
+  if (/\.(js|mjs|cjs)$/.test(file)) return ts.ScriptKind.JS;
+  return ts.ScriptKind.TS;
+}
+/** An import/export specifier's name: an identifier or a string (`{ "vault" as v }`). */
+const nameText = (n) => (ts.isIdentifier(n) ? ts.idText(n) : n.text);
 /**
- * `import.meta.glob("…")` — Vite's way to import every module a pattern names,
- * eagerly if asked. Measured: `import.meta.glob("../lib/keystore/vault.ts",
- * { eager: true })` inside a function printed OK. The argument may be one
- * pattern or an array of them. Negated patterns (`!…`) only remove files and
- * are skipped.
- *
- * A pattern is matched against the files that exist, the way Vite expands it.
- * It used to be resolved like one specifier, with `*` compared as a path
- * segment — so a pattern whose wildcard sat ABOVE the keystore directory (all
- * of `../lib/`, recursively; or every `vault.ts` one level under it) was not
- * "inside" the keystore, and printed OK while Vite bundled the vault. Each file
- * the pattern matches is now judged like a file imported by name: a keystore
- * file is a failure, a sealed entry is "not a named import", and anything else
- * is read in turn. A call whose pattern is not a literal — a variable, a
- * template that interpolates, an extglob — is a failure, because no file list
- * can be derived from it.
+ * The names a static import or re-export takes, or null when it takes something
+ * a name list cannot describe — `*`, a default, a namespace, nothing at all.
  */
-const GLOB_RE = new RegExp(
-  String.raw`\bimport\.meta\.glob(?:Eager)?(?:${GAP}|<[^>()]*>)*\(${GAP}*(\[[^\]]*\]|["'\`][^"'\`]+["'\`])`,
-  "y",
-);
-/** Every call Vite would expand, whatever its argument looks like. */
-const GLOB_CALL_RE = new RegExp(String.raw`\bimport\.meta\.glob(?:Eager)?(?:${GAP}|<[^>()]*>)*\(`, "g");
-const STRING_RE = /["'`]([^"'`]+)["'`]/g;
-
-/**
- * `new URL("…", import.meta.url)`, and `new Worker("…")` / `new SharedWorker("…")`
- * with a literal path. Vite reads the first as an asset or worker entry and
- * bundles the module it names, so `new Worker(new URL("../lib/keystore/vault.ts",
- * import.meta.url))` — the natural way to move key derivation off the main
- * thread — put the vault into a chunk while this gate printed OK. The path is
- * resolved like any other specifier; a URL with a scheme resolves nowhere near
- * the keystore and is left alone. Comments may sit between the tokens.
- */
-const URL_CTOR_RE = new RegExp(
-  String.raw`\bnew${GAP}+(?:URL|Worker|SharedWorker)${GAP}*\(${GAP}*["'\`]([^"'\`]+)["'\`]`,
-  "g",
-);
+function takenNames(n) {
+  if (ts.isImportDeclaration(n)) {
+    const c = n.importClause;
+    if (!c || c.name || !c.namedBindings || !ts.isNamedImports(c.namedBindings)) return null;
+    const names = c.namedBindings.elements.map((e) => nameText(e.propertyName ?? e.name));
+    return names.length ? names : null;
+  }
+  if (ts.isExportDeclaration(n)) {
+    if (!n.exportClause || !ts.isNamedExports(n.exportClause)) return null;
+    const names = n.exportClause.elements.map((e) => nameText(e.propertyName ?? e.name));
+    return names.length ? names : null;
+  }
+  return null;
+}
 
 /**
  * Where an import specifier lands, decided by resolving it — not by what it
@@ -443,43 +444,64 @@ function assertNoUnscannedSourceRoot() {
 assertNoUnscannedSourceRoot();
 
 /**
- * Specifiers in `text`, as `[spec, offset, clause, kind]`. `clause` is, for a
- * static `import`/`export … from`, the text between the keyword and `from`
- * (`null` for every form that does not name what it takes). `kind` is `"glob"`
- * for an `import.meta.glob` pattern, `"unreadable-glob"` for a glob call whose
- * argument is not a literal (with `spec` null), and `"spec"` otherwise.
+ * Module references in `text`, as `[spec, offset, names, kind]`. `offset` is
+ * where the statement or call starts (its leading comments excluded), so the
+ * line reported is the line of the import. `names` is, for a static
+ * `import`/`export … from`, what it takes (see `takenNames`); `null` for every
+ * other form. `kind` is `"glob"` for an `import.meta.glob` pattern, `"spec"`
+ * for a specifier, and — with `spec` null — `"unreadable-glob"`,
+ * `"unreadable-dynamic"` for an `import()`/`require()` of a non-constant, or
+ * `"unparsable"` (with the parser's message as `names`).
  */
-function* specifiers(text) {
-  IMPORT_RE.lastIndex = 0; // these are /g and shared across files
-  for (const m of text.matchAll(IMPORT_RE)) yield [m[3], m.index, m[1] + m[2], "spec"];
-  for (const re of [BARE_IMPORT_RE, DYNAMIC_RE, URL_CTOR_RE]) {
-    re.lastIndex = 0;
-    for (const m of text.matchAll(re)) yield [m[1], m.index, null, "spec"];
+function* specifiers(text, file) {
+  const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, scriptKind(file));
+  if (sf.parseDiagnostics?.length) {
+    const d = sf.parseDiagnostics[0];
+    yield [null, d.start ?? 0, ts.flattenDiagnosticMessageText(d.messageText, " "), "unparsable"];
+    return;
   }
-  GLOB_CALL_RE.lastIndex = 0;
-  for (const call of text.matchAll(GLOB_CALL_RE)) {
-    GLOB_RE.lastIndex = call.index;
-    const m = GLOB_RE.exec(text);
-    if (!m) {
-      yield [null, call.index, null, "unreadable-glob"];
-      continue;
-    }
-    const arg = m[1];
-    const strings = [...arg.matchAll(STRING_RE)];
-    // An array must hold string literals and nothing else: `[base + "/*.ts"]`
-    // names files no list of literals describes.
-    const rest = arg.startsWith("[")
-      ? arg.slice(1, -1).replace(STRING_RE, "").replace(new RegExp(GAP, "g"), "").replace(/,/g, "")
-      : "";
-    if (rest !== "" || strings.length === 0) {
-      yield [null, call.index, null, "unreadable-glob"];
-      continue;
-    }
-    for (const s of strings) {
-      if (s[0].startsWith("`") && s[1].includes("${")) yield [null, call.index, null, "unreadable-glob"];
-      else if (!s[1].startsWith("!")) yield [s[1], call.index, null, "glob"];
-    }
+  for (const ref of sf.referencedFiles) {
+    yield [ref.fileName.startsWith(".") ? ref.fileName : "./" + ref.fileName, ref.pos, null, "spec"];
   }
+  const found = [];
+  const at = (n) => n.getStart(sf);
+  const visit = (n) => {
+    if ((ts.isImportDeclaration(n) || ts.isExportDeclaration(n)) && n.moduleSpecifier) {
+      const s = constString(n.moduleSpecifier);
+      if (s === null) found.push([null, at(n), null, "unreadable-dynamic"]);
+      else found.push([s, at(n), takenNames(n), "spec"]);
+    } else if (ts.isImportEqualsDeclaration(n) && ts.isExternalModuleReference(n.moduleReference)) {
+      const s = constString(n.moduleReference.expression);
+      found.push(s === null ? [null, at(n), null, "unreadable-dynamic"] : [s, at(n), null, "spec"]);
+    } else if (ts.isImportTypeNode(n)) {
+      const s = ts.isLiteralTypeNode(n.argument) ? constString(n.argument.literal) : null;
+      found.push(s === null ? [null, at(n), null, "unreadable-dynamic"] : [s, at(n), null, "spec"]);
+    } else if (ts.isCallExpression(n)) {
+      const callee = unwrap(n.expression);
+      const dynamic =
+        n.expression.kind === ts.SyntaxKind.ImportKeyword || (ts.isIdentifier(callee) && ts.idText(callee) === "require");
+      if (globCallee(n.expression)) {
+        const arg = n.arguments[0] && unwrap(n.arguments[0]);
+        // An array must hold constant strings and nothing else: `[base + "/*.ts"]`
+        // names files no list of literals describes.
+        const list = arg && ts.isArrayLiteralExpression(arg) ? arg.elements.map(constString) : [arg ? constString(arg) : null];
+        if (!list.length || list.some((s) => s === null)) found.push([null, at(n), null, "unreadable-glob"]);
+        else for (const g of list) if (!g.startsWith("!")) found.push([g, at(n), null, "glob"]);
+      } else if (dynamic) {
+        const s = n.arguments.length ? constString(n.arguments[0]) : null;
+        found.push(s === null ? [null, at(n), null, "unreadable-dynamic"] : [s, at(n), null, "spec"]);
+      }
+    } else if (ts.isNewExpression(n)) {
+      const callee = unwrap(n.expression);
+      const s = n.arguments?.length ? constString(n.arguments[0]) : null;
+      if (s !== null && ts.isIdentifier(callee) && ["URL", "Worker", "SharedWorker"].includes(ts.idText(callee))) {
+        found.push([s, at(n), null, "spec"]);
+      }
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  yield* found;
 }
 
 const noExt = (p) => p.replace(/\.(m|c)?[jt]sx?$/, "");
@@ -505,29 +527,6 @@ function sealedTarget(spec, fromFile) {
     if (s) return s;
   }
   return undefined;
-}
-
-/**
- * The names a static import or re-export clause takes, or null when it takes
- * something a name list cannot describe (`*`, a default, a namespace, nothing).
- * A name may be a string (`import { "LocalWalletPanel" as P }`); it is the
- * same name without its quotes.
- */
-function namedImports(clause) {
-  if (clause === null) return null;
-  const body = clause
-    .replace(new RegExp(String.raw`\/\*[\s\S]*?\*\/|\/\/[^\n]*`, "g"), " ")
-    .replace(/^\s*(?:import|export)\b/, "")
-    .replace(/\bfrom\s*$/, "")
-    .replace(/^\s*type\b/, "")
-    .trim();
-  const m = /^\{([^{}]*)\}$/.exec(body);
-  if (!m) return null;
-  const names = m[1]
-    .split(",")
-    .map((n) => n.trim().replace(/^type\s+/, "").split(/\s+as\s+/)[0].trim().replace(/^(["'])(.*)\1$/, "$2"))
-    .filter(Boolean);
-  return names.length ? names : null;
 }
 
 const SOURCE_RE = /\.(m|c)?[jt]sx?$/;
@@ -759,11 +758,15 @@ while (queue.length) {
   }
   const text = buf.toString("utf8");
   const seen = new Set();
-  for (const [spec, index, clause, kind] of specifiers(text)) {
+  for (const [spec, index, names, kind] of specifiers(text, file)) {
     const at = `${r}:${lineOf(text, index)}${via}`;
     const whys = [];
-    if (kind === "unreadable-glob") {
+    if (kind === "unparsable") {
+      whys.push(`does not parse (${names}), so no import in it can be read`);
+    } else if (kind === "unreadable-glob") {
       whys.push("calls import.meta.glob with a pattern that is not a literal, so the files it loads cannot be listed");
+    } else if (kind === "unreadable-dynamic") {
+      whys.push("imports a module named by something that is not a constant string, so where it lands cannot be resolved");
     } else if (reachesKeystore(spec, file)) whys.push(`imports "${spec}"`);
     else if (kind === "glob") {
       const files = globFiles(spec, file);
@@ -781,7 +784,6 @@ while (queue.length) {
       }
     } else {
       const sealed = sealedTarget(spec, file);
-      const names = sealed && namedImports(clause);
       const extra = sealed && (names === null ? ["(not a named import)"] : names.filter((n) => !sealed[2].has(n)));
       if (sealed && extra.length) {
         const may = sealed[2].size ? `only { ${[...sealed[2]].join(", ")} }` : "nothing";
