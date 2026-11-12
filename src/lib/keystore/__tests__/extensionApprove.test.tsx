@@ -191,11 +191,46 @@ describe("getUtxos / getBalance", () => {
     expect(mocks.fetchUtxos).toHaveBeenCalledWith(0, acct1Addresses);
   });
 
-  it("refuses `amount` with InvalidRequest instead of answering a different question", async () => {
+  it("`amount` the wallet covers answers the coins that cover it; one it cannot answers null", async () => {
     mocks.fetchUtxos.mockResolvedValue(ourInputs());
     const { port } = await unlocked();
-    const res = await ask(port, "u2", "getUtxos", ["1a000f4240", null]);
-    expect(res.result).toMatchObject({ ok: false, error: { code: -1 } });
+    const covered = await ask(port, "u2", "getUtxos", ["1a000f4240", null]); // 1 ADA
+    expect(decodeUtxosToInputs(covered.result!.value as string[]).map((i) => i.index)).toEqual([1]);
+    const short = await ask(port, "u2b", "getUtxos", ["1a00989680", null]); // 10 ADA
+    expect(short.result).toEqual({ ok: true, value: null });
+    const junk = await ask(port, "u2c", "getUtxos", ["zz", null]);
+    expect(junk.result).toMatchObject({ ok: false, error: { code: -1 } });
+  });
+
+  it("`paginate` past the end is a PaginateError carrying maxSize", async () => {
+    mocks.fetchUtxos.mockResolvedValue(ourInputs());
+    const { port } = await unlocked();
+    const first = await ask(port, "p1", "getUtxos", [null, { page: 0, limit: 1 }]);
+    expect((first.result!.value as string[]).length).toBe(1);
+    const past = await ask(port, "p2", "getUtxos", [null, { page: 1, limit: 1 }]);
+    expect(past.result).toMatchObject({ ok: false, error: { maxSize: 1 } });
+    const bad = await ask(port, "p3", "getUtxos", [null, { page: -1, limit: 1 }]);
+    expect(bad.result).toMatchObject({ ok: false, error: { code: -1 } });
+  });
+
+  it("getCollateral offers a pure-ADA coin up to 5 ADA, and refuses to put up more", async () => {
+    mocks.fetchUtxos.mockResolvedValue(ourInputs());
+    const { port } = await unlocked();
+    const res = await ask(port, "c1", "getCollateral", [null]);
+    expect(decodeUtxosToInputs(res.result!.value as string[]).map((i) => i.index)).toEqual([1]);
+    const over = await ask(port, "c2", "getCollateral", [{ amount: "1a005b8d80" }]); // 6 ADA
+    expect(over.result).toMatchObject({ ok: false, error: { code: -1 } });
+  });
+
+  it("getCollateral answers null when every coin carries tokens", async () => {
+    const withToken = ourInputs().map((i) => ({
+      ...i,
+      tokens: [{ policyId: "ab".repeat(28), assetName: "", amount: new BigNumber(1) }],
+    }));
+    mocks.fetchUtxos.mockResolvedValue(withToken);
+    const { port } = await unlocked();
+    const res = await ask(port, "c3", "getCollateral", []);
+    expect(res.result).toEqual({ ok: true, value: null });
   });
 
   it("a failed indexer read is an InternalError, not an empty wallet", async () => {

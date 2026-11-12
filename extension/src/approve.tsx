@@ -41,6 +41,15 @@ import { summariseTx, UndescribableTxError, type TxSummary } from "../../src/lib
 import { signForeignTx } from "../../src/lib/keystore/signForeign";
 import { planDataSign, signDataCip8, DATA_SIGN_CODE, type DataSignPlan } from "../../src/lib/keystore/signData";
 import { encodeBalanceHex, encodeInputsAsUtxosHex } from "../../src/lib/cardano/utxoCbor";
+import {
+  COLLATERAL_CAP_LOVELACE,
+  Cip30ArgumentError,
+  decodeValueHex,
+  pageOf,
+  readPaginate,
+  selectCollateral,
+  selectForAmount,
+} from "../../src/lib/cardano/utxoSelect";
 import { submitTx } from "../../src/lib/cardano/provider";
 import type { WalletPort } from "../../src/lib/cardano/walletPort";
 import { TxSummaryView } from "./TxSummaryView";
@@ -52,6 +61,7 @@ import {
   internal,
   proofFailed,
   invalid,
+  paginateError,
   dataSignError,
   sendFailed,
   sendRefused,
@@ -95,17 +105,23 @@ export async function serveRead(
         // limitation, not ours, and answering anything else would be a
         // number no dApp knows how to read.
         return { ok: true, value: acct.network === 1 ? 1 : 0 };
-      case "getUtxos":
-        // `amount` asks the wallet to do coin selection for the page, and
-        // `paginate` asks for a page of a list whose order CIP-30 does not
-        // pin. This wallet does neither yet, and answering the full list
-        // anyway would be answering a different question than the one asked
-        // — a dApp that passed `amount` reads a non-null answer as "this
-        // covers it". So either is a refusal, by code, never a guess.
-        if (!absent(params[0]) || !absent(params[1])) {
-          return { ok: false, error: invalid(t("cip30_utxos_args_unsupported")) };
+      case "getUtxos": {
+        // `amount` asks for coins that cover it, and the answer to "I cannot"
+        // is `null` — CIP-30's, and the only one a dApp reads correctly. The
+        // full list in its place would read as "this covers it".
+        let list = await wp.getInputs();
+        if (!absent(params[0])) {
+          const picked = selectForAmount(list, decodeValueHex(params[0]));
+          if (!picked) return { ok: true, value: null };
+          list = picked;
         }
-        return { ok: true, value: encodeInputsAsUtxosHex(await wp.getInputs()) };
+        if (!absent(params[1])) {
+          const paged = pageOf(list, readPaginate(params[1]));
+          if ("maxSize" in paged) return { ok: false, error: paginateError(paged.maxSize) };
+          list = paged.page;
+        }
+        return { ok: true, value: encodeInputsAsUtxosHex(list) };
+      }
       case "getBalance":
         return { ok: true, value: encodeBalanceHex(await wp.getInputs()) };
       case "getUsedAddresses":
@@ -124,15 +140,28 @@ export async function serveRead(
         return { ok: true, value: [await wp.getRewardAddressHex()] };
       case "getExtensions":
         return { ok: true, value: [] };
-      case "getCollateral":
-        // Answering `[]` would read as "this wallet has no collateral",
-        // which a dApp treats as a fact and builds around. It is not a
-        // fact — this wallet does not choose collateral at all yet.
-        return { ok: false, error: refused(t("cip30_no_collateral")) };
+      case "getCollateral": {
+        // Pure-ADA coins only, capped at 5 ADA: collateral that is taken takes
+        // the whole input, so a site must not be able to put tokens or a large
+        // coin at stake by asking. What the site does with the answer still
+        // passes the signing gate, which accepts collateral only from this
+        // wallet and only when the review screen shows it as money at risk.
+        const req = params[0] as { amount?: unknown } | null | undefined;
+        let target = COLLATERAL_CAP_LOVELACE;
+        if (!absent(req) && !absent(req?.amount)) {
+          const want = decodeValueHex(req!.amount);
+          if (want.assets.size > 0) return { ok: false, error: invalid(t("cip30_collateral_ada_only")) };
+          if (want.lovelace > COLLATERAL_CAP_LOVELACE) return { ok: false, error: invalid(t("cip30_collateral_over_cap")) };
+          target = want.lovelace;
+        }
+        const picked = selectCollateral(await wp.getInputs(), target);
+        return { ok: true, value: picked ? encodeInputsAsUtxosHex(picked) : null };
+      }
       default:
         return { ok: false, error: refused(t("cip30_unsupported")) };
     }
   } catch (e) {
+    if (e instanceof Cip30ArgumentError) return { ok: false, error: invalid(e.message) };
     return { ok: false, error: internal(e instanceof Error ? e.message : String(e)) };
   }
 }

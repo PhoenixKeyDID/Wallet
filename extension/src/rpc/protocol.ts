@@ -125,7 +125,13 @@ export type Response =
   | { channel: typeof CHANNEL; kind: "res"; id: string; ok: false; error: ApiError };
 
 /** CIP-30's error shape. `code` is the number the spec defines; `info` is prose. */
-export type ApiError = { code: number; info: string };
+/**
+ * An error as it crosses the wire. `maxSize` is present only on a CIP-30
+ * `PaginateError` — the one error in the standard identified by a field rather
+ * than a code; it also carries `InvalidRequest` so a dApp reading `code` alone
+ * still sees a refusal, not success.
+ */
+export type ApiError = { code: number; info: string; maxSize?: number };
 
 /** CIP-30 `APIError` codes. */
 export const API_ERROR = {
@@ -147,6 +153,12 @@ export const DATA_SIGN_ERROR = { ProofGeneration: 1, AddressNotPK: 2, UserDeclin
 export const refused = (info: string): ApiError => ({ code: API_ERROR.Refused, info });
 export const invalid = (info: string): ApiError => ({ code: API_ERROR.InvalidRequest, info });
 export const internal = (info: string): ApiError => ({ code: API_ERROR.InternalError, info });
+/** CIP-30 `PaginateError`: the page asked for is past the end; `maxSize` is how many pages exist. */
+export const paginateError = (maxSize: number): ApiError => ({
+  code: API_ERROR.InvalidRequest,
+  info: "page out of range",
+  maxSize,
+});
 export const declined = (info: string): ApiError => ({ code: TX_SIGN_ERROR.UserDeclined, info });
 /** `signTx` was approved but no witness could be produced — `TxSignError.ProofGeneration`. */
 export const proofFailed = (info: string): ApiError => ({ code: TX_SIGN_ERROR.ProofGeneration, info });
