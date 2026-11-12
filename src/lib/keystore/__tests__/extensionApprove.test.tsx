@@ -228,6 +228,14 @@ describe("getUtxos / getBalance", () => {
     expect(over.result).toMatchObject({ ok: false, error: { code: -1 } });
   });
 
+  it("getCollateral with no amount offers a 3 ADA coin, not only exactly 5 ADA", async () => {
+    mocks.fetchUtxos.mockResolvedValue(ourInputs().map((i) => ({ ...i, amount: new BigNumber("3000000") })));
+    const { port } = await unlocked();
+    const res = await ask(port, "c4", "getCollateral", []);
+    expect(res.result!.value).not.toBeNull();
+    expect(decodeUtxosToInputs(res.result!.value as string[]).map((i) => i.index)).toEqual([1]);
+  });
+
   it("getCollateral answers null when every coin carries tokens", async () => {
     const withToken = ourInputs().map((i) => ({
       ...i,

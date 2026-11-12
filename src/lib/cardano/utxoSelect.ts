@@ -161,8 +161,16 @@ export const COLLATERAL_SEARCH_POOL = 40;
  * that answers a 5 ADA request with that coin has put 1000 ADA at stake. An
  * input carrying tokens is never offered for the same reason: a site asking for
  * 5 ADA of collateral must not be able to put someone's tokens at stake with it.
+ *
+ * With no `target` (a `getCollateral()` call without `amount`), the site has
+ * not said how much it needs, so the wallet offers the most it is willing to:
+ * the pure-ADA set with the LARGEST total that stays within the cap, then the
+ * fewest coins, then the lowest `txid#index` list — and only when that total
+ * reaches `COLLATERAL_FLOOR_LOVELACE`. Using the cap as the target instead
+ * answered only a wallet whose coins summed to exactly 5 ADA.
  */
-export function selectCollateral(inputs: tyTypes.Input[], target: bigint): tyTypes.Input[] | null {
+export function selectCollateral(inputs: tyTypes.Input[], target?: bigint): tyTypes.Input[] | null {
+  if (target === undefined) return selectLargestCollateral(inputs);
   if (target > COLLATERAL_CAP_LOVELACE) return null;
   const byAscThenRef = (a: tyTypes.Input, b: tyTypes.Input) => {
     const d = lovelaceOf(a) - lovelaceOf(b);
@@ -206,4 +214,47 @@ export function selectCollateral(inputs: tyTypes.Input[], target: bigint): tyTyp
     }
   }
   return best ? (best as { coins: tyTypes.Input[] }).coins : null;
+}
+
+/** Below this, a no-amount `getCollateral()` answers `null`: too little to cover a script's collateral. */
+export const COLLATERAL_FLOOR_LOVELACE = BigInt(1_000_000);
+
+/** `selectCollateral` without a target: the largest pure-ADA total within the cap, from 1 ADA. */
+function selectLargestCollateral(inputs: tyTypes.Input[]): tyTypes.Input[] | null {
+  const byAscThenRef = (a: tyTypes.Input, b: tyTypes.Input) => {
+    const d = lovelaceOf(a) - lovelaceOf(b);
+    return d > ZERO ? 1 : d < ZERO ? -1 : refOf(a) < refOf(b) ? -1 : refOf(a) > refOf(b) ? 1 : 0;
+  };
+  const pure = inputs
+    .filter((i) => (i.tokens ?? []).length === 0 && lovelaceOf(i) <= COLLATERAL_CAP_LOVELACE)
+    .sort(byAscThenRef);
+  // Combinations come from the largest coins: they are the ones that get a
+  // total closest to the cap. Single coins are all considered.
+  const pool = pure.length > COLLATERAL_SEARCH_POOL ? pure.slice(pure.length - COLLATERAL_SEARCH_POOL) : pure;
+
+  let best: { sum: bigint; coins: tyTypes.Input[] } | null = null;
+  const consider = (coins: tyTypes.Input[]) => {
+    const sum = coins.reduce((s, i) => s + lovelaceOf(i), ZERO);
+    if (sum > COLLATERAL_CAP_LOVELACE) return;
+    if (best) {
+      if (sum < best.sum) return;
+      if (sum === best.sum) {
+        if (coins.length > best.coins.length) return;
+        if (coins.length === best.coins.length && coins.map(refOf).join(",") >= best.coins.map(refOf).join(",")) {
+          return;
+        }
+      }
+    }
+    best = { sum, coins };
+  };
+  for (const coin of pure) consider([coin]);
+  for (let a = 0; a < pool.length; a++) {
+    for (let b = a + 1; b < pool.length; b++) {
+      consider([pool[a]!, pool[b]!]);
+      if (MAX_COLLATERAL_INPUTS < 3) continue;
+      for (let c = b + 1; c < pool.length; c++) consider([pool[a]!, pool[b]!, pool[c]!]);
+    }
+  }
+  const found = best as { sum: bigint; coins: tyTypes.Input[] } | null;
+  return found && found.sum >= COLLATERAL_FLOOR_LOVELACE ? found.coins : null;
 }

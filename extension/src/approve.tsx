@@ -147,7 +147,8 @@ export async function serveRead(
         // passes the signing gate, which accepts collateral only from this
         // wallet and only when the review screen shows it as money at risk.
         const req = params[0] as { amount?: unknown } | null | undefined;
-        let target = COLLATERAL_CAP_LOVELACE;
+        // No amount: the largest pure-ADA set within the cap (see selectCollateral).
+        let target: bigint | undefined;
         if (!absent(req) && !absent(req?.amount)) {
           const want = decodeValueHex(req!.amount);
           if (want.assets.size > 0) return { ok: false, error: invalid(t("cip30_collateral_ada_only")) };

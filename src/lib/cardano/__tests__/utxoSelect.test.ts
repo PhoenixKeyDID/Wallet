@@ -121,3 +121,31 @@ describe("selectCollateral", () => {
     expect(got!.map((i) => i.index).sort()).toEqual([0, 1]);
   });
 });
+
+describe("selectCollateral without a target (getCollateral() with no amount)", () => {
+  const pick = (coins: tyTypes.Input[]) => selectCollateral(coins)?.map((i) => i.index).sort() ?? null;
+  it("offers a single 3 ADA or 4 ADA coin — not only a wallet summing to exactly 5 ADA", () => {
+    expect(pick([input(0, 3)])).toEqual([0]);
+    expect(pick([input(0, 4)])).toEqual([0]);
+  });
+  it("offers nothing from a 10 ADA or a 100 ADA coin: over the cap", () => {
+    expect(pick([input(0, 10)])).toBeNull();
+    expect(pick([input(0, 100)])).toBeNull();
+  });
+  it("takes the largest total within the cap: 2 + 3 ADA together", () => {
+    expect(pick([input(0, 2), input(1, 3)])).toEqual([0, 1]);
+    expect(pick([input(0, 3), input(1, 4), input(2, 10), input(3, 100)])).toEqual([1]);
+  });
+  it("on an equal total, fewer coins win", () => {
+    expect(pick([input(0, 2.5), input(1, 2.5), input(2, 5)])).toEqual([2]);
+  });
+  it("offers nothing below 1 ADA", () => {
+    expect(pick([input(0, 0.5)])).toBeNull();
+    expect(pick([input(0, 0.4), input(1, 0.5)])).toBeNull();
+    expect(pick([input(0, 1)])).toEqual([0]);
+  });
+  it("never offers a coin carrying tokens, and uses at most three coins", () => {
+    expect(pick([input(0, 3, [[POLICY, "", 1]])])).toBeNull();
+    expect(pick([input(0, 1), input(1, 1), input(2, 1), input(3, 1), input(4, 1)])).toHaveLength(3);
+  });
+});
