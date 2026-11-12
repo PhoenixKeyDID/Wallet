@@ -14,7 +14,7 @@ import { createPublicKey, verify as edVerify } from "node:crypto";
 import { Decoder, Encoder } from "@stricahq/cbors";
 import { utils as tyUtils, types as tyTypes } from "@stricahq/typhonjs";
 import { accountFromEntropy, type Account } from "../derive";
-import { signForeignTx } from "../signForeign";
+import { signForeignTx, type WalletView } from "../signForeign";
 import { summariseTx, UndescribableTxError } from "../../cardano/txSummary";
 import { blake2b224, blake2b256 } from "../../cardano/hash";
 import {
@@ -34,13 +34,13 @@ let account: Account;
 let walletHex: string;
 let ownAddrs: string[];
 let held: Map<string, { lovelace: bigint; assets: Map<string, bigint> }>;
-let addrByRef: Map<string, string>;
+let view: WalletView;
 
 const addrHex = (bech32: string) => (tyUtils.getAddressFromString(bech32) as tyTypes.ShelleyAddress).getHex();
 const claim = (extra?: Partial<ClaimOpts>) =>
   dripClaimTxHex({ walletAddressHex: walletHex, feeInput: FEE_IN, collateralInput: COLL_IN, network: NETWORK, ...extra });
 const summary = (hex: string) => summariseTx(hex, ownAddrs, held, NETWORK);
-const sign = (hex: string) => signForeignTx(hex, account, addrByRef, true);
+const sign = (hex: string) => signForeignTx(hex, account, view, true);
 
 beforeAll(async () => {
   account = await accountFromEntropy(Uint8Array.from(Buffer.alloc(32, 9)), 0, NETWORK);
@@ -50,10 +50,13 @@ beforeAll(async () => {
     [`${FEE_IN.txId}#${FEE_IN.index}`, { lovelace: BigInt(5_000_000), assets: new Map() }],
     [`${COLL_IN.txId}#${COLL_IN.index}`, { lovelace: COLL_IN.lovelace, assets: new Map() }],
   ]);
-  addrByRef = new Map([
-    [`${FEE_IN.txId}#${FEE_IN.index}`, account.external[0]!.address],
-    [`${COLL_IN.txId}#${COLL_IN.index}`, account.external[1]!.address],
-  ]);
+  view = {
+    ownAddressesHex: ownAddrs,
+    held: new Map([
+      [`${FEE_IN.txId}#${FEE_IN.index}`, { address: account.external[0]!.address, ...held.get(`${FEE_IN.txId}#${FEE_IN.index}`)! }],
+      [`${COLL_IN.txId}#${COLL_IN.index}`, { address: account.external[1]!.address, ...held.get(`${COLL_IN.txId}#${COLL_IN.index}`)! }],
+    ]),
+  };
 });
 
 /** Ed25519 verify through OpenSSL — a different implementation from the signer. */
@@ -112,7 +115,7 @@ describe("drip-pot claim: what the key holder signs", () => {
   });
 
   it("without partialSign still signs, because every key it needs is the wallet's", () => {
-    expect(() => signForeignTx(claim(), account, addrByRef, false)).not.toThrow();
+    expect(() => signForeignTx(claim(), account, view, false)).not.toThrow();
   });
 });
 
@@ -183,6 +186,53 @@ describe("drip-pot claim with one thing added: both layers refuse", () => {
       signer: /sign_foreign_declared_invalid/,
       screen: /declares that its own script fails/,
     },
+    // The rest are refused by the signer only because it runs the screen's own
+    // `summariseTx` (`sign_foreign_undescribable`). Before that, each of these
+    // got a witness from `signForeignTx` called directly.
+    {
+      name: "field 22: a treasury donation",
+      opts: { extra: (b) => b.set(22, BigInt(50_000_000)) },
+      signer: /sign_foreign_undescribable: .*field 22/,
+      screen: /field 22/,
+    },
+    {
+      name: "field 21: the current treasury value",
+      opts: { extra: (b) => b.set(21, BigInt(1)) },
+      signer: /sign_foreign_undescribable: .*field 21/,
+      screen: /field 21/,
+    },
+    {
+      name: "field 20: a governance proposal",
+      opts: { extra: (b) => b.set(20, []) },
+      signer: /sign_foreign_undescribable: .*field 20/,
+      screen: /field 20/,
+    },
+    {
+      name: "a collateral return to someone else (all the collateral is lost if the script fails)",
+      opts: {
+        extra: (b) =>
+          b.set(
+            16,
+            new Map<number, unknown>([[0, Buffer.concat([Buffer.from([0x60]), Buffer.alloc(28, 0xab)])], [1, BigInt(3_500_000)]]),
+          ),
+      },
+      signer: /sign_foreign_undescribable: .*collateral return to an address that is not this wallet/,
+      screen: /collateral return to an address that is not this wallet/,
+    },
+    {
+      name: "a declared collateral total that disagrees with collateral minus return",
+      opts: { extra: (b) => b.set(17, BigInt(1_000_000)) },
+      signer: /sign_foreign_undescribable: .*collateral total/,
+      screen: /collateral total/,
+    },
+    {
+      name: "the wallet's fee input named twice (array form)",
+      opts: {
+        extra: (b) => b.set(0, [...(b.get(0) as unknown[]), [Buffer.from(FEE_IN.txId, "hex"), FEE_IN.index]]),
+      },
+      signer: /sign_foreign_undescribable: .*same input twice/,
+      screen: /same input twice/,
+    },
   ];
 
   it.each(cases)("$name", ({ opts, signer, screen }) => {
@@ -196,11 +246,5 @@ describe("drip-pot claim with one thing added: both layers refuse", () => {
     }
     expect(err).toBeInstanceOf(UndescribableTxError);
     expect((err as Error).message).toMatch(screen);
-  });
-
-  it("a collateral return to someone else: the screen refuses (the signer leaves it to the screen)", () => {
-    const other = Buffer.concat([Buffer.from([0x60]), Buffer.alloc(28, 0xab)]);
-    const hex = claim({ extra: (b) => b.set(16, new Map<number, unknown>([[0, other], [1, BigInt(3_500_000)]])) });
-    expect(() => summary(hex)).toThrow(/collateral return to an address that is not this wallet/);
   });
 });

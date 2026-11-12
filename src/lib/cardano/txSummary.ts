@@ -318,7 +318,7 @@ const KNOWN_BODY_KEYS = new Set([
 function readCollateral(
   b: Map<number, unknown>,
   own: Set<string>,
-  ownInputs: Map<string, { lovelace: bigint; assets: Map<string, bigint> }>,
+  ownInputs: ReadonlyMap<string, { lovelace: bigint; assets: Map<string, bigint> }>,
   networkId: 0 | 1,
 ): CollateralRisk | null {
   const raw = b.get(13);
@@ -411,7 +411,7 @@ function readBurns(raw: unknown): NetChange[] {
 export function summariseTx(
   txCborHex: string,
   ownAddressesHex: Iterable<string>,
-  ownInputs: Map<string, { lovelace: bigint; assets: Map<string, bigint> }>,
+  ownInputs: ReadonlyMap<string, { lovelace: bigint; assets: Map<string, bigint> }>,
   networkId: 0 | 1,
 ): TxSummary {
   let decoded: unknown;
@@ -470,9 +470,16 @@ export function summariseTx(
   let spentLovelace = BigInt(0);
   const spentAssets = new Map<string, bigint>();
   let mineCount = 0;
+  // The same input twice is refused, as it is for collateral. The ledger
+  // spends a UTxO once, but a body in array form can list it twice, and every
+  // line below would count this wallet's coin twice — reporting a cost the
+  // transaction does not have, which is the wrong number the person agrees to.
+  const seenInputs = new Set<string>();
   for (const i of inputList) {
     if (!Array.isArray(i) || i.length < 2) bad("an input has an unexpected shape");
     const ref = `${Buffer.from(i[0] as Buffer).toString("hex")}#${Number(i[1])}`;
+    if (seenInputs.has(ref)) bad("this transaction names the same input twice");
+    seenInputs.add(ref);
     const held = ownInputs.get(ref);
     if (!held) continue; // someone else's input; it costs this wallet nothing
     mineCount += 1;

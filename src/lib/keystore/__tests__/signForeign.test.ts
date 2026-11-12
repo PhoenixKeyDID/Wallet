@@ -20,7 +20,7 @@ import { Decoder, Encoder } from "@stricahq/cbors";
 import { utils as tyUtils, types as tyTypes } from "@stricahq/typhonjs";
 import { accountFromEntropy, type Account } from "../derive";
 import { LocalSignError } from "../signer";
-import { requiredKeysFor, signForeignTx } from "../signForeign";
+import { requiredKeysFor, signForeignTx, walletViewFrom, type WalletView } from "../signForeign";
 import { buildMultiSend, buildSendOutputs } from "../../cardano/send";
 import { baseAddress, type PhoenixNetwork } from "../../cardano/address";
 
@@ -45,6 +45,8 @@ const shelley = (b: string) => tyUtils.getAddressFromString(b) as tyTypes.Shelle
 const TXID = "77".repeat(32);
 
 let account: Account;
+/** A wallet holding nothing: every input is somebody else's. */
+const NO_VIEW: WalletView = { ownAddressesHex: [], held: new Map() };
 
 async function fixture(outputs = 1) {
   account ??= await accountFromEntropy(ENTROPY, 0, NETWORK);
@@ -66,14 +68,17 @@ async function fixture(outputs = 1) {
     protocolParams: PROTOCOL_PARAMS,
     ttl: 50_000_000,
   });
-  const addressByRef = new Map([[`${TXID}#0`, from]]);
-  return { account, built, addressByRef };
+  const view = walletViewFrom(
+    inputs as unknown as Parameters<typeof walletViewFrom>[0],
+    [...account.external, ...account.internal].map((d) => shelley(d.address).getHex()),
+  );
+  return { account, built, view };
 }
 
 describe("requiredKeysFor — the body hash", () => {
   it("finds the same body hash typhon computed while building", async () => {
-    const { account: acct, built, addressByRef } = await fixture();
-    const { bodyHashHex } = requiredKeysFor(built.unsignedCbor, acct, addressByRef);
+    const { account: acct, built, view } = await fixture();
+    const { bodyHashHex } = requiredKeysFor(built.unsignedCbor, acct, view);
     // `built.hash` is the transaction id: blake2b-256 of the body as serialised.
     // Equality here is what proves the byte range was found exactly.
     expect(bodyHashHex).toBe(built.hash);
@@ -83,28 +88,28 @@ describe("requiredKeysFor — the body hash", () => {
     // A one-byte CBOR length prefix becomes two bytes past a threshold, so a
     // search that happened to work on one size can fail on another.
     for (const n of [1, 2, 5, 12]) {
-      const { account: acct, built, addressByRef } = await fixture(n);
-      expect(requiredKeysFor(built.unsignedCbor, acct, addressByRef).bodyHashHex).toBe(built.hash);
+      const { account: acct, built, view } = await fixture(n);
+      expect(requiredKeysFor(built.unsignedCbor, acct, view).bodyHashHex).toBe(built.hash);
     }
   });
 
   it("names the payment key of every input the wallet recognises", async () => {
-    const { account: acct, built, addressByRef } = await fixture();
-    const { keyHashes } = requiredKeysFor(built.unsignedCbor, acct, addressByRef);
+    const { account: acct, built, view } = await fixture();
+    const { keyHashes } = requiredKeysFor(built.unsignedCbor, acct, view);
     expect(keyHashes).toHaveLength(1);
     expect(acct.keyByHash.has(keyHashes[0]!)).toBe(true);
   });
 
   it("names no key for an input the wallet does not recognise", async () => {
     const { account: acct, built } = await fixture();
-    expect(requiredKeysFor(built.unsignedCbor, acct, new Map()).keyHashes).toEqual([]);
+    expect(requiredKeysFor(built.unsignedCbor, acct, NO_VIEW).keyHashes).toEqual([]);
   });
 });
 
 describe("signForeignTx — what it returns", () => {
   it("returns a witness set, not a transaction", async () => {
-    const { account: acct, built, addressByRef } = await fixture();
-    const hex = signForeignTx(built.unsignedCbor, acct, addressByRef, false);
+    const { account: acct, built, view } = await fixture();
+    const hex = signForeignTx(built.unsignedCbor, acct, view, false);
     const decoded = Decoder.decode(Buffer.from(hex, "hex")).value;
     // CIP-30 says signTx answers with the witness set alone. Returning the whole
     // transaction makes every dApp that merges the answer produce a malformed one.
@@ -114,14 +119,14 @@ describe("signForeignTx — what it returns", () => {
   });
 
   it("produces a signature that verifies against the body hash", async () => {
-    const { account: acct, built, addressByRef } = await fixture();
-    const hex = signForeignTx(built.unsignedCbor, acct, addressByRef, false);
+    const { account: acct, built, view } = await fixture();
+    const hex = signForeignTx(built.unsignedCbor, acct, view, false);
     const set = (Decoder.decode(Buffer.from(hex, "hex")).value as Map<number, unknown>).get(0);
     const [pk, sig] = (set as [Buffer, Buffer][])[0]!;
     expect(pk).toHaveLength(32);
     expect(sig).toHaveLength(64);
 
-    const keyHash = requiredKeysFor(built.unsignedCbor, acct, addressByRef).keyHashes[0]!;
+    const keyHash = requiredKeysFor(built.unsignedCbor, acct, view).keyHashes[0]!;
     const prv = acct.keyByHash.get(keyHash)!;
     const bodyHash = Buffer.from(built.hash, "hex");
     expect(prv.toPublicKey().verify(Buffer.from(sig), bodyHash)).toBe(true);
@@ -131,8 +136,8 @@ describe("signForeignTx — what it returns", () => {
   });
 
   it("signs once per required key, never once per input", async () => {
-    const { account: acct, built, addressByRef } = await fixture(3);
-    const hex = signForeignTx(built.unsignedCbor, acct, addressByRef, false);
+    const { account: acct, built, view } = await fixture(3);
+    const hex = signForeignTx(built.unsignedCbor, acct, view, false);
     const set = (Decoder.decode(Buffer.from(hex, "hex")).value as Map<number, unknown>).get(0);
     // A spare witness makes the transaction bigger than the fee already computed
     // for it, and the node rejects the whole thing.
@@ -142,53 +147,53 @@ describe("signForeignTx — what it returns", () => {
 
 describe("signForeignTx — what it refuses", () => {
   it("refuses when it holds none of the required keys", async () => {
-    const { account: acct, built, addressByRef } = await fixture();
-    expect(() => signForeignTx(built.unsignedCbor, acct, new Map(), false)).toThrow(LocalSignError);
+    const { account: acct, built, view } = await fixture();
+    expect(() => signForeignTx(built.unsignedCbor, acct, NO_VIEW, false)).toThrow(LocalSignError);
     // Not merely an error — specifically the "nothing to contribute" one. An
     // empty witness set would be a wallet reporting a signature it did not make.
-    expect(() => signForeignTx(built.unsignedCbor, acct, new Map(), false)).toThrow(
+    expect(() => signForeignTx(built.unsignedCbor, acct, NO_VIEW, false)).toThrow(
       "sign_no_required_witnesses",
     );
-    expect(addressByRef.size).toBe(1); // fixture sanity
+    expect(view.held.size).toBe(1); // fixture sanity
   });
 
   it("refuses a partial signature when the dApp said it would not accept one", async () => {
-    const { account: acct, built, addressByRef } = await fixture();
+    const { account: acct, built, view } = await fixture();
     // `required_signers` naming a key nobody holds, with partialSign false.
     const body = Decoder.decode(Buffer.from(built.unsignedCbor, "hex")).value as unknown[];
     const b = body[0] as Map<number, unknown>;
     b.set(14, [Buffer.from("ee".repeat(28), "hex")]);
     const rebuilt = Encoder.encode(body).toString("hex");
-    expect(() => signForeignTx(rebuilt, acct, addressByRef, false)).toThrow(
+    expect(() => signForeignTx(rebuilt, acct, view, false)).toThrow(
       "sign_key_not_in_wallet",
     );
   });
 
   it("signs what it can when the dApp asked for a partial signature", async () => {
-    const { account: acct, built, addressByRef } = await fixture();
+    const { account: acct, built, view } = await fixture();
     const body = Decoder.decode(Buffer.from(built.unsignedCbor, "hex")).value as unknown[];
     const b = body[0] as Map<number, unknown>;
     b.set(14, [Buffer.from("ee".repeat(28), "hex")]);
     const rebuilt = Encoder.encode(body).toString("hex");
-    const hex = signForeignTx(rebuilt, acct, addressByRef, true);
+    const hex = signForeignTx(rebuilt, acct, view, true);
     const set = (Decoder.decode(Buffer.from(hex, "hex")).value as Map<number, unknown>).get(0);
     expect((set as unknown[]).length).toBe(1);
   });
 
   it("refuses bytes that are not a transaction", async () => {
-    const { account: acct, addressByRef } = await fixture();
+    const { account: acct, view } = await fixture();
     for (const junk of ["", "00", "deadbeef", "a10201"]) {
-      expect(() => signForeignTx(junk, acct, addressByRef, false)).toThrow(LocalSignError);
+      expect(() => signForeignTx(junk, acct, view, false)).toThrow(LocalSignError);
     }
   });
 
   it("refuses an indefinite-length outer array rather than guessing the body", async () => {
-    const { account: acct, built, addressByRef } = await fixture();
+    const { account: acct, built, view } = await fixture();
     // 0x9f is an indefinite-length array. The body would start in the same
     // place, but "the same place" is a guess and a wrong guess is a wrong hash.
     const bytes = Buffer.from(built.unsignedCbor, "hex");
     bytes[0] = 0x9f;
-    expect(() => signForeignTx(bytes.toString("hex"), acct, addressByRef, false)).toThrow(
+    expect(() => signForeignTx(bytes.toString("hex"), acct, view, false)).toThrow(
       "sign_foreign_unexpected_encoding",
     );
   });

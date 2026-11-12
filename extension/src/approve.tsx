@@ -38,7 +38,7 @@ import {
 import { vaultStore, type StoredWallet } from "../../src/lib/keystore/storage";
 import { DEFAULT_LOCK_TIMEOUT_MS } from "../../src/lib/keystore/session";
 import { summariseTx, UndescribableTxError, type TxSummary } from "../../src/lib/cardano/txSummary";
-import { signForeignTx } from "../../src/lib/keystore/signForeign";
+import { signForeignTx, walletViewFrom, type WalletView } from "../../src/lib/keystore/signForeign";
 import { planDataSign, signDataCip8, DATA_SIGN_CODE, type DataSignPlan } from "../../src/lib/keystore/signData";
 import { encodeBalanceHex, encodeInputsAsUtxosHex } from "../../src/lib/cardano/utxoCbor";
 import {
@@ -193,6 +193,13 @@ type Phase =
       at: "decide";
       req: Incoming;
       summary?: TxSummary;
+      /**
+       * The wallet exactly as `summary` was computed from — its addresses and
+       * the UTxOs it held. Set together with `summary`, and the only view
+       * `sign()` signs from: a second read at signing could attribute an input
+       * the summary never counted and sign for it.
+       */
+      view?: WalletView;
       undescribable?: string;
       /** `signData` only: which key, which address, which bytes — decided before the screen opens. */
       dataSign?: DataSignPlan;
@@ -410,28 +417,9 @@ export function Approve() {
     void (async () => {
       try {
         const wp = localPort(account);
-        const inputs = await wp.getInputs();
-        const held = new Map(
-          inputs.map((i) => [
-            `${i.txId}#${i.index}`,
-            {
-              lovelace: BigInt(i.amount.toFixed(0)),
-              assets: new Map(
-                (i.tokens ?? []).map((tk) => [
-                  tk.policyId + (tk.assetName ?? ""),
-                  BigInt(tk.amount.toFixed(0)),
-                ]),
-              ),
-            },
-          ]),
-        );
-        const summary = summariseTx(
-          cbor,
-          await wp.getOwnedAddressesHex(),
-          held,
-          account.network === 1 ? 1 : 0,
-        );
-        if (!cancelled) setPhase((cur) => (cur.at === "decide" ? { ...cur, summary } : cur));
+        const view = walletViewFrom(await wp.getInputs(), await wp.getOwnedAddressesHex());
+        const summary = summariseTx(cbor, view.ownAddressesHex, view.held, account.network === 1 ? 1 : 0);
+        if (!cancelled) setPhase((cur) => (cur.at === "decide" ? { ...cur, summary, view } : cur));
       } catch (e) {
         const why =
           e instanceof UndescribableTxError ? e.message : t("cip30_cannot_read_tx");
@@ -481,9 +469,14 @@ export function Approve() {
    * without one. That ordering is the guarantee: a transaction that could not
    * be described cannot reach here, so there is no path where a signature is
    * produced over bytes the user was not shown a description of.
+   *
+   * The wallet is not read again. Keys are chosen from `phase.view`, the same
+   * UTxOs and addresses the summary was computed from, so an input that
+   * appeared since — fresh change, an indexer catching up — is not this
+   * wallet's as far as this signature goes, and gets no witness.
    */
   const sign = async () => {
-    if (phase.at !== "decide" || !account || !phase.summary) return;
+    if (phase.at !== "decide" || !account || !phase.summary || !phase.view) return;
     const cbor = phase.req.params[0];
     const partial = phase.req.params[1] === true;
     if (typeof cbor !== "string") {
@@ -492,12 +485,7 @@ export function Approve() {
     }
     setBusy(true);
     try {
-      const wp = localPort(account);
-      const inputs = await wp.getInputs();
-      const addressByRef = new Map(
-        inputs.map((i) => [`${i.txId}#${i.index}`, i.address.getBech32()]),
-      );
-      const witnessSetHex = signForeignTx(cbor, account, addressByRef, partial);
+      const witnessSetHex = signForeignTx(cbor, account, phase.view, partial);
       answer({ ok: true, value: witnessSetHex });
     } catch (e) {
       const key = (e as { key?: string })?.key;

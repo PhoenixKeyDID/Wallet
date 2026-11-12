@@ -353,6 +353,8 @@
   "sign_foreign_certificate": "Giao dịch này mang chứng chỉ (staking, bỏ phiếu hoặc đăng ký). Ví này không ký loại đó cho một trang web. Chưa ký gì.",
   "sign_foreign_mint": "Giao dịch này tạo token. Ví này chỉ ký giao dịch huỷ token. Chưa ký gì.",
   "sign_foreign_collateral_not_own": "Giao dịch này đặt tài sản thế chấp không thuộc ví này. Chưa ký gì.",
+  "sign_foreign_undescribable": "Giao dịch này làm một việc mà màn duyệt từ chối mô tả. Chưa ký gì.",
+  "sign_foreign_unreadable_own_utxo": "Không đọc được một đồng tiền của ví này. Chưa ký gì.",
   "sign_foreign_declared_invalid": "Giao dịch tự khai script của nó thất bại, nghĩa là chỉ mất tài sản thế chấp. Chưa ký gì.",
   "sign_foreign_unreadable_own_address": "Không đọc được một địa chỉ của chính ví này. Chưa ký gì.",
   "sign_unjustified_signer": "Giao dịch đòi một khoá của ví này mà không phần nào trong nó cần. Chưa ký gì.",

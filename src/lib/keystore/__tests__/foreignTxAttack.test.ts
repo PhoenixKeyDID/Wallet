@@ -14,7 +14,7 @@ import { Buffer } from "buffer";
 import { Encoder } from "@stricahq/cbors";
 import { utils as tyUtils, types as tyTypes } from "@stricahq/typhonjs";
 import { accountFromEntropy, type Account } from "../derive";
-import { requiredKeysFor, signForeignTx } from "../signForeign";
+import { requiredKeysFor, signForeignTx, type WalletView } from "../signForeign";
 import { summariseTx } from "../../cardano/txSummary";
 import { baseAddress, type PhoenixNetwork } from "../../cardano/address";
 
@@ -24,6 +24,8 @@ const ATTACKER = baseAddress("ab".repeat(28), "cd".repeat(28), NETWORK);
 const THEIR_TXID = "11".repeat(32);
 
 let account: Account;
+/** A wallet holding nothing it can attribute: the cache is empty. */
+const NO_VIEW: WalletView = { ownAddressesHex: [], held: new Map() };
 const acct = async () => (account ??= await accountFromEntropy(ENTROPY, 0, NETWORK));
 
 const addrHex = (bech32: string) =>
@@ -51,7 +53,7 @@ describe("rút sạch phần thưởng staking", () => {
       // Cửa: gọi tên thẳng khoá stake của người dùng.
       [14, [Buffer.from(a.stakeKeyHashHex, "hex")]],
     ]);
-    expect(() => signForeignTx(tx(body), a, new Map(), false)).toThrow(/sign_unjustified_signer/);
+    expect(() => signForeignTx(tx(body), a, NO_VIEW, false)).toThrow(/sign_unjustified_signer/);
   });
 
   it("ký khoản rút của chính ví — nhưng chỉ vì thân giao dịch nêu đúng tài khoản đó", async () => {
@@ -65,7 +67,7 @@ describe("rút sạch phần thưởng staking", () => {
     ]);
     // Chữ ký hợp lệ ở đây là đúng: rút thưởng thật sự cần khoá stake. Thứ giữ
     // cho nó an toàn là màn hình phải nói ra 500 ADA — bài ngay dưới.
-    expect(() => signForeignTx(tx(body), a, new Map(), false)).not.toThrow();
+    expect(() => signForeignTx(tx(body), a, NO_VIEW, false)).not.toThrow();
   });
 
   it("số trên màn phải nói khoản rút đi ra ngoài, không nói 'không mất gì'", async () => {
@@ -98,7 +100,7 @@ describe("uỷ quyền biểu quyết mà không hiện gì", () => {
       [2, 200_000],
       [14, [Buffer.from(a.drepKeyHashHex, "hex")]],
     ]);
-    expect(() => signForeignTx(tx(body), a, new Map(), false)).toThrow();
+    expect(() => signForeignTx(tx(body), a, NO_VIEW, false)).toThrow();
   });
 });
 
@@ -131,7 +133,7 @@ describe("đầu vào ví không tra được", () => {
       [14, [Buffer.from(paymentHash, "hex")]],
     ]);
     // Bộ nhớ đệm rỗng: ví không tra được đầu vào nào.
-    expect(() => signForeignTx(tx(body), a, new Map(), false)).toThrow();
+    expect(() => signForeignTx(tx(body), a, NO_VIEW, false)).toThrow();
   });
 });
 
@@ -153,8 +155,8 @@ describe("khoá stake của khoản rút thưởng thì phải ký, không cần
     const a = await acct();
     const body = base();
     body.set(5, new Map([[rewardAccount(a.stakeKeyHashHex), 5_000_000]]));
-    expect(requiredKeysFor(tx(body), a, new Map()).keyHashes).toEqual([a.stakeKeyHashHex]);
+    expect(requiredKeysFor(tx(body), a, NO_VIEW).keyHashes).toEqual([a.stakeKeyHashHex]);
     // Và chữ ký ra thật, không phải "không có gì để ký".
-    expect(() => signForeignTx(tx(body), a, new Map(), false)).not.toThrow();
+    expect(() => signForeignTx(tx(body), a, NO_VIEW, false)).not.toThrow();
   });
 });

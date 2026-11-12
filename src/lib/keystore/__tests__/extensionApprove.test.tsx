@@ -362,7 +362,9 @@ describe("the connected screen is translated", () => {
 
 describe("signTx: a signing step that fails is TxSignError.ProofGeneration (1)", () => {
   it("answers 1 with the reason, not UserDeclined (2) — the person did approve", async () => {
-    // The first read describes the transaction; the second, inside signing, fails.
+    // The transaction spends only someone else's input, so the signer has
+    // nothing of this wallet's to sign and refuses. Signing does not read the
+    // wallet again, so the read that would fail is never made.
     mocks.fetchUtxos.mockResolvedValueOnce(ourInputs()).mockRejectedValueOnce(new Error("koios down"));
     const { port, view } = await unlocked();
     act(() => port.deliver({ type: "request", id: "t1", origin: ORIGIN, method: "signTx", params: [SIGNED_TX] }));
@@ -372,8 +374,59 @@ describe("signTx: a signing step that fails is TxSignError.ProofGeneration (1)",
     await waitFor(() => expect(port.sent.find((m) => m.id === "t1")).toBeDefined());
     expect(port.sent.find((m) => m.id === "t1")!.result).toMatchObject({
       ok: false,
-      error: { code: 1, info: expect.stringContaining("koios down") },
+      error: { code: 1, info: en.sign_no_required_witnesses },
     });
+  });
+});
+
+describe("signTx signs from the wallet the screen described, not from a second read", () => {
+  // The wallet's coin 77…#1, spent next to someone else's input. The summary is
+  // computed while the indexer has not yet seen that coin, so the screen says
+  // this wallet spends nothing. If Sign read the wallet again, the coin would
+  // appear, be attributed to this wallet, and get a witness the person never
+  // saw described.
+  const spendsLateCoin = () =>
+    Encoder.encode([
+      new Map<number, unknown>([
+        [0, [[Buffer.from("11".repeat(32), "hex"), 0], [Buffer.from("77".repeat(32), "hex"), 1]]],
+        [1, [[Buffer.from((tyUtils.getAddressFromString(OUTSIDER) as tyTypes.ShelleyAddress).getHex(), "hex"), 5_800_000]]],
+        [2, 200_000],
+      ]),
+      new Map(),
+      true,
+      null,
+    ]).toString("hex");
+
+  it("a wallet input the summary did not see gets no witness: Sign answers ProofGeneration, not a signature", async () => {
+    // First read (the summary): empty. Every later read: the coin is there.
+    mocks.fetchUtxos.mockResolvedValueOnce([]).mockResolvedValue(ourInputs());
+    const { port, view } = await unlocked();
+    act(() => port.deliver({ type: "request", id: "late1", origin: ORIGIN, method: "signTx", params: [spendsLateCoin(), true] }));
+    const approve = await view.findByText(en.cip30_approve);
+    await waitFor(() => expect((approve as HTMLButtonElement).disabled).toBe(false));
+    const readsAtSummary = mocks.fetchUtxos.mock.calls.length;
+    fireEvent.click(approve);
+    await waitFor(() => expect(port.sent.find((m) => m.id === "late1")).toBeDefined());
+    const res = port.sent.find((m) => m.id === "late1")!.result!;
+    expect(res).toMatchObject({ ok: false, error: { code: 1, info: en.sign_no_required_witnesses } });
+    expect(res.value).toBeUndefined();
+    expect(mocks.fetchUtxos.mock.calls.length).toBe(readsAtSummary);
+  });
+
+  it("the same transaction, with the coin seen at summary time, is signed by that coin's key", async () => {
+    mocks.fetchUtxos.mockResolvedValue(ourInputs());
+    const { port, view } = await unlocked();
+    act(() => port.deliver({ type: "request", id: "late2", origin: ORIGIN, method: "signTx", params: [spendsLateCoin(), true] }));
+    const approve = await view.findByText(en.cip30_approve);
+    await waitFor(() => expect((approve as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(approve);
+    await waitFor(() => expect(port.sent.find((m) => m.id === "late2")).toBeDefined());
+    const res = port.sent.find((m) => m.id === "late2")!.result!;
+    expect(res.ok).toBe(true);
+    const ws = Decoder.decode(Buffer.from(res.value as string, "hex")).value as Map<number, [Buffer, Buffer][]>;
+    expect(Array.from(ws.get(0)!).map(([pub]) => Buffer.from(blake2b224(pub)).toString("hex"))).toEqual([
+      acct1.external[0]!.keyHashHex,
+    ]);
   });
 });
 

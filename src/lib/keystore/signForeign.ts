@@ -26,6 +26,10 @@
  *
  * ## What it refuses
  *
+ * Everything the approval screen refuses: `requiredKeysFor` ends by running
+ * `summariseTx` over the same bytes and the same `WalletView`, so the two
+ * layers share one list of refusals instead of keeping two.
+ *
  * A key the wallet does not hold. `partialSign: false` with any required key
  * missing — because that flag is the dApp promising the wallet can complete the
  * signature alone, and a wallet that returns a partial set anyway hands back
@@ -36,7 +40,62 @@ import { Buffer } from "buffer";
 import { Decoder, Encoder } from "@stricahq/cbors";
 import { utils as tyUtils } from "@stricahq/typhonjs";
 import { blake2b256, toHex } from "../cardano/hash";
+import { summariseTx, UndescribableTxError } from "../cardano/txSummary";
 import { LocalSignError, type Account } from "./index";
+
+/** One UTxO the wallet holds, as the approval screen valued it. */
+export type HeldInput = {
+  /** bech32 of the address the UTxO sits at. */
+  address: string;
+  lovelace: bigint;
+  /** policyId + assetNameHex → quantity. */
+  assets: Map<string, bigint>;
+};
+
+/**
+ * The wallet as the approval screen saw it: which addresses are its own and
+ * which UTxOs it holds, keyed `txid#index`.
+ *
+ * The screen describes a transaction from this view and the signer signs from
+ * the SAME object. Reading the wallet a second time at signing would let an
+ * input the description never counted — change that landed in between, an
+ * indexer that caught up — be attributed to the wallet and signed for, under a
+ * screen that said it cost only the fee.
+ */
+export type WalletView = {
+  ownAddressesHex: readonly string[];
+  held: ReadonlyMap<string, HeldInput>;
+};
+
+/** Build the view from the wallet's input list, refusing a shape it cannot value. */
+export function walletViewFrom(
+  inputs: readonly {
+    txId: string;
+    index: number;
+    amount: { toFixed(n: number): string };
+    tokens?: readonly { policyId: string; assetName?: string; amount: { toFixed(n: number): string } }[];
+    address: { getBech32(): string };
+  }[],
+  ownAddressesHex: readonly string[],
+): WalletView {
+  const held = new Map<string, HeldInput>();
+  const whole = (v: { toFixed(n: number): string }, what: string): bigint => {
+    const s = v.toFixed(0);
+    if (!/^\d+$/.test(s)) throw new LocalSignError("sign_foreign_unreadable_own_utxo", what);
+    return BigInt(s);
+  };
+  for (const i of inputs) {
+    const ref = `${i.txId}#${i.index}`;
+    if (held.has(ref)) throw new LocalSignError("sign_foreign_unreadable_own_utxo", ref);
+    const assets = new Map<string, bigint>();
+    for (const tk of i.tokens ?? []) {
+      const unit = tk.policyId + (tk.assetName ?? "");
+      assets.set(unit, (assets.get(unit) ?? BigInt(0)) + whole(tk.amount, ref));
+    }
+    held.set(ref, { address: i.address.getBech32(), lovelace: whole(i.amount, ref), assets });
+  }
+  return { ownAddressesHex: [...ownAddressesHex], held };
+}
 
 /** What the wallet must be able to sign for, derived from the body. */
 export type RequiredKeys = {
@@ -124,7 +183,7 @@ function isNegativeInteger(v: unknown): boolean {
 export function requiredKeysFor(
   txCborHex: string,
   account: Account,
-  ownInputAddressByRef: Map<string, string>,
+  view: WalletView,
 ): RequiredKeys {
   const txBytes = Buffer.from(txCborHex, "hex");
   if (txBytes.length === 0) throw new LocalSignError("sign_foreign_not_a_tx");
@@ -166,8 +225,9 @@ export function requiredKeysFor(
   // ── What this wallet refuses to sign for a website, whatever the screen said ─
   //
   // The approval window refuses these too, and says why (`txSummary.ts`). They
-  // are repeated here because this is the function that touches the keys: a
-  // future screen that forgets to describe first must still not get a witness.
+  // are repeated here, with their own error keys, because this is the function
+  // that touches the keys. The full set the screen refuses is applied at the
+  // end of this function by running the screen's own `summariseTx`.
 
   // The network the body names is the network the signature is for. A body for
   // another network is refused before any key is looked at.
@@ -200,7 +260,7 @@ export function requiredKeysFor(
   const keyOfOwnInput = (i: unknown, what: "input" | "collateral"): string | null => {
     if (!Array.isArray(i) || i.length < 2) throw new LocalSignError("sign_foreign_not_a_tx");
     const ref = `${Buffer.from(i[0] as Buffer).toString("hex")}#${Number(i[1])}`;
-    const addr = ownInputAddressByRef.get(ref);
+    const addr = view.held.get(ref)?.address;
     if (!addr) {
       // Somebody else's input is somebody else's to sign. Somebody else's
       // collateral is not: the screen can only say what this wallet risks if
@@ -283,6 +343,25 @@ export function requiredKeysFor(
     }
   }
 
+  // ── Every refusal the approval screen applies, applied here by the same code ─
+  //
+  // The checks above are this function's own and stay, because they name the
+  // reason precisely. They do not cover everything the screen refuses: a body
+  // field outside the allow-list (20, 21, 22 — treasury donations, proposals,
+  // votes — and anything later), a collateral return paid to an address that
+  // is not this wallet, a declared collateral total that disagrees with the
+  // collateral, the same input named twice. Re-implementing those here would
+  // be a second copy that drifts from the first. So the screen's own function
+  // is run over the same bytes and the same wallet view, and its refusal is
+  // this function's refusal. A screen that forgets to describe still cannot
+  // get a witness for a transaction the description would have refused.
+  try {
+    summariseTx(txCborHex, view.ownAddressesHex, view.held, ledgerNetworkId);
+  } catch (e) {
+    if (e instanceof UndescribableTxError) throw new LocalSignError("sign_foreign_undescribable", e.message);
+    throw e;
+  }
+
   return { keyHashes: need, bodyHashHex };
 }
 
@@ -296,10 +375,10 @@ export function requiredKeysFor(
 export function signForeignTx(
   txCborHex: string,
   account: Account,
-  ownInputAddressByRef: Map<string, string>,
+  view: WalletView,
   partialSign: boolean,
 ): string {
-  const { keyHashes, bodyHashHex } = requiredKeysFor(txCborHex, account, ownInputAddressByRef);
+  const { keyHashes, bodyHashHex } = requiredKeysFor(txCborHex, account, view);
 
   const bodyHash = Buffer.from(bodyHashHex, "hex");
   if (bodyHash.length !== 32) throw new LocalSignError("sign_bad_body_hash");

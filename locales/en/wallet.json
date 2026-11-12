@@ -353,6 +353,8 @@
   "sign_foreign_certificate": "This transaction carries a certificate (staking, voting or registration). This wallet does not sign those for a website. Nothing was signed.",
   "sign_foreign_mint": "This transaction creates tokens. This wallet only signs transactions that destroy them. Nothing was signed.",
   "sign_foreign_collateral_not_own": "This transaction puts up collateral this wallet does not hold. Nothing was signed.",
+  "sign_foreign_undescribable": "This transaction does something the approval screen refuses to describe. Nothing was signed.",
+  "sign_foreign_unreadable_own_utxo": "One of this wallet's coins could not be read. Nothing was signed.",
   "sign_foreign_declared_invalid": "This transaction declares that its own script fails, which would only give up its collateral. Nothing was signed.",
   "sign_foreign_unreadable_own_address": "One of this wallet's own addresses could not be read. Nothing was signed.",
   "sign_unjustified_signer": "This transaction asks for a key of this wallet that nothing in it needs. Nothing was signed.",

@@ -353,6 +353,8 @@
   "sign_foreign_certificate": "该交易包含证书(质押、投票或注册)。此钱包不会为网站签署此类交易。未签名。",
   "sign_foreign_mint": "该交易会铸造代币。此钱包只签署销毁代币的交易。未签名。",
   "sign_foreign_collateral_not_own": "该交易使用了不属于此钱包的抵押品。未签名。",
+  "sign_foreign_undescribable": "该交易包含审批界面拒绝描述的内容。未签名。",
+  "sign_foreign_unreadable_own_utxo": "无法读取此钱包的一个 UTxO。未签名。",
   "sign_foreign_declared_invalid": "该交易声明其自身脚本失败,结果只会失去抵押品。未签名。",
   "sign_foreign_unreadable_own_address": "无法读取此钱包自身的某个地址。未签名。",
   "sign_unjustified_signer": "该交易要求此钱包的一把密钥,而交易内容并不需要它。未签名。",
