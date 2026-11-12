@@ -3,17 +3,81 @@ name: CI
 on:
   push:
     branches: [main]
+  # `pull_request`, never `pull_request_target`: the latter runs a fork's code
+  # with this repo's token and secrets, which is the one thing a public repo's
+  # CI must not do.
   pull_request:
 
-jobs:
-  check:
-    runs-on: [self-hosted, tiger, isolated]
-    steps:
-      - uses: actions/checkout@v4
+# Nothing in this workflow writes to the repo. A token that can only read is a
+# token a compromised dependency cannot push with.
+permissions:
+  contents: read
 
-      - uses: oven-sh/setup-bun@v2
+# A new push to a PR makes the run for the previous head worthless; letting it
+# finish only holds the runner. Pushes to main group per commit, not per ref:
+# GitHub also cancels a QUEUED run when a newer run joins its group — even with
+# `cancel-in-progress: false` — so a shared group for `refs/heads/main` would
+# stamp "cancelled" on the merge commit sitting between two PRs merged while a
+# run was still going. One group per commit means no run ever joins another's.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # The job id is the status check `main` requires. Renaming it, or splitting it
+  # into one job per runner, would leave the required check waiting forever on a
+  # name nothing reports — so the runner is chosen by an expression instead.
+  check:
+    # The self-hosted runner is persistent and lives on a production machine.
+    # Code from a fork is code from anyone: running it there would let a
+    # drive-by pull request execute on that machine and leave something behind
+    # for the next job.
+    #
+    # The expression below is a DEFAULT, not a barrier. For `pull_request`,
+    # GitHub reads this workflow from the pull request's own commit, so a fork
+    # can rewrite this line to name the self-hosted labels and its job will be
+    # routed there. What it does: an honest fork PR runs on a throwaway
+    # GitHub-hosted VM, and pushes and PRs from branches of this repo — which
+    # only people with write access can create — keep the self-hosted runner. A
+    # PR whose head repo is gone reads as `null`, which is not this repo, so it
+    # also goes to the hosted VM.
+    #
+    # Nothing in this file can stop a fork that edits it. Keeping fork code off
+    # the machine has to be enforced where the workflow cannot reach: on the
+    # runner host (a job-started hook that refuses a job whose event payload is
+    # a pull request from a fork, or a runner group restricted to this workflow
+    # on `main`), plus the repository setting that requires approval before
+    # workflows from outside contributors run.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","tiger","isolated"]') || 'ubuntu-latest' }}
+    # The whole suite takes a few minutes; a hung step should not hold the
+    # runner for GitHub's six-hour default.
+    timeout-minutes: 30
+    steps:
+      # Actions are pinned to a commit, not a tag: a tag can be moved to point at
+      # different code after it was reviewed, a commit hash cannot.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          bun-version: latest
+          # The default writes this run's token into `.git/config`, where it
+          # stays for every later step — and on the persistent runner, for
+          # whatever runs next in that workspace. Nothing here pushes.
+          persist-credentials: false
+
+      # `vitest` and every `check:*` script run under `node`. Without this the
+      # hosted VM ran whatever Node its image shipped that week, and the
+      # self-hosted runner whatever was first on its PATH — two runs of one
+      # commit on two different runtimes. This is the version the suite is
+      # run with locally; bump it in a reviewed diff.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.11.0
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          # `latest` made the toolchain a moving part: the same commit could
+          # pass today and fail tomorrow with no diff to point at. This is the
+          # version the lockfile is maintained with locally; bump it in a
+          # reviewed diff, together with `bun.lock` if the format changes.
+          bun-version: 1.3.14
 
       - name: Install dependencies
         run: bun install --frozen-lockfile

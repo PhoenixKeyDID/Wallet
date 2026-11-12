@@ -235,8 +235,10 @@ if (!owners.length) cannotRun("no CODEOWNERS file found");
 
 const checked = new Map(); // path -> CODEOWNERS line that guards it
 let entries = 0;
+let defaults = 0; // bare `*` lines read as a default reviewer, not as a guard
 
 for (const file of owners) {
+  let anchoredSeen = false;
   readFileSync(join(REPO, file), "utf8").split("\n").forEach((line, i) => {
     const text = line.trim();
     if (!text || text.startsWith("#")) return;
@@ -245,6 +247,15 @@ for (const file of owners) {
     const raw = text.match(/^(?:\\.|[^\s\\])+/)?.[0] ?? "";
     const pattern = raw.replace(/\\(.)/g, "$1");
     const where = `${file}:${i + 1}`;
+    // A bare `*` ahead of every anchored line sets who reviews a file nobody
+    // named; it marks no file as dangerous, and check:urls reads it the same
+    // way. Every anchored line after it still wins for the files it names.
+    // After an anchored line, `*` would take those files over instead, so
+    // there it stays a form this check refuses.
+    if (pattern === "*" && !anchoredSeen) {
+      defaults += 1;
+      return;
+    }
     // Only the anchored forms this repo uses. Anything else is a form this
     // script would have to guess at, and a guess here is a silent pass.
     if (!pattern.startsWith("/") || /[*?[\]!]/.test(pattern)) {
@@ -252,6 +263,7 @@ for (const file of owners) {
       return;
     }
     entries += 1;
+    anchoredSeen = true;
     const rel = pattern.slice(1).replace(/\/+$/, "");
     const under = tracked.filter((p) => p.startsWith(rel + "/"));
     if (under.length) {
@@ -562,7 +574,9 @@ if (problems.length) {
 }
 
 console.log(
-  `Tier/CODEOWNERS OK — ${entries} CODEOWNERS entries, ${checked.size} guarded files, ` +
+  `Tier/CODEOWNERS OK — ${entries} CODEOWNERS entries` +
+    (defaults ? ` (${defaults} bare \`*\` default-reviewer line${defaults > 1 ? "s" : ""} not counted as a guard)` : "") +
+    `, ${checked.size} guarded files, ` +
     `${seeds.length} forbidden source files and ${edges} import edges followed ` +
     `(${leftOut} test and runner files left out of the graph), all forbidden in docs/contribution-tiers.json`,
 );
