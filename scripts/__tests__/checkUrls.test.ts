@@ -35,7 +35,7 @@ const b64 = (t: string) => Buffer.from(src(t)).toString("base64");
  * Runs the guard on a tree holding the four scan roots, a CODEOWNERS made of
  * `owners` lines, and `files` (repo-relative path → text).
  */
-function check(files: Record<string, string>, owners: string[] = [], rawOwnerLines: string[] = []) {
+function check(files: Record<string, string | Buffer>, owners: string[] = [], rawOwnerLines: string[] = []) {
   const root = mkdtempSync(join(tmpdir(), "check-urls-"));
   try {
     for (const d of ["src", "extension", "scripts", "docs", ".github"]) mkdirSync(join(root, d), { recursive: true });
@@ -291,6 +291,182 @@ describe("check:urls — CODEOWNERS comments and owner syntax", () => {
     expect(reasonOf(r.out), r.out).toBe(UNGATED);
     expect(r.status).toBe(1);
   });
+});
+
+describe("check:urls — protocol-relative hosts with no dot", () => {
+  const refused: [string, string][] = [
+    ["a dotless decimal IPv4 address", `export const u = "«S»«S»16909060/claim";`],
+    ["userinfo before the host", `export const u = "«S»«S»x@evil.example/claim";`],
+    ["an IPv6 literal", `export const u = "«S»«S»[2001«C»db8«C»«C»1]/x";`],
+    ["a percent-encoded host", `export const u = "«S»«S»%65vil.example/";`],
+    ["a single-label host in a template with no interpolation", "export const u = `«S»«S»intranet/claim`;"],
+  ];
+  for (const [name, text] of refused) {
+    it(`refuses ${name}`, () => {
+      const r = check({ "src/probe.ts": src(text) + "\n" });
+      expect(reasonOf(r.out), r.out).toBe(RUNTIME);
+      expect(r.out).toContain("src/probe.ts:1  a protocol-relative URL");
+      expect(r.status).toBe(1);
+    });
+  }
+
+  const decoded: [string, string][] = [
+    ["base64 of a dotless decimal host", `export const u = atob("${b64("«S»«S»16909060/claim")}");`],
+    ["base64 of a host behind userinfo", `export const u = atob("${b64("«S»«S»x@evil.example/claim")}");`],
+  ];
+  for (const [name, text] of decoded) {
+    it(`refuses ${name}`, () => {
+      const r = check({ "src/probe.ts": text + "\n" });
+      expect(r.out, r.out).toContain("src/probe.ts:1  a URL encoded in base64");
+      expect(r.status).toBe(1);
+    });
+  }
+
+  const passed: [string, string][] = [
+    ["line comments with and without a space",`// note\n//note\nexport const a = 1; //tail\n`],
+    ["relative and root-relative paths", `export const p = ["./a/b", "../c", "/docs/x.md", "«S»"];\n`],
+    ["a string starting with a comment marker and a space", `export const c = "«S»«S» not a host";\n`],
+    ["a match pattern whose host is only a wildcard", `export const m = "«S»«S»*«S»x";\n`],
+  ];
+  for (const [name, text] of passed) {
+    it(`passes ${name}`, () => {
+      const r = check({ "src/probe.ts": src(text) });
+      expect(r.out, r.out).toContain("Outbound-URL guard OK");
+      expect(r.status).toBe(0);
+    });
+  }
+});
+
+describe("check:urls — HTML character references", () => {
+  const refused: [string, string, string][] = [
+    ["a numeric colon in a JSX attribute", "src/Probe.tsx", `export const A = () => <a href="https&#58;«S»«S»evil.example/claim">c</a>;`],
+    ["a hex colon in an HTML attribute", "src/page.html", `<a href="https&#x3a;«S»«S»evil.example/claim">c</a>`],
+    ["a named colon in Markdown", "src/notes.md", `[c](https&colon;«S»«S»evil.example/claim)`],
+    ["named slashes in an HTML attribute", "src/page.html", `<a href="&sol;&sol;evil.example/claim">c</a>`],
+    ["a numeric colon with no semicolon", "src/page.html", `<a href="https&#58«S»«S»evil.example/claim">c</a>`],
+    ["an encoded letter of the scheme", "src/page.html", `<a href="h&#116;tps«C»«S»«S»evil.example/claim">c</a>`],
+  ];
+  for (const [name, file, text] of refused) {
+    it(`refuses ${name}`, () => {
+      const r = check({ [file]: src(text) + "\n" });
+      expect(reasonOf(r.out), r.out).toBe(RUNTIME);
+      expect(r.out).toContain(`${file}:1  a URL written with HTML character references`);
+      expect(r.status).toBe(1);
+    });
+  }
+
+  it("refuses a hidden URL in a gated file that also shows a visible one", () => {
+    const r = check(
+      { "src/page.html": src(`<a href="https«C»«S»«S»ok.example/?a=1&amp;b=2">ok</a> <a href="https&#58;«S»«S»evil.example/">x</a>\n`) },
+      ["/src/page.html"],
+    );
+    expect(reasonOf(r.out), r.out).toBe(RUNTIME);
+    expect(r.status).toBe(1);
+  });
+
+  it("passes a gated file whose visible URL carries &amp; in its query", () => {
+    const r = check({ "src/page.html": src(`<a href="https«C»«S»«S»ok.example/?a=1&amp;b=2">ok</a>\n`) }, ["/src/page.html"]);
+    expect(r.out, r.out).toContain("Outbound-URL guard OK");
+    expect(r.status).toBe(0);
+  });
+
+  it("passes character references that build no URL", () => {
+    const r = check({ "src/notes.md": "Fish &amp; chips &#8212; 3 &lt; 4, ratio 1&colon;2\n" });
+    expect(r.out, r.out).toContain("Outbound-URL guard OK");
+    expect(r.status).toBe(0);
+  });
+});
+
+describe("check:urls — a text file it cannot read is a failure, not a skip", () => {
+  const utf16le = (t: string) => Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(src(t), "utf16le")]);
+  const utf16be = (t: string) => Buffer.concat([Buffer.from([0xfe, 0xff]), Buffer.from(src(t), "utf16le").swap16()]);
+  const cases: [string, string, string | Buffer, string][] = [
+    ["a NUL byte in a comment of a .ts file", "src/probe.ts", src(`// \u0000\nexport const u = "https«C»«S»«S»evil.example/claim";\n`), "has a NUL byte"],
+    ["a NUL byte in a .ts file with no URL", "src/probe.ts", `// \u0000\nexport const a = 1;\n`, "has a NUL byte"],
+    ["an HTML page saved as UTF-16LE", "src/page.html", utf16le(`<a href="https«C»«S»«S»evil.example/claim">c</a>\n`), "is UTF-16"],
+    ["a JSON file saved as UTF-16BE", "src/data.json", utf16be(`{"u": "https«C»«S»«S»evil.example/"}\n`), "is UTF-16"],
+  ];
+  for (const [name, file, body, why] of cases) {
+    it(`refuses ${name}`, () => {
+      const r = check({ [file]: body });
+      expect(r.out, r.out).toContain("text files this guard cannot read");
+      expect(r.out).toContain(`${file} ${why}`);
+      expect(r.status).toBe(1);
+    });
+  }
+
+  it("still skips an image, and names it", () => {
+    const r = check({ "src/img.png": Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 0]) });
+    expect(r.out, r.out).toContain("Outbound-URL guard OK");
+    expect(r.out).toContain("1 binary file not read: src/img.png");
+    expect(r.status).toBe(0);
+  });
+});
+
+describe("check:urls — protocol-relative links with no quote in markup", () => {
+  const refused: [string, string, string][] = [
+    ["a Markdown link", "src/notes.md", `[claim](«S»«S»evil.example/claim)`],
+    ["a Markdown link to a dotless host", "src/notes.md", `[claim](«S»«S»16909060/claim)`],
+    ["a Markdown reference definition", "src/notes.md", `[claim]: «S»«S»evil.example/claim`],
+    ["an unquoted HTML attribute", "src/page.html", `<a href=«S»«S»evil.example/claim>claim</a>`],
+    ["an unquoted HTML attribute with spaces around =", "src/page.html", `<img src = «S»«S»evil.example/p.png>`],
+    ["a CSS url()", "src/style.css", `.a { background: url(«S»«S»evil.example/p.png); }`],
+  ];
+  for (const [name, file, text] of refused) {
+    it(`refuses ${name}`, () => {
+      const r = check({ [file]: src(text) + "\n" });
+      expect(reasonOf(r.out), r.out).toBe(RUNTIME);
+      expect(r.out).toContain(`${file}:1  a protocol-relative URL`);
+      expect(r.status).toBe(1);
+    });
+  }
+
+  const passed: [string, string, string][] = [
+    ["relative and root-relative Markdown links", "src/notes.md", `[a](./b.md) [c](«S»docs/x.md) [d]: ../e.md\n`],
+    ["a line comment inside a fenced code block", "src/notes.md", "```ts\nconst a = 1; «S»«S» note\nf(x); «S»«S»tail\n```\n"],
+    ["a CSS block comment and a relative url()", "src/style.css", `/* note */ .a { background: url(./p.png); }\n`],
+  ];
+  for (const [name, file, text] of passed) {
+    it(`passes ${name}`, () => {
+      const r = check({ [file]: src(text) });
+      expect(r.out, r.out).toContain("Outbound-URL guard OK");
+      expect(r.status).toBe(0);
+    });
+  }
+});
+
+describe("check:urls — CODEOWNERS: the last matching line wins", () => {
+  const URL_AT = (file: string) => ({ [file]: src(`<a href="https«C»«S»«S»evil.example/claim">c</a>\n`) });
+  it("does not count a file whose last matching line is an ownerless glob after its directory line", () => {
+    const r = check(URL_AT("extension/x.html"), ["/extension/"], ["/extension/*.html"]);
+    expect(reasonOf(r.out), r.out).toBe(UNGATED);
+    expect(r.status).toBe(1);
+  });
+  it("does not count a file an unanchored ownerless glob reaches at any depth", () => {
+    const r = check(URL_AT("extension/sub/y.html"), ["/extension/"], ["*.html"]);
+    expect(reasonOf(r.out), r.out).toBe(UNGATED);
+    expect(r.status).toBe(1);
+  });
+  it("does not count a file under a directory whose ownerless line comes last", () => {
+    const r = check(URL_AT("extension/sub/y.html"), ["/extension/"], ["/extension/sub/"]);
+    expect(reasonOf(r.out), r.out).toBe(UNGATED);
+    expect(r.status).toBe(1);
+  });
+
+  const passed: [string, string, string[], string[]][] = [
+    ["a later glob line that has an owner", "extension/x.html", ["/extension/"], ["/extension/*.html  @other"]],
+    ["an ownerless glob whose last segment does not reach below its level", "extension/sub/y.html", ["/extension/"], ["/extension/*.html"]],
+    ["an ownerless `*` last segment, which names a subdirectory but does not reach into it", "extension/sub/y.html", ["/extension/"], ["/extension/*"]],
+    ["an ownerless line BEFORE the directory line", "extension/x.html", [], ["/extension/*.html", "/extension/  @owner"]],
+    ["an ownerless line for a different directory", "extension/x.html", ["/extension/"], ["/docs/"]],
+  ];
+  for (const [name, file, owners, raw] of passed) {
+    it(`counts a file despite ${name}`, () => {
+      const r = check(URL_AT(file), owners, raw);
+      expect(r.out, r.out).toContain("Outbound-URL guard OK");
+      expect(r.status).toBe(0);
+    });
+  }
 });
 
 describe("check:urls — this repo", () => {

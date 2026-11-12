@@ -73,20 +73,42 @@ const BUILD_OUTPUT = new Set(["extension/smoke/out"]);
  * Every regular file is read, whatever its name. The one exception is a file
  * with a NUL byte in its first 8 KiB — an image, a font — which no pattern
  * here can read; those are counted and named in every result.
+ *
+ * That exception is not open to a file whose name says it is text. A NUL in a
+ * comment of a `.ts` file, or an HTML page saved as UTF-16, made the whole file
+ * "binary" and skipped — CI stayed green while esbuild compiled the first and a
+ * browser rendered the second, URL and all. A file with a text extension that
+ * has a NUL byte in its first 8 KiB, or starts with a UTF-16 byte order mark,
+ * is now a failure: this guard cannot read it, and says so instead of passing.
  */
 const binarySkipped = [];
-function isBinary(full) {
+const unreadableText = [];
+const TEXT_EXT =
+  /\.(?:[mc]?[jt]sx?|json|jsonc|json5|webmanifest|md|markdown|mdx|html?|xhtml|svg|xml|css|scss|less|ya?ml|toml|txt|ini|npmrc)$/i;
+/** "text", "binary" (skipped and named), or why a text file cannot be read. */
+function classify(full) {
   const fd = openSync(full, "r");
+  let head;
   try {
     const buf = Buffer.alloc(8192);
-    const n = readSync(fd, buf, 0, buf.length, 0);
-    return buf.subarray(0, n).includes(0);
+    head = buf.subarray(0, readSync(fd, buf, 0, buf.length, 0));
   } finally {
     closeSync(fd);
   }
+  const utf16 = head.length >= 2 && ((head[0] === 0xff && head[1] === 0xfe) || (head[0] === 0xfe && head[1] === 0xff));
+  const nul = head.includes(0);
+  if (TEXT_EXT.test(full) && (utf16 || nul)) return utf16 ? "is UTF-16" : "has a NUL byte in its first 8 KiB";
+  return nul ? "binary" : "text";
 }
-function readable(full) {
-  return statSync(full).isFile() && !isBinary(full);
+/** Sorts one regular file into read, skipped, or refused; true when it is read. */
+function readable(full, rel) {
+  if (!statSync(full).isFile()) return false;
+  const kind = classify(full);
+  if (kind === "text") return true;
+  if (kind === "binary") {
+    if (!binarySkipped.includes(rel)) binarySkipped.push(rel);
+  } else if (!unreadableText.some((u) => u.startsWith(rel + " "))) unreadableText.push(`${rel} ${kind}`);
+  return false;
 }
 const CODEOWNERS = join(REPO, ".github", "CODEOWNERS");
 
@@ -141,7 +163,30 @@ const URL_RE = new RegExp(
  * A host with no scheme, at the very start of a decoded string. Used only on
  * text recovered from base64, where there is no surrounding quote to anchor on.
  */
-const PROTOCOL_RELATIVE_START = /^\s*(?:[\/\\]){2}[a-z0-9][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)+/i;
+const PROTOCOL_RELATIVE_START = new RegExp(
+  "^\\s*[\\/\\\\]{2}(?:[a-z0-9][a-z0-9-]*(?:\\.[a-z0-9][a-z0-9-]*)+|[0-9]+(?:[/:?#]|$)|[^\\s/@]+@[^\\s/]+|\\[[0-9a-f:.]+\\]|%[0-9a-f]{2})",
+  "i",
+);
+
+/**
+ * A protocol-relative URL — two slashes, then a host — inside a string literal
+ * (a backquoted one in a comment reads the same, so this file spells it out
+ * in words). The host is
+ * anything URL_RE accepts as one, except the bare `*` of a match pattern.
+ */
+const PROTOCOL_RELATIVE_QUOTED = new RegExp(`["'\`](?:\\\\?/|\\\\\\\\){2}${NOT_BARE_STAR}${HOST_CHAR}`);
+
+/**
+ * The same with no quote, where markup takes one: a Markdown link target
+ * (`[x](//host)`) or reference definition (`[x]: //host`), an unquoted HTML
+ * attribute (`href=//host`), and a CSS `url(//host)`. Only read in markup and
+ * style files, where neither `(//` nor `=//` is a code comment.
+ */
+const PROTOCOL_RELATIVE_MARKUP = new RegExp(
+  `(?:[(=]|^[ \\t]*\\[[^\\]\\n]+\\]:)[ \\t]*<?[/\\\\]{2}${NOT_BARE_STAR}${HOST_CHAR}`,
+  "im",
+);
+const MARKUP_EXT = /\.(?:md|markdown|mdx|html?|xhtml|svg|xml|css|scss|less)$/i;
 
 /**
  * A URL whose host is not in the file — assembled at runtime instead.
@@ -240,15 +285,16 @@ const ASSEMBLED = [
   // rest of the host in a further piece. No piece is a URL on its own, and a
   // host torn before its dot is not protocol-relative to the rule below either.
   [/\+[ \t]*(?:\r?\n[ \t]*)?["'`](?:\\?\/){2}[^\s"'`]/, "a scheme separator appended to something else"],
-  // Protocol-relative. `//host` inherits https on a page served over https, so
+  // Protocol-relative. Two slashes and a host inherit https on a page served over https, so
   // it reaches the network exactly like an absolute URL while containing no
   // scheme for anything above to find. A path after the host is not needed for
   // that, so none is required here; backslashes and escaped slashes are the
   // same two characters to the URL parser and to the JS lexer respectively.
-  [
-    /["'`](?:\\?\/|\\\\){2}[a-z0-9][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)+/i,
-    "a protocol-relative URL",
-  ],
+  // Any host counts, with the same host characters as URL_RE: this rule used
+  // to want an ASCII label and a dot, and a dotless decimal IPv4 address,
+  // userinfo, an IPv6 literal and a percent-encoded host each passed it while
+  // `new URL()` resolved them against the page to an https URL.
+  [PROTOCOL_RELATIVE_QUOTED, "a protocol-relative URL"],
   // Slashes spelled as escape sequences.
   [/(?:https?|wss?):(?:\\u002f|\\x2f){2}/i, "a scheme whose slashes are escape sequences"],
 ];
@@ -311,6 +357,45 @@ function hiddenInEscapes(text) {
 }
 
 /**
+ * A URL hidden behind HTML character references. `https&#58;//…` in an HTML
+ * attribute, a Markdown link or a JSX attribute string is `https://…` to the
+ * browser and to esbuild (measured: a `.tsx` `href` came out of the build as
+ * the plain URL), and to the patterns here it is an `https`, an ampersand and
+ * no scheme. The references are decoded and the window read again — after the
+ * URLs already visible on it are blanked, so `&amp;` in a visible URL's query
+ * neither hides a second URL nor counts as one.
+ *
+ * Numeric references are read with or without their `;` (HTML accepts both);
+ * named ones only for the characters a URL is built from. Tab and newline
+ * decode to nothing, as the URL parser drops them.
+ */
+const ENTITY_HERE = /&(?:#[0-9]|#x[0-9a-f]|[a-z]+;)/i;
+const NAMED = {
+  colon: ":", sol: "/", bsol: "\\", period: ".", commat: "@", percnt: "%", lsqb: "[", lbrack: "[",
+  rsqb: "]", rbrack: "]", num: "#", quest: "?", equals: "=", amp: "&", quot: '"', apos: "'", lpar: "(",
+  rpar: ")", lowbar: "_", tab: "", newline: "",
+};
+function decodeEntities(text) {
+  return text.replace(/&#x([0-9a-f]{1,6});?|&#([0-9]{1,7});?|&([a-z]+);/gi, (m, hex, dec, name) => {
+    if (name !== undefined) return NAMED[name.toLowerCase()] ?? m;
+    const n = parseInt(hex ?? dec, hex ? 16 : 10);
+    if (n === 9 || n === 10 || n === 13) return "";
+    return n <= 0x10ffff ? String.fromCodePoint(n) : m;
+  });
+}
+const ENTITY_EXT = /\.(?:md|markdown|mdx|html?|xhtml|svg|xml|[jt]sx)$/i;
+function hiddenInEntities(window, markup) {
+  if (!ENTITY_HERE.test(window)) return false;
+  const decoded = decodeEntities(window.replace(new RegExp(URL_RE.source, "gi"), " "));
+  return (
+    URL_ONCE.test(decoded) ||
+    PROTOCOL_RELATIVE_QUOTED.test(decoded) ||
+    (markup && PROTOCOL_RELATIVE_MARKUP.test(decoded)) ||
+    PROTOCOL_RELATIVE_START.test(decoded)
+  );
+}
+
+/**
  * A URL hidden in base64 torn across literals. One literal decodes to
  * `https:/`, the other to `evil.com`, and `atob("…" + "…")` decodes the pair
  * to a URL; measured against this guard, both halves printed OK, because
@@ -335,7 +420,41 @@ function hiddenInJoinedBase64(text) {
 
 const OWNER = /^(?:@[A-Za-z0-9][A-Za-z0-9-]*(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)?|[^@\s]+@[^@\s]+\.[^@\s]+)$/;
 
-/** Repo-relative, POSIX-separated paths that CODEOWNERS assigns to someone. */
+/**
+ * A CODEOWNERS pattern as GitHub matches it (gitignore syntax, with GitHub's
+ * documented differences): a leading or inner `/` anchors it at the root, and
+ * without one it matches at any depth; a trailing `/` means "everything under
+ * this directory"; a name with no wildcard also covers everything under it;
+ * `*` and `?` stay inside a segment and `**` crosses segments; and a last
+ * segment with a wildcard (`docs/*`, `extension/*.html`) matches files at that
+ * level only, not below.
+ */
+function codeownersRegExp(pattern) {
+  const anchored = pattern.startsWith("/") || pattern.replace(/\/$/, "").includes("/");
+  const dirOnly = pattern.endsWith("/");
+  const body = pattern.replace(/^\//, "").replace(/\/$/, "");
+  let re = "";
+  for (let i = 0; i < body.length; i += 1) {
+    const ch = body[i];
+    if (ch === "*" && body[i + 1] === "*") {
+      i += 1;
+      if (body[i + 1] === "/") {
+        i += 1;
+        re += "(?:.*/)?";
+      } else re += ".*";
+    } else if (ch === "*") re += "[^/]*";
+    else if (ch === "?") re += "[^/]";
+    else re += ch.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+  }
+  const lastSeg = body.split("/").pop() ?? "";
+  const tail = dirOnly ? "/.*" : /[*?]/.test(lastSeg) ? "" : "(?:/.*)?";
+  return new RegExp(`^${anchored ? "" : "(?:.*/)?"}${re}${tail}$`);
+}
+
+/**
+ * Every CODEOWNERS line GitHub reads, in order, with whether it assigns an
+ * owner. Order matters: GitHub applies the LAST line that matches a file.
+ */
 function gatedPaths() {
   const rules = [];
   for (const raw of readFileSync(CODEOWNERS, "utf8").split("\n")) {
@@ -347,29 +466,36 @@ function gatedPaths() {
     if (!line) continue;
     const [pattern, ...owners] = line.split(/\s+/);
     if (!pattern) continue;
-    // A pattern with no owner after it REMOVES ownership from its files —
-    // GitHub applies the last matching line, and an ownerless one overrides
-    // the `*` floor. Reading it as "gated" would let a URL sit in exactly the
-    // file nobody has to review.
-    if (owners.length === 0) continue;
     // GitHub skips a line with invalid syntax, so a line is counted only when
     // every owner on it has a form GitHub accepts: `@user`, `@org/team`, or an
     // email address.
     if (!owners.every((o) => OWNER.test(o))) continue;
-    rules.push(pattern.replace(/^\//, ""));
+    // A pattern with no owner after it is kept, as a line that REMOVES
+    // ownership: GitHub applies the last matching line, and an ownerless one
+    // overrides everything above it, the `*` floor and a directory line alike.
+    rules.push({ pattern, path: pattern.replace(/^\//, ""), owned: owners.length > 0, re: codeownersRegExp(pattern) });
   }
   return rules;
 }
 
 /**
- * Patterns are matched as a literal path or a directory prefix, never as globs.
- * That is what keeps CODEOWNERS' catch-all `*` line — a review floor for every
- * file — from also reading as "every file may carry a URL", which would switch
- * this guard off. Teaching this function globs means excluding that line first.
+ * Two conditions, both required.
+ *
+ * The file has an owner: the last CODEOWNERS line matching it assigns one.
+ * Counting any owned line that names the file was wrong in one direction —
+ * `/extension/*.html` with no owner, after `/extension/ @owner`, leaves
+ * `extension/x.html` with no owner on GitHub, and this guard still counted it
+ * as gated.
+ *
+ * And an owned line NAMES it, as a literal path or a directory prefix — never
+ * by a wildcard. That is what keeps CODEOWNERS' catch-all `*` line, a review
+ * floor for every file, from also reading as "every file may carry a URL".
  */
 function isGated(relPath, rules) {
-  return rules.some((rule) =>
-    rule.endsWith("/") ? relPath.startsWith(rule) : relPath === rule,
+  const last = rules.filter((r) => r.re.test(relPath)).pop();
+  if (!last || !last.owned) return false;
+  return rules.some(
+    (r) => r.owned && (r.path.endsWith("/") ? relPath.startsWith(r.path) : relPath === r.path),
   );
 }
 
@@ -379,8 +505,7 @@ function* walk(dir) {
     const rel = relative(REPO, full).split(sep).join("/");
     if (BUILD_OUTPUT.has(rel) || entry === "node_modules") continue;
     if (statSync(full).isDirectory()) yield* walk(full);
-    else if (readable(full)) yield full;
-    else if (statSync(full).isFile() && !binarySkipped.includes(rel)) binarySkipped.push(rel);
+    else if (readable(full, rel)) yield full;
   }
 }
 
@@ -417,12 +542,7 @@ const offenders = [];
 const rootFiles = readdirSync(REPO)
   .sort()
   .map((entry) => join(REPO, entry))
-  .filter((full) => {
-    if (statSync(full).isDirectory()) return false;
-    if (readable(full)) return true;
-    if (statSync(full).isFile()) binarySkipped.push(relative(REPO, full).split(sep).join("/"));
-    return false;
-  });
+  .filter((full) => !statSync(full).isDirectory() && readable(full, relative(REPO, full).split(sep).join("/")));
 
 const assembled = [];
 
@@ -435,6 +555,8 @@ for (const file of [...rootFiles, ...SCAN_ROOTS.flatMap((root) => [...walk(join(
   // the offending text is on. Whole-file matching finds the same things and can
   // only report "somewhere in this file".
   const lines = text.split("\n");
+  const markup = MARKUP_EXT.test(rel);
+  const entities = ENTITY_EXT.test(rel);
   for (let i = 0; i < lines.length; i += 1) {
     const window = lines[i] + "\n" + (lines[i + 1] ?? "");
     let hit = null;
@@ -444,6 +566,8 @@ for (const file of [...rootFiles, ...SCAN_ROOTS.flatMap((root) => [...walk(join(
         break;
       }
     }
+    if (!hit && markup && PROTOCOL_RELATIVE_MARKUP.test(window)) hit = "a protocol-relative URL";
+    if (!hit && entities && hiddenInEntities(window, markup)) hit = "a URL written with HTML character references";
     if (!hit && hiddenInBase64(lines[i])) hit = "a URL encoded in base64";
     if (!hit && hiddenInEscapes(window)) hit = "a URL written with escape sequences";
     if (!hit && hiddenInJoinedBase64(window)) hit = "a URL encoded in base64";
@@ -457,6 +581,14 @@ for (const file of [...rootFiles, ...SCAN_ROOTS.flatMap((root) => [...walk(join(
 }
 
 const skippedNote = `${binarySkipped.length} binary file${binarySkipped.length === 1 ? "" : "s"} not read${binarySkipped.length ? ": " + binarySkipped.join(", ") : ""}`;
+
+if (unreadableText.length) {
+  console.error(`(${skippedNote}.)\n`);
+  console.error("Outbound-URL guard FAILED — text files this guard cannot read:\n");
+  for (const u of unreadableText) console.error(`  • ${u}`);
+  console.error("\nSave them as UTF-8 without NUL bytes; a file named as text is read as text.");
+  process.exit(1);
+}
 
 if (assembled.length) {
   console.error(`(${skippedNote}.)\n`);
