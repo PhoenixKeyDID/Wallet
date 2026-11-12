@@ -19,6 +19,7 @@
  * Run it when touching one of these guards:
  *
  *     node scripts/mutants.mjs
+ *     node scripts/mutants.mjs "signer:"   # only mutants whose name contains this
  *
  * A mutation that stays GREEN is the finding. It means the guard on that line
  * can be removed without a single test objecting.
@@ -60,6 +61,10 @@ const WALLET_HUB = "src/components/wallet/WalletHub.tsx";
 const COPY_GUARD_TEST = "src/components/wallet/__tests__/SeedPhraseStep.test.tsx";
 const COPYABLE_ANCHOR = '    "src/components/wallet/WatchOnlyPanel.tsx#WatchOnlyPanel: watched",';
 const FORWARDS_ANCHOR = '    "src/components/wallet/WalletTabs.tsx#WalletTabs: port",\n  ];';
+const PENDING = "extension/background/pending.ts";
+const SIGN_FOREIGN = "src/lib/keystore/signForeign.ts";
+const UTXO_CBOR = "src/lib/cardano/utxoCbor.ts";
+const APPROVE = "extension/src/approve.tsx";
 // A gate is worth mutating too. "Is this guard pinned" and "is the thing that
 // checks the guard pinned" are different questions, and the second one has gone
 // unanswered here before: two table rows named after a detector were going red
@@ -79,6 +84,13 @@ const TESTS = [
   "src/components/wallet/__tests__/LocalWalletPanel.context.test.tsx",
   "scripts/__tests__/checkPopupCss.test.ts",
   "scripts/__tests__/checkLocales.test.ts",
+  "extension/background/__tests__/pending.test.ts",
+  "src/lib/keystore/__tests__/foreignTxAttack.test.ts",
+  "src/lib/cardano/__tests__/utxoCbor.test.ts",
+  "src/lib/keystore/__tests__/extensionApprove.test.tsx",
+  "src/lib/keystore/__tests__/dripPotClaim.test.ts",
+  "src/lib/keystore/__tests__/signData.test.ts",
+  "src/lib/cardano/__tests__/utxoSelect.test.ts",
 ];
 
 /**
@@ -477,24 +489,6 @@ const MUTANTS = [
     file: "src/lib/cardano/submitError.ts",
     from: "  return err instanceof SubmitRejectedError && err.status >= 400 && err.status < 500;",
     to: "  return err instanceof SubmitRejectedError;",
-  },
-  {
-    name: "collateral inputs (field 13) allowed again — a second spend path the approval screen cannot show",
-    file: TX_SUMMARY,
-    from: "  11, // script_data_hash\n",
-    to: "  11, // script_data_hash\n  13,\n",
-  },
-  {
-    name: "collateral return (field 16) allowed again — a second spend path the approval screen cannot show",
-    file: TX_SUMMARY,
-    from: "  11, // script_data_hash\n",
-    to: "  11, // script_data_hash\n  16,\n",
-  },
-  {
-    name: "collateral total (field 17) allowed again — a second spend path the approval screen cannot show",
-    file: TX_SUMMARY,
-    from: "  11, // script_data_hash\n",
-    to: "  11, // script_data_hash\n  17,\n",
   },
   {
     name: "Send review prints the bare token name again (policy id dropped on the last screen)",
@@ -1165,6 +1159,242 @@ const MUTANTS = [
     from: 'if (json === null || typeof json !== "object" || Array.isArray(json)) {',
     to: "if (false) {",
   },
+  // ── The extension talking to real dApps: who answers which request, what a
+  // read returns, and which error code a refusal carries. Every one of these
+  // was a dead end for a site before it was fixed. ──
+  {
+    name: "an answer from another window settles the request (port check gone)",
+    file: PENDING,
+    from: "if (!w || w.port !== port) return false;",
+    to: "if (!w) return false;",
+  },
+  {
+    name: "request ids are a counter again, guessable and restarting per worker",
+    file: PENDING,
+    from: "newId: () => string = randomId",
+    to: "newId: () => string = ((n) => () => String(++n))(0)",
+  },
+  {
+    name: "a colliding id is not re-drawn, two requests share one",
+    file: PENDING,
+    from: "      while (waiting.has(id)) id = newId();\n",
+    to: "",
+  },
+  {
+    name: "closing a window settles every window's requests",
+    file: PENDING,
+    from: "        if (w.port !== port) continue;\n",
+    to: "",
+  },
+  {
+    name: "closing the old window unregisters the new one",
+    file: PENDING,
+    from: "windows.get(origin) === port",
+    to: "windows.has(origin)",
+  },
+  {
+    name: "own reward withdrawal: stake key justified but never signed",
+    file: SIGN_FOREIGN,
+    from: "\n        add(account.stakeKeyHashHex);",
+    to: "",
+  },
+  {
+    name: "a zero-ADA UTxO from the indexer is encoded instead of refused",
+    file: UTXO_CBOR,
+    from: "(!allowZero && n === BigInt(0))",
+    to: "false",
+  },
+  {
+    name: "getUtxos answers an empty list instead of the inputs signing reads",
+    file: APPROVE,
+    from: "return { ok: true, value: encodeInputsAsUtxosHex(list) };",
+    to: "return { ok: true, value: [] as string[] }; /* MUT_GETUTXOS_EMPTY */",
+    marker: "MUT_GETUTXOS_EMPTY",
+  },
+  {
+    name: "getUtxos answers the full list when `amount` cannot be covered, instead of null",
+    file: APPROVE,
+    from: "if (!picked) return { ok: true, value: null };",
+    to: "if (!picked) return { ok: true, value: encodeInputsAsUtxosHex(list) }; /* MUT_GETUTXOS_AMOUNT */",
+    marker: "MUT_GETUTXOS_AMOUNT",
+  },
+  {
+    name: "getUtxos `paginate` past the end answers an empty page, not PaginateError",
+    file: APPROVE,
+    from: 'if ("maxSize" in paged) return { ok: false, error: paginateError(paged.maxSize) };',
+    to: 'if ("maxSize" in paged) return { ok: true, value: [] as string[] }; /* MUT_PAGINATE */',
+    marker: "MUT_PAGINATE",
+  },
+  {
+    name: "getBalance answers zero instead of the summed inputs",
+    file: APPROVE,
+    from: "value: encodeBalanceHex(await wp.getInputs())",
+    to: 'value: "00"',
+  },
+  {
+    name: "the window opens account 0 whatever account the person last used",
+    file: APPROVE,
+    from: "w.accountIndex ?? 0",
+    to: "0",
+  },
+  {
+    name: "signData parked on a screen whose approve button never enables",
+    file: APPROVE,
+    from: 'if (req.method === "signData") {',
+    to: "if (false) {",
+  },
+  {
+    name: "Reject on submitTx answers 2, which TxSendError reads as Failure",
+    file: APPROVE,
+    from: '? sendRefused(t("cip30_declined"))',
+    to: '? /* MUT_SUBMIT_REJECT */ declined(t("cip30_declined"))',
+    marker: "MUT_SUBMIT_REJECT",
+  },
+  {
+    name: "Send on submitTx signs instead of broadcasting",
+    file: APPROVE,
+    from: 'req.method === "submitTx" ? broadcast() : sign()',
+    to: "sign()",
+  },
+  {
+    name: "the address count is a hard-coded English word again",
+    file: APPROVE,
+    from: '{t("cip30_address_count", { n: allAddresses(account).length })}',
+    to: "{allAddresses(account).length} addresses",
+  },
+  {
+    name: "Reject on the connect screen answers UserDeclined (2) instead of APIError.Refused (-3)",
+    file: APPROVE,
+    from: '<button onClick={() => answer({ ok: false, error: refused(t("cip30_declined")) })}>',
+    to: '<button onClick={() => answer({ ok: false, error: declined(t("cip30_declined")) })}>',
+  },
+  {
+    name: "a signing step that fails answers UserDeclined instead of ProofGeneration",
+    file: APPROVE,
+    from: "error: proofFailed(key ? t(key, { defaultValue: key }) : e instanceof Error ? e.message : String(e)),",
+    to: "error: declined(key ? t(key, { defaultValue: key }) : e instanceof Error ? e.message : String(e)),",
+  },
+  {
+    name: "a request arriving after the idle lock is served by whatever account the ref holds",
+    file: APPROVE,
+    from: "      if (acct !== account) {",
+    to: "      if (false) {",
+  },
+  {
+    name: "the idle lock leaves the port open",
+    file: APPROVE,
+    from: "      p.disconnect();",
+    to: "      void p;",
+  },
+  {
+    name: "the idle lock leaves the account in the ref that requests read",
+    file: APPROVE,
+    from: "      accountRef.current = null;",
+    to: "      void 0;",
+  },
+  // ── signTx, both layers: each rule the screen applies, and the same rule
+  // again in the function that holds the key. Each mutant plants its own
+  // marker, and the runner reads the result only once the marker is in the
+  // file. The drip-pot claim tests put back exactly one of these on a claim
+  // that otherwise signs, and match the gate's own code or sentence. ──
+  {
+    name: "signer: a tx declaring its own script fails (is_valid = false) is signed",
+    file: SIGN_FOREIGN,
+    from: "if (Array.isArray(whole) && whole.length >= 3 && whole[2] === false) {",
+    to: "if (false /* MUT_SF_INVALID */) {",
+    marker: "MUT_SF_INVALID",
+  },
+  {
+    name: "signer: a certificate from a website is signed",
+    file: SIGN_FOREIGN,
+    from: "if (countOf(b.get(4)) > 0) throw",
+    to: "if (false /* MUT_SF_CERT */) throw",
+    marker: "MUT_SF_CERT",
+  },
+  {
+    name: "signer: a mint that creates tokens is signed",
+    file: SIGN_FOREIGN,
+    from: "if (!isNegativeInteger(qty)) throw",
+    to: "if (false /* MUT_SF_MINT */) throw",
+    marker: "MUT_SF_MINT",
+  },
+  {
+    name: "signer: a body for another network is signed",
+    file: SIGN_FOREIGN,
+    from: "if (declaredNetwork !== undefined && Number(declaredNetwork) !== ledgerNetworkId) {",
+    to: "if (false /* MUT_SF_NET */) {",
+    marker: "MUT_SF_NET",
+  },
+  {
+    name: "signer: collateral this wallet does not hold is passed over instead of refused",
+    file: SIGN_FOREIGN,
+    from: 'if (what === "collateral") throw',
+    to: 'if (false /* MUT_SF_COLL */) throw',
+    marker: "MUT_SF_COLL",
+  },
+  {
+    name: "screen: a tx declaring its own script fails is described",
+    file: TX_SUMMARY,
+    from: "if (decoded.length >= 3 && decoded[2] === false) {",
+    to: "if (false /* MUT_TS_INVALID */) {",
+    marker: "MUT_TS_INVALID",
+  },
+  {
+    name: "screen: a certificate is described as if nothing were handed over",
+    file: TX_SUMMARY,
+    from: 'if (n !== 0) bad("this transaction carries a certificate',
+    to: 'if (false /* MUT_TS_CERT */) bad("this transaction carries a certificate',
+    marker: "MUT_TS_CERT",
+  },
+  {
+    name: "screen: a mint that creates tokens is described",
+    file: TX_SUMMARY,
+    from: "if (qty >= BigInt(0)) bad(",
+    to: "if (false /* MUT_TS_MINT */) bad(",
+    marker: "MUT_TS_MINT",
+  },
+  {
+    name: "screen: a body for another network is described",
+    file: TX_SUMMARY,
+    from: "if (declaredNetwork !== undefined && Number(declaredNetwork) !== networkId) {",
+    to: "if (false /* MUT_TS_NET */) {",
+    marker: "MUT_TS_NET",
+  },
+  {
+    name: "screen: collateral this wallet cannot value is skipped instead of refused",
+    file: TX_SUMMARY,
+    from: "    if (!held) {\n      bad(\"this transaction puts up collateral",
+    to: "    if (!held) continue; /* MUT_TS_COLL */\n    if (false) {\n      bad(\"this transaction puts up collateral",
+    marker: "MUT_TS_COLL",
+  },
+  {
+    name: "screen: the collateral at risk is computed but never shown",
+    file: TX_SUMMARY_VIEW,
+    from: "{summary.collateral && (",
+    to: "{/* MUT_VIEW_COLL */ false && summary.collateral && (",
+    marker: "MUT_VIEW_COLL",
+  },
+  {
+    name: "screen: the burn is computed but never shown",
+    file: TX_SUMMARY_VIEW,
+    from: "{summary.burns.length > 0 && (",
+    to: "{/* MUT_VIEW_BURN */ false && summary.burns.length > 0 && (",
+    marker: "MUT_VIEW_BURN",
+  },
+  {
+    name: "getCollateral puts up more than the 5 ADA cap when a site asks",
+    file: APPROVE,
+    from: "if (want.lovelace > COLLATERAL_CAP_LOVELACE) return",
+    to: "if (false /* MUT_COLL_CAP */) return",
+    marker: "MUT_COLL_CAP",
+  },
+  {
+    name: "signTx ignores partialSign = false and returns a partial witness set",
+    file: APPROVE,
+    from: "const partial = phase.req.params[1] === true;",
+    to: "const partial = true; /* MUT_PARTIAL */",
+    marker: "MUT_PARTIAL",
+  },
 ];
 
 /**
@@ -1181,6 +1411,13 @@ const MUTANTS = [
  * Pinning these would need a gate naming one function in one file, which then
  * goes red on any honest rename — the kind of watcher that gets deleted rather
  * than fixed.
+ *
+ *   - the approval window's idle lock no longer clearing `accountRef`
+ *
+ * Also a second door: the same lock wipes the account's keys on the next line,
+ * and the `setAccount(null)` after it re-renders the ref to null and closes the
+ * port. The ref only matters for a request landing between the two, which a
+ * test cannot place without faking React's scheduler.
  */
 
 const read = (rel) => readFileSync(join(REPO, rel), "utf8");
@@ -1190,6 +1427,15 @@ const runTests = () =>
   spawnSync("npx", ["vitest", "run", ...TESTS], { cwd: REPO, encoding: "utf8" }).status ?? 1;
 
 const editsOf = (m) => m.edits ?? [m];
+// A name filter, for re-measuring the guards one change touched. The summary
+// line says how many ran out of how many, so a filtered run cannot be read
+// as the whole list.
+const only = process.argv[2];
+const RUN = only ? MUTANTS.filter((m) => m.name.includes(only)) : MUTANTS;
+if (RUN.length === 0) {
+  console.error(`No mutant name contains ${JSON.stringify(only)}.`);
+  process.exit(1);
+}
 const originals = new Map();
 for (const m of MUTANTS) for (const e of editsOf(m)) if (!originals.has(e.file)) originals.set(e.file, read(e.file));
 const restoreAll = () => {
@@ -1214,7 +1460,7 @@ try {
     process.exit(1);
   }
 
-  for (const m of MUTANTS) {
+  for (const m of RUN) {
     // Edits apply in order, each to the file as the previous ones left it.
     const next = new Map();
     let miss;
@@ -1233,6 +1479,14 @@ try {
       continue;
     }
     for (const [rel, text] of next) write(rel, text);
+    // The marker is read back from disk, not from `next`: a write that went
+    // somewhere else would otherwise grade the unmutated file.
+    if (m.marker && ![...next.keys()].some((rel) => read(rel).includes(m.marker))) {
+      for (const rel of next.keys()) write(rel, originals.get(rel));
+      console.error(`  ANCHOR  ← ${m.name}\n          (marker ${m.marker} not found on disk)`);
+      unanchored += 1;
+      continue;
+    }
     const caught = runTests() !== 0;
     for (const rel of next.keys()) write(rel, originals.get(rel));
     console.log(`  ${caught ? "RED   " : "GREEN "}  ← ${m.name}`);
@@ -1244,7 +1498,8 @@ try {
 
 const bad = survived + unanchored;
 console.log(
-  `\n${MUTANTS.length - bad}/${MUTANTS.length} guards pinned` +
+  `\n${RUN.length - bad}/${RUN.length} guards pinned` +
+    (only ? ` (filter ${JSON.stringify(only)}: ${RUN.length} of ${MUTANTS.length} mutants)` : "") +
     (survived ? ` · ${survived} removable with every test still green` : "") +
     (unanchored ? ` · ${unanchored} anchor(s) no longer match the source` : ""),
 );

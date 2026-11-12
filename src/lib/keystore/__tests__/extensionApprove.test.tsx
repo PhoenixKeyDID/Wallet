@@ -421,6 +421,48 @@ describe("signTx on a LAMP drip-pot claim, partialSign = true", () => {
   });
 });
 
+describe("signTx partialSign: a key another wallet must add", () => {
+  // This wallet's input, plus field 14 naming a key hash this wallet does not
+  // hold — a co-signer. Without partialSign the dApp said this wallet could
+  // finish alone, and it cannot.
+  const coSigned = () =>
+    Encoder.encode([
+      new Map<number, unknown>([
+        [0, [[Buffer.from("77".repeat(32), "hex"), 1]]],
+        [1, [[Buffer.from((tyUtils.getAddressFromString(OUTSIDER) as tyTypes.ShelleyAddress).getHex(), "hex"), 1_000_000]]],
+        [2, 200_000],
+        [14, [Buffer.from("ee".repeat(28), "hex")]],
+      ]),
+      new Map(),
+      true,
+      null,
+    ]).toString("hex");
+
+  const run = async (id: string, params: unknown[]) => {
+    mocks.fetchUtxos.mockResolvedValue(ourInputs());
+    const { port, view } = await unlocked();
+    act(() => port.deliver({ type: "request", id, origin: ORIGIN, method: "signTx", params }));
+    const approve = await view.findByText(en.cip30_approve);
+    await waitFor(() => expect((approve as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(approve);
+    await waitFor(() => expect(port.sent.find((m) => m.id === id)).toBeDefined());
+    return port.sent.find((m) => m.id === id)!.result!;
+  };
+
+  it("without partialSign answers ProofGeneration (1), not a partial witness set", async () => {
+    const res = await run("p1", [coSigned()]);
+    expect(res).toMatchObject({ ok: false, error: { code: 1, info: en.sign_key_not_in_wallet } });
+  });
+
+  it("with partialSign = true answers this wallet's one witness", async () => {
+    const res = await run("p2", [coSigned(), true]);
+    expect(res.ok).toBe(true);
+    const ws = Decoder.decode(Buffer.from(res.value as string, "hex")).value as Map<number, [Buffer, Buffer][]>;
+    const hashes = Array.from(ws.get(0)!).map(([pub]) => Buffer.from(blake2b224(pub)).toString("hex"));
+    expect(hashes).toEqual([acct1.external[0]!.keyHashHex]);
+  });
+});
+
 describe("enable: Reject is APIError.Refused (-3), the code CIP-30 gives a declined connection", () => {
   it("answers -3, not TxSignError.UserDeclined (2)", async () => {
     const { port, view } = await unlocked();
