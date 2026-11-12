@@ -231,4 +231,56 @@ describe("the screen shows text only when the text is what is signed", () => {
       expect(printableText(Buffer.from(t, "utf8"))).toBe(t);
     }
   });
+
+  // One group per case, each the code points the old hand-kept list missed.
+  it("shows hex only for a soft hyphen U+00AD and the Mongolian vowel separator U+180E (format, Cf)", () => {
+    expect(hidden(0x00ad)).toBeNull();
+    expect(hidden(0x180e)).toBeNull();
+  });
+  it("shows hex only for the line and paragraph separators U+2028 / U+2029 (Zl, Zp)", () => {
+    expect(hidden(0x2028)).toBeNull();
+    expect(hidden(0x2029)).toBeNull();
+  });
+  it("shows hex only for tag characters U+E0000–E007F (Cf)", () => {
+    for (const cp of [0xe0001, 0xe0020, 0xe0041, 0xe007f]) expect(hidden(cp)).toBeNull();
+  });
+  it("shows hex only for private-use code points (Co)", () => {
+    for (const cp of [0xe000, 0xf8ff, 0xf0000, 0x10fffd]) expect(hidden(cp)).toBeNull();
+  });
+  it("shows hex only for code points unassigned in this engine's Unicode (Cn)", () => {
+    // U+0378 and U+2FFFF have been unassigned in every Unicode version so far.
+    for (const cp of [0x0378, 0x2ffff]) expect(hidden(cp)).toBeNull();
+  });
+  it("shows hex only for right-to-left letters outside the seven scripts the old list named", () => {
+    expect(hidden(0x1e900)).toBeNull(); // Adlam
+    expect(hidden(0x10900)).toBeNull(); // Phoenician
+    expect(hidden(0x10a10)).toBeNull(); // Kharoshthi
+    expect(hidden(0x10d50)).toBeNull(); // Garay (Unicode 16)
+    expect(hidden(0x1ec71)).toBeNull(); // Indic Siyaq number — script Common, Bidi AL
+  });
+  it("covers every code point of every right-to-left script the engine knows", () => {
+    const RTL_SCRIPTS = [
+      "Hebrew", "Arabic", "Syriac", "Thaana", "Nko", "Samaritan", "Mandaic", "Imperial_Aramaic",
+      "Phoenician", "Old_South_Arabian", "Old_North_Arabian", "Avestan", "Inscriptional_Parthian",
+      "Inscriptional_Pahlavi", "Psalter_Pahlavi", "Old_Turkic", "Old_Hungarian", "Hanifi_Rohingya",
+      "Old_Sogdian", "Sogdian", "Elymaic", "Chorasmian", "Yezidi", "Adlam", "Mende_Kikakui",
+      "Kharoshthi", "Lydian", "Meroitic_Cursive", "Meroitic_Hieroglyphs", "Cypriot", "Manichaean",
+      "Nabataean", "Palmyrene", "Hatran", "Old_Uyghur", "Garay",
+    ];
+    const anyRtl = new RegExp(`[${RTL_SCRIPTS.map((n) => `\\p{Script=${n}}`).join("")}]`, "u");
+    const shown: string[] = [];
+    let seen = 0;
+    for (let cp = 0; cp <= 0x10ffff; cp++) {
+      if (cp >= 0xd800 && cp <= 0xdfff) continue;
+      const ch = String.fromCodePoint(cp);
+      if (!anyRtl.test(ch)) continue;
+      seen += 1;
+      if (printableText(Buffer.from(`a${ch}`, "utf8")) !== null) shown.push(cp.toString(16));
+    }
+    expect(seen).toBeGreaterThan(3000); // the walk did run over the scripts
+    expect(shown).toEqual([]);
+  });
+  it("still shows plain emoji, and a heart with its variation selector, as text", () => {
+    for (const t of ["gm 😀", "🚀 to the moon", "❤️"]) expect(printableText(Buffer.from(t, "utf8"))).toBe(t);
+  });
 });

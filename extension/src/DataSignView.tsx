@@ -14,7 +14,8 @@ import { useTranslation } from "react-i18next";
  *   proves control of an address;
  * - **the address**, in full, because it goes into the signed header;
  * - **the bytes**: as text only when the text is exactly what is signed
- *   (`printableText` refuses control and bidi characters), and always as hex.
+ *   (`printableText` refuses control, format, separator, private-use and
+ *   unassigned characters, and right-to-left letters), and always as hex.
  */
 export type DataSignShown = {
   kind: "stake" | "payment";

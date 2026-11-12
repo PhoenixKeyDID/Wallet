@@ -81,19 +81,37 @@ function bech32Of(bytes: Buffer, network: number): string {
 const hexOfBech32 = (a: string) => addressBytes(a)?.toString("hex") ?? "";
 
 /**
- * UTF-8 text a person can read, or null. Control characters other than a
- * newline or tab are what a page would use to make the visible text differ from
- * what is signed — a carriage return that hides a line, a bidi override that
- * reverses one — so their presence means the screen shows hex alone. The same
- * goes for the invisible format characters a page can hide inside a word: the
- * Arabic letter mark (U+061C), zero-width space and joiners (U+200B–U+200D),
- * the word joiner and invisible operators (U+2060–U+2064), and the byte-order
- * mark (U+FEFF).
+ * UTF-8 text a person can read, or null — in which case the screen shows hex
+ * alone. Text is shown only when what is on screen is, character for
+ * character and in order, what is signed. Three things break that, and each is
+ * refused by Unicode class rather than by a hand-kept list, because a list is
+ * only as complete as the day it was written (the last one missed U+00AD,
+ * U+180E, U+2028/2029, the tag characters and Adlam):
  *
- * Text in a strong right-to-left script (Hebrew, Arabic, Syriac, Thaana, N'Ko,
- * Samaritan, Mandaic) is shown as hex too. Those letters reorder the
- * characters around them without any control character at all, so the order
- * on screen is not the order that is signed.
+ * 1. **Control characters** other than newline and tab — a carriage return can
+ *    hide a line.
+ * 2. **Characters that are not drawn, or not drawn as themselves**:
+ *    `\p{Cf}` (format: bidi overrides and isolates, zero-width space and
+ *    joiners, soft hyphen U+00AD, Mongolian vowel separator U+180E, the
+ *    byte-order mark, tag characters U+E0000–E007F, …), `\p{Zl}` / `\p{Zp}`
+ *    (U+2028 / U+2029, line breaks that are not `\n`), `\p{Co}` (private use:
+ *    any font may draw anything there) and `\p{Cn}` (unassigned in the
+ *    engine's Unicode version — a character newer than the engine is not
+ *    shown as text, which fails toward hex).
+ * 3. **Right-to-left letters.** A strong R/AL character reorders the
+ *    characters around it with no control character at all, so the order on
+ *    screen is not the order signed. JavaScript has no Bidi_Class property, so
+ *    this is a code-point range: the blocks Unicode's `DerivedBidiClass.txt`
+ *    defaults to R or AL (Unicode 16), merged — Hebrew through Arabic
+ *    Extended-A (U+0590–08FF), the Hebrew and Arabic presentation forms
+ *    (U+FB1D–FDFF, U+FE70–FEFF), the SMP right-to-left area U+10800–10FFF
+ *    (Cypriot, Aramaic, Phoenician, Kharoshthi, Avestan, Old Turkic, Hanifi
+ *    Rohingya, Garay, Yezidi, Sogdian, Old Uyghur, Elymaic, …) and
+ *    U+1E800–1EFFF (Mende Kikakui, Adlam, the Siyaq numbers, Arabic
+ *    mathematical letters). The ranges are wider than the letters — a mark or
+ *    digit inside them also sends the text to hex — which is the safe
+ *    direction. A test walks every code point of every RTL `\p{Script=…}` the
+ *    engine knows and checks it is covered.
  */
 export function printableText(bytes: Uint8Array): string | null {
   let text: string;
@@ -105,14 +123,17 @@ export function printableText(bytes: Uint8Array): string | null {
     return null;
   }
   // eslint-disable-next-line no-control-regex
-  if (/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/.test(text)) return null;
-  if (RTL_SCRIPT.test(text)) return null;
+  if (/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/.test(text)) return null;
+  if (NOT_DRAWN_AS_ITSELF.test(text)) return null;
+  if (RIGHT_TO_LEFT.test(text)) return null;
   return text;
 }
 
-/** Letters of the scripts Unicode writes right to left. */
-const RTL_SCRIPT =
-  /[\p{Script=Hebrew}\p{Script=Arabic}\p{Script=Syriac}\p{Script=Thaana}\p{Script=Nko}\p{Script=Samaritan}\p{Script=Mandaic}]/u;
+/** Format, line/paragraph separator, private-use and unassigned code points. */
+const NOT_DRAWN_AS_ITSELF = /[\p{Cf}\p{Zl}\p{Zp}\p{Co}\p{Cn}]/u;
+
+/** The blocks Unicode defaults to Bidi_Class R or AL, merged (see `printableText`). */
+const RIGHT_TO_LEFT = /[\u0590-\u08ff\ufb1d-\ufdff\ufe70-\ufeff\u{10800}-\u{10fff}\u{1e800}-\u{1efff}]/u;
 
 /**
  * Decide, without signing, whether this account may answer `signData(addr, payload)`
