@@ -53,6 +53,13 @@ jobs:
       - name: Outbound-URL guard
         run: bun run check:urls
 
+      # docs/contribution-tiers.json tells a contribution marketplace which files
+      # an outside contributor may be paid to change. A file CODEOWNERS guards
+      # must never be one of them, nor may any file a forbidden file imports;
+      # paid tiers name tracked files only, never a wildcard. Fails on any.
+      - name: Every CODEOWNERS path is forbidden in the tier table
+        run: bun run check:tiers-codeowners
+
       # ES modules evaluate their imports in source order, and
       # `@stricahq/bip32ed25519` reads a bare `process` while it is still
       # evaluating. The Node-globals shim has to be imported before it, in every
