@@ -136,11 +136,17 @@ const hexOfBech32 = (a: string) => addressBytes(a)?.toString("hex") ?? "";
  *    line of U+2800 counts as an empty line. A combining mark with no inked
  *    letter under it (at the start, after a line break or after a blank) is
  *    blank too, so one accent every 16 spaces does not cut the run short
- *    (`inkShape`). And a line of 64 code points or more is refused when some
- *    64 of them in a row are more than 75 % blank, whatever inked character
- *    breaks the runs — 16 spaces and a dot, repeated, is 94 % (`mostlyBlank`;
- *    prose is under 20 %, aligned table columns about 60 %, and indentation
- *    sits in front of short lines, which this does not measure). A message
+ *    (`inkShape`). Blank is counted in columns, not code points: the
+ *    ideographic space U+3000 is drawn two columns wide and counts as two
+ *    blanks everywhere in this rule, so nine of them in a row are a run of 18.
+ *    And the text is refused when it is mostly blank, whatever inked character
+ *    breaks the runs (`mostlyBlank`): some 64 columns in a row on one line, or
+ *    some 256 columns in a row across lines (line breaks left out), more than
+ *    75 % blank — 16 spaces and a dot, repeated, is 94 %; three ideographic
+ *    spaces and a dot is 86 %; forty lines of 63 code points, each a dot every
+ *    16 blanks, is 94 % and is refused although no line reaches 64 columns.
+ *    Prose is under 20 %, aligned table columns about 60 %, and indentation
+ *    in front of a short block of code (under 256 columns) is not measured. A message
  *    that ends after a page of newlines reads as finished while the part that
  *    matters sits below — the screen also prints the byte count and the number
  *    of lines the message itself has (its line breaks plus one, not the lines
@@ -219,44 +225,92 @@ function inkShape(text: string): string {
       continue;
     }
     onBlank = c === "\n" || INKLESS_ONE(c);
-    out += c;
+    // A blank drawn two columns wide is two blanks (see `WIDE_INKLESS`).
+    out += WIDE_INKLESS.test(c) ? "  " : c;
   }
   return out;
 }
 
-/** Width of the window `mostlyBlank` slides along a line, in code points. */
-const DENSITY_WINDOW = 64;
-/** Most blanks a window may hold: 48 of 64, i.e. 75 %. */
-const MAX_BLANKS_PER_WINDOW = (DENSITY_WINDOW * 3) / 4;
+/**
+ * The inkless characters drawn two columns wide (East_Asian_Width F or W):
+ * the ideographic space U+3000. The Hangul fillers U+115F and U+3164 are wide
+ * too, but `DRAWN_AS_NOTHING` refuses them before these rules run. JavaScript
+ * regular expressions have no East_Asian_Width property, so the list is
+ * written out.
+ */
+const WIDE_INKLESS = /^\u3000$/u;
 
 /**
- * Whether some 64 code points in a row on one line are more than 75 % blank.
+ * Inked characters drawn two columns wide: CJK ideographs, kana, Hangul
+ * syllables and jamo, and the fullwidth forms — the scripts whose ordinary
+ * prose and tables sit next to U+3000. Not every East_Asian_Width W/F
+ * character is listed (emoji, for one, are not): a wide inked character left
+ * out counts as one column, which only makes the text look *more* blank, so a
+ * gap in this list can send a message to hex but never let one through as
+ * text.
+ */
+const WIDE_INK = /^[\u1100-\u115f\u2e80-\u303e\u3041-\u33ff\u3400-\u4dbf\u4e00-\u9fff\ua000-\ua4cf\ua960-\ua97f\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe4f\uff00-\uff60\uffe0-\uffe6\u{20000}-\u{3fffd}]$/u;
+
+/** Columns one character of `inkShape`'s output takes (blanks there are already one column each). */
+const columns = (c: string): number => (WIDE_INK.test(c) ? 2 : 1);
+
+/** Width of the window `mostlyBlank` slides along one line, in columns. */
+const DENSITY_WINDOW = 64;
+/** Width of the window `mostlyBlank` slides across lines, in columns. */
+const TEXT_DENSITY_WINDOW = 256;
+
+/**
+ * Whether the text is mostly blank: some 64 columns in a row on one line, or
+ * some 256 columns in a row across lines with the line breaks left out, more
+ * than 75 % blank.
  *
  * The run rule alone counts blanks *in a row*, so a single inked character
  * every 16 blanks — a dot, say — resets it, and 300 of those wrap into a page
  * of near-empty lines that pushes the end of the message out of sight. Density
  * catches that whatever the inked character is: 16 blanks and a dot is 94 %.
  *
- * Measured per line, and only on lines of at least 64 code points. Whitespace
- * after a line break cannot wrap a short line into more lines, and the place a
+ * Counted in columns, not code points: three ideographic spaces and a dot are
+ * four code points, 75 %, but seven columns, 86 % — and seven columns is what
+ * the reader sees.
+ *
+ * The line window does not read across line breaks, because the place a
  * reader's text is most blank by nature — indentation in front of short lines
- * of code, closing braces nested four deep — is exactly short lines: measured
- * across line breaks, five closing braces at four-space steps are 80 % blank,
- * past any threshold an attack would be held under. Ordinary prose is under
- * 20 % blank, a table with aligned columns about 60 %, so 75 % leaves room on
- * both sides. Many short blank-looking lines are the job of the blank-line
- * rule, and a column of lines each holding one dot is ink a reader can see.
+ * of code, closing braces nested four deep — is short lines: measured across
+ * line breaks in 64 columns, five closing braces at four-space steps are 80 %
+ * blank. But lines kept just under 64 columns, forty of them each a dot every
+ * 16 blanks, wrap in the box into a page of near-empty lines all the same; the
+ * text window catches those. It needs 256 columns of text, more than a short
+ * block of code holds, and across a longer one indentation is diluted by the
+ * code it indents. Ordinary prose is under 20 % blank, a table with aligned
+ * columns about 60 %, so 75 % leaves room on both sides. Where the two pull
+ * apart, the text window leans towards hex: hex is always shown beside the
+ * text anyway, so a false hex costs readability, a false text costs the
+ * reader the part of the message they did not see.
  */
 function mostlyBlank(shape: string): boolean {
-  for (const line of shape.split("\n")) {
-    const cps = [...line];
-    if (cps.length < DENSITY_WINDOW) continue;
-    let blanks = 0;
-    for (let i = 0; i < cps.length; i++) {
-      if (INKLESS_ONE(cps[i])) blanks += 1;
-      if (i >= DENSITY_WINDOW && INKLESS_ONE(cps[i - DENSITY_WINDOW])) blanks -= 1;
-      if (i >= DENSITY_WINDOW - 1 && blanks > MAX_BLANKS_PER_WINDOW) return true;
+  const lines = shape.split("\n");
+  if (lines.some((line) => blankWindow(line, DENSITY_WINDOW))) return true;
+  return blankWindow(lines.join(""), TEXT_DENSITY_WINDOW);
+}
+
+/** Whether some `window` columns in a row of `s` are more than 75 % blank. */
+function blankWindow(s: string, window: number): boolean {
+  const cells: { cols: number; blank: number }[] = [];
+  let head = 0;
+  let cols = 0;
+  let blank = 0;
+  for (const c of s) {
+    const cell = INKLESS_ONE(c) ? { cols: 1, blank: 1 } : { cols: columns(c), blank: 0 };
+    cells.push(cell);
+    cols += cell.cols;
+    blank += cell.blank;
+    // Drop from the front while the window stays at least `window` wide.
+    while (cols - cells[head].cols >= window) {
+      cols -= cells[head].cols;
+      blank -= cells[head].blank;
+      head += 1;
     }
+    if (cols >= window && blank * 4 > cols * 3) return true;
   }
   return false;
 }

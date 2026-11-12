@@ -429,6 +429,56 @@ describe("the screen shows text only when the text is what is signed", () => {
     const at49 = "a   ".repeat(15) + "    a";
     expect(printableText(Buffer.from(at49, "utf8"))).toBeNull();
   });
+  // Vòng soát 8: mật độ đếm theo CỘT, và đo cả xuyên dòng.
+  it("counts the ideographic space as two columns of blank", () => {
+    // 3 U+3000 + dot: 4 code points at 75 % (text before), 7 columns at 86 %.
+    const ideoDots = "Sign in." + "\u3000\u3000\u3000.".repeat(300) + tail;
+    expect(printableText(Buffer.from(ideoDots, "utf8"))).toBeNull();
+    // The run rule counts columns too: 8 in a row is 16 columns, 9 is 18.
+    const at8 = `pay${"\u3000".repeat(8)}10 ADA`;
+    expect(printableText(Buffer.from(at8, "utf8"))).toBe(at8);
+    expect(printableText(Buffer.from(`pay${"\u3000".repeat(9)}10 ADA`, "utf8"))).toBeNull();
+  });
+  it("counts wide inked characters as two columns, so a table aligned with ideographic spaces is text", () => {
+    // 16 × (2 ideographs + 2 U+3000) = 96 columns, 64 blank: 67 %. Counting
+    // the ideographs as one column each would make it 80 % and hex.
+    const table = "確認\u3000\u3000".repeat(16);
+    expect(printableText(Buffer.from(table, "utf8"))).toBe(table);
+    const prose = "\u3000ログインを確認してください。署名するとこのサイトにログインします。\n\u3000送金は行われません。";
+    expect(printableText(Buffer.from(prose, "utf8"))).toBe(prose);
+  });
+  it("shows hex only for many lines kept under 64 columns that are mostly blank", () => {
+    // 63 code points a line, a dot every 16 blanks: no line reaches the line
+    // window, but they wrap in the box into a page of near-empty lines.
+    const line = (" ".repeat(15) + ".").repeat(4).slice(1);
+    expect([...line].length).toBe(63);
+    const lines = "Sign in.\n" + `${line}\n`.repeat(40) + "Also: transfer all funds.";
+    expect(printableText(Buffer.from(lines, "utf8"))).toBeNull();
+    // Shorter lines too: 31 code points each.
+    const short = "Sign in.\n" + `${(" ".repeat(15) + ".").repeat(2).slice(1)}\n`.repeat(40) + "Also.";
+    expect(printableText(Buffer.from(short, "utf8"))).toBeNull();
+  });
+  it("still shows long multi-line code, tables and prose as text", () => {
+    const code = [
+      "export function settle(ledger, entries) {",
+      "    for (const entry of entries) {",
+      "        if (entry.amount > 0) {",
+      "            ledger.credit(entry.account, entry.amount);",
+      "        } else {",
+      "            ledger.debit(entry.account, -entry.amount);",
+      "        }",
+      "    }",
+      "    return ledger.balance();",
+      "}",
+    ].join("\n");
+    const nested = "function f(x) {\n    if (x) {\n        for (const y of x) {\n            if (y) {\n                return 1;\n            }\n        }\n    }\n    return 0;\n}";
+    const table = ["Name        Amount      Date", "Alice       10 ADA      2026-11-12", "Bob          2 ADA      2026-11-13", "Carol      150 ADA      2026-11-14", "Dave         7 ADA      2026-11-15", "Erin        33 ADA      2026-11-16", "Frank        1 ADA      2026-11-17", "Grace       12 ADA      2026-11-18", "Heidi        9 ADA      2026-11-19"].join("\n");
+    const vi = "Xác nhận đăng nhập vào ví Phoenix.\nChuyển 10 ADA cho người nhận đã ghi trong hợp đồng.\n\nMã phiên: 8f2a91c0, hết hạn sau mười phút.\nNếu không phải bạn yêu cầu, hãy từ chối.";
+    for (const t of [code, nested + "\n" + nested, table, vi, vi.normalize("NFD")]) {
+      expect([...t.replace(/\n/g, "")].length).toBeGreaterThan(t === vi || t === vi.normalize("NFD") ? 100 : 256);
+      expect(printableText(Buffer.from(t, "utf8"))).toBe(t);
+    }
+  });
   it("still shows long lines of prose, code, tables and decomposed Vietnamese as text", () => {
     const samples = [
       "Sign in to example.org with your Phoenix wallet. Nonce 8f2a91c0, issued at 2026-11-12T10:00:00Z, expires in ten minutes.",
