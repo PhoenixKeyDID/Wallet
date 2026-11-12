@@ -21,7 +21,11 @@ const SITES = {
   nosender: "https://nosender.example",
   web: "https://web.example",
   window: "https://dex.example",
+  noWindowId: "https://noid.example",
 } as const;
+
+/** What `chrome.windows.create` answers; a test may swap it. */
+let createWindow: () => Promise<{ id?: number } | undefined> = async () => ({ id: 1 });
 
 type Listener = (m: unknown) => void;
 let onConnect: (p: unknown) => void;
@@ -43,7 +47,7 @@ beforeAll(async () => {
       },
     },
     windows: {
-      create: async () => ({ id: 1 }),
+      create: () => createWindow(),
       update: async () => ({}),
       onRemoved: { addListener: () => {}, removeListener: () => {} },
     },
@@ -101,4 +105,29 @@ describe("only the approval window's port may attach for a site", () => {
     connectAndHello({ url: `${EXT}/approve.html?origin=${encodeURIComponent(SITES.window)}` }, SITES.window);
     expect(await isEnabled(SITES.window)).toBe(true);
   });
+});
+
+describe("a window the browser opened without an id", () => {
+  // `onRemoved` matches the window by id. With none, closing the window could
+  // never end the wait, and the page's call would hang with no answer at all.
+  for (const answer of [{}, undefined] as const) {
+    it(`answers APIError.Refused at once when windows.create returns ${JSON.stringify(answer) ?? "undefined"}`, async () => {
+      createWindow = async () => answer;
+      try {
+        const res = await Promise.race([
+          new Promise((resolve) => {
+            onMessage(
+              { channel: CHANNEL, kind: "req", id: "noid", method: "getUtxos", params: [] },
+              { origin: SITES.noWindowId, frameId: 0 },
+              resolve,
+            );
+          }),
+          new Promise((resolve) => setTimeout(() => resolve("no answer within 1s"), 1_000)),
+        ]);
+        expect(res).toMatchObject({ ok: false, error: { code: -3 } });
+      } finally {
+        createWindow = async () => ({ id: 1 });
+      }
+    });
+  }
 });

@@ -179,10 +179,17 @@ function walletWindow(origin: string): Promise<WindowPort | null> {
   const p = (async () => {
     const url = `${chrome.runtime.getURL("approve.html")}?origin=${encodeURIComponent(origin)}`;
     const waiter = registry.whenAttached(origin);
-    let created: { id?: number };
+    let created: { id?: number } | undefined;
     try {
       created = await chrome.windows.create({ url, type: "popup", width: 420, height: 680, focused: true });
     } catch {
+      waiter.cancel();
+      return null;
+    }
+    // Without an id there is no `onRemoved` that can match this window, so
+    // closing it would never end the wait and the page's call would hang for
+    // good. Refuse now instead.
+    if (typeof created?.id !== "number") {
       waiter.cancel();
       return null;
     }
