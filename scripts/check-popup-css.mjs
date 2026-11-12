@@ -31,8 +31,16 @@
  * - A `className={someParameter}` whose value arrives from a caller cannot be
  *   read at that site (the caller's own literal is read at the caller). They are counted and printed, never silently
  *   dropped (the third state: "could not look" is not "fine").
- * - Classes assembled at runtime (`` `text-${tone}` ``) contribute their literal
- *   pieces only.
+ * - Classes assembled at runtime (`` `text-${tone}` ``, `"toast-" + kind`)
+ *   contribute their literal pieces only: the piece `toast-` is not a class and
+ *   the class it becomes is never compared. Write such a list out whole, per
+ *   case, in a table (as `toast.ts` does) so every class is a literal.
+ * - Outside JSX, only `el.className =` / `+=`, `el.setAttribute("class", …)` and
+ *   `el.classList.add/toggle/replace(…)` are read. `el.classList = …`,
+ *   `setAttribute` with a computed name, `Reflect.set`, `innerHTML` strings and
+ *   class lists built in another module and passed in are not.
+ * - In the HTML pages, the first `class` of each start tag is read; markup
+ *   written by a script at runtime is not.
  * - The exemptions below, each with its reason, and the count of tokens they
  *   absorbed, so a growing exemption list is visible.
  *
@@ -133,6 +141,23 @@ export function scanSource(file, source) {
   };
   collect(sf);
 
+  // Every literal piece of a class expression, plus the literal of each variable
+  // it names. True when at least one piece was found: an expression with nothing
+  // literal in it here is the caller's to say, and is counted as unreadable.
+  const readClasses = (expr) => {
+    const got = textOf(expr);
+    pieces.push(...got);
+    let resolved = got.length > 0;
+    for (const id of identifiersIn(expr)) {
+      const via = named.get(id);
+      if (via) {
+        pieces.push(...via);
+        resolved = true;
+      }
+    }
+    return resolved;
+  };
+
   const visit = (n) => {
     if (ts.isImportDeclaration(n) && ts.isStringLiteral(n.moduleSpecifier)) {
       imports.push(n.moduleSpecifier.text);
@@ -154,20 +179,36 @@ export function scanSource(file, source) {
       (n.name.getText(sf) === "className" || n.name.getText(sf) === "class") &&
       n.initializer
     ) {
-      const got = textOf(n.initializer);
-      pieces.push(...got);
-      let resolved = got.length > 0;
-      for (const id of identifiersIn(n.initializer)) {
-        const via = named.get(id);
-        if (via) {
-          pieces.push(...via);
-          resolved = true;
-        }
-      }
       // `className={prop}` where nothing in it resolves to a literal here
       // (a parameter handed down by the caller): unreadable at this site. The
       // caller's own `className="…"` is read where the caller is.
-      if (!resolved && ts.isJsxExpression(n.initializer) && n.initializer.expression) dynamic.push(where(n));
+      if (!readClasses(n.initializer) && ts.isJsxExpression(n.initializer) && n.initializer.expression) dynamic.push(where(n));
+    } else if (
+      // The same list written to the DOM by hand, outside JSX: `el.className =
+      // "…"` (the toast does this), `el.className += …`, `el.setAttribute("class",
+      // …)`, `el.classList.add(…)` / `.toggle(…)` / `.replace(…)`. Read like an
+      // attribute; one with nothing literal in it is unreadable.
+      ts.isBinaryExpression(n) &&
+      (n.operatorToken.kind === ts.SyntaxKind.EqualsToken || n.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken) &&
+      ts.isPropertyAccessExpression(n.left) &&
+      n.left.name.text === "className"
+    ) {
+      if (!readClasses(n.right)) dynamic.push(where(n));
+    } else if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression)) {
+      const method = n.expression.name.text;
+      const target = n.expression.expression;
+      const onClassList = ts.isPropertyAccessExpression(target) && target.name.text === "classList";
+      const args =
+        method === "setAttribute" && n.arguments[0] && ts.isStringLiteralLike(n.arguments[0]) && n.arguments[0].text === "class"
+          ? n.arguments.slice(1)
+          : onClassList && ["add", "toggle", "replace"].includes(method)
+            ? method === "toggle"
+              ? n.arguments.slice(0, 1) // the second argument is the on/off flag
+              : method === "replace"
+                ? n.arguments.slice(1) // the first is the class taken away
+                : n.arguments
+            : [];
+      for (const a of args) if (!readClasses(a)) dynamic.push(where(a));
     } else if (ts.isJsxSpreadAttribute(n) && /^[a-z]/.test(n.parent.parent.tagName.getText(sf))) {
       // `<div {...props}>` can put a `className` on the DOM that this file never
       // names. A spread onto a component (`<SendPanel {...p}>`) cannot: that
@@ -232,14 +273,74 @@ function withoutNegatedArguments(sel) {
   return out + sel.slice(i);
 }
 
-/** Class tokens from every `class="…"` / `class='…'` attribute in an HTML page. */
+/**
+ * Class tokens from the `class` attribute of every start tag in an HTML page,
+ * split the way the HTML tokenizer splits a tag (WHATWG HTML §13.2.5): an
+ * attribute ends at whitespace, `/` or `>`; a quoted value runs to its closing
+ * quote and may hold `>`; an unquoted value ends at whitespace or `>`; a quoted
+ * value may be followed by the next attribute with no space between; only the
+ * first `class` on a tag counts, as in the browser. Comments and the text of
+ * `<script>` / `<style>` are skipped. A regular expression over the raw text got
+ * `<body/class="x">`, `id="r"class="x"` and `title="a>b" class="x"` wrong, and
+ * read `title=" class=y"` as a class.
+ */
 export function htmlClasses(html) {
-  const stripped = html.replace(/<!--[\s\S]*?-->/g, "");
   const out = new Set();
-  const attr = /<[^>]*?\sclass\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/gi;
-  let m;
-  while ((m = attr.exec(stripped))) {
-    for (const t of (m[1] ?? m[2] ?? m[3]).split(/\s+/)) if (t) out.add(t);
+  const WS = /[\t\n\f\r ]/;
+  const n = html.length;
+  let i = 0;
+  while (i < n) {
+    const lt = html.indexOf("<", i);
+    if (lt < 0) break;
+    if (html.startsWith("<!--", lt)) {
+      const end = html.indexOf("-->", lt + 4);
+      i = end < 0 ? n : end + 3;
+      continue;
+    }
+    if (!/[A-Za-z]/.test(html[lt + 1] ?? "")) {
+      // `</…>`, `<!doctype …>`, `<?…>` or a stray `<`: no attributes to read
+      const gt = html.indexOf(">", lt + 1);
+      i = /[!/?]/.test(html[lt + 1] ?? "") && gt >= 0 ? gt + 1 : lt + 1;
+      continue;
+    }
+    let j = lt + 1;
+    let tag = "";
+    while (j < n && !WS.test(html[j]) && html[j] !== "/" && html[j] !== ">") tag += html[j++];
+    tag = tag.toLowerCase();
+    let sawClass = false;
+    while (j < n && html[j] !== ">") {
+      if (WS.test(html[j]) || html[j] === "/") {
+        j++;
+        continue;
+      }
+      let name = html[j++]; // a leading `=` is part of the name, as in the spec
+      while (j < n && !WS.test(html[j]) && html[j] !== "/" && html[j] !== ">" && html[j] !== "=") name += html[j++];
+      while (j < n && WS.test(html[j])) j++;
+      let value = null;
+      if (html[j] === "=") {
+        j++;
+        while (j < n && WS.test(html[j])) j++;
+        const q = html[j];
+        if (q === '"' || q === "'") {
+          const close = html.indexOf(q, j + 1);
+          value = html.slice(j + 1, close < 0 ? n : close);
+          j = close < 0 ? n : close + 1;
+        } else {
+          const start = j;
+          while (j < n && !WS.test(html[j]) && html[j] !== ">") j++;
+          value = html.slice(start, j);
+        }
+      }
+      if (name.toLowerCase() === "class" && !sawClass) {
+        sawClass = true;
+        for (const t of (value ?? "").split(/[\t\n\f\r ]+/)) if (t) out.add(t);
+      }
+    }
+    i = j + 1;
+    if (tag === "script" || tag === "style") {
+      const end = html.toLowerCase().indexOf("</" + tag, i);
+      i = end < 0 ? n : end;
+    }
   }
   return out;
 }
