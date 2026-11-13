@@ -240,6 +240,25 @@ describe("blockfrost adapter — an output with no amount is not an empty output
     expect(utxos[0].amount.toString()).toBe("2000000");
   });
 
+  it("reads every page of an address's UTxOs: the 101st coin is the wallet's, not a stranger's", async () => {
+    const row = (i: number) => ({ ...UTXO_ROW, tx_hash: i.toString(16).padStart(64, "0"), amount: AMOUNT });
+    const base = `/addresses/${encodeURIComponent(ADDR)}/utxos?count=100`;
+    routes({
+      [`${base}&page=1`]: { body: Array.from({ length: 100 }, (_, i) => row(i)) },
+      [`${base}&page=2`]: { body: [row(100)] },
+    });
+    const utxos = await bfUtxos(EP, [ADDR]);
+    expect(utxos).toHaveLength(101);
+    expect(utxos[100]!.txId).toBe((100).toString(16).padStart(64, "0"));
+  });
+
+  it("stops after a short page instead of asking for page after page", async () => {
+    routes({ "/addresses/": { body: [{ ...UTXO_ROW, amount: AMOUNT }] } });
+    await bfUtxos(EP, [ADDR]);
+    const urls = (fetch as unknown as { mock: { calls: [string][] } }).mock.calls.map((c) => c[0]);
+    expect(urls).toEqual([`${EP.base}/addresses/${encodeURIComponent(ADDR)}/utxos?count=100&page=1`]);
+  });
+
   it("refuses an address row with no amount rather than calling the wallet empty", async () => {
     // Cheaper to be wrong about than the one above — it only misinforms — but
     // wrong in a way nobody can see: a funded wallet reads as empty, and a gap

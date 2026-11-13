@@ -98,7 +98,8 @@ function bfReplies(addr: string, rows: unknown[]) {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string) => {
-      const ok = url === `${EP.base}/addresses/${encodeURIComponent(addr)}/utxos`;
+      // The reader pages (`?count=100&page=N`); every row here fits on page 1.
+      const ok = url === `${EP.base}/addresses/${encodeURIComponent(addr)}/utxos?count=100&page=1`;
       const body = ok ? rows : {};
       return { ok, status: ok ? 200 : 404, text: async () => JSON.stringify(body), json: async () => body };
     }),

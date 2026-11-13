@@ -302,6 +302,31 @@ export async function bfAddressBalance(
   return { lovelace, assets: [...byUnit].map(([unit, v]) => ({ unit, ...v })) };
 }
 
+/** Blockfrost's page size ceiling: `count` above 100 is refused. */
+export const BF_PAGE = 100;
+/** Past this many pages the read stops with an error rather than walk forever. */
+const BF_MAX_PAGES = 1000;
+
+/**
+ * Every row of a paged list, not the first page of it.
+ *
+ * A list endpoint answers at most `BF_PAGE` rows. Reading one page of an
+ * address's UTxOs is not a smaller wallet: the coins on page two are still this
+ * wallet's, and a signing screen that does not know them labels them a
+ * stranger's while the key it signs with opens them. A page holding fewer than
+ * `BF_PAGE` rows is the last; a list that never ends is an error, not a total.
+ */
+async function bfAllPages<T>(ep: BlockfrostEndpoint, path: string): Promise<T[]> {
+  const all: T[] = [];
+  for (let page = 1; page <= BF_MAX_PAGES; page++) {
+    const rows = await bf<unknown>(ep, `${path}?count=${BF_PAGE}&page=${page}`);
+    if (!Array.isArray(rows)) throw new Error(`Chain endpoint ${path} answered a page that is not a list`);
+    all.push(...(rows as T[]));
+    if (rows.length < BF_PAGE) return all;
+  }
+  throw new Error(`Chain endpoint ${path} still had rows after ${BF_MAX_PAGES} pages — the list is not read whole`);
+}
+
 /** Spendable UTxOs only — the shape every transaction builder takes. */
 export async function bfUtxos(
   ep: BlockfrostEndpoint,
@@ -333,7 +358,7 @@ export async function bfOwnedUtxos(
       reference_script_hash?: unknown;
     }>;
     try {
-      rows = await bf(ep, `/addresses/${encodeURIComponent(addr)}/utxos`);
+      rows = await bfAllPages(ep, `/addresses/${encodeURIComponent(addr)}/utxos`);
     } catch (e) {
       if (e instanceof NotOnChainError) continue;
       throw e;

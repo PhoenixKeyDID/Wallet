@@ -679,6 +679,44 @@ describe("summariseTx — a text key is not an integer key", () => {
   it("refuses a body whose field is keyed by a string instead of an integer", () => {
     expect(() => summariseTx(txHex, own.addresses, own.inputs, 0)).toThrow(/cannot describe/);
   });
+
+  // Output map {0: addr, 1: coin, "3": script ref} — `Number("3")` is 3, so a
+  // numeric check would let it in while `m.get(3)` never sees it.
+  it("refuses an output whose field is keyed by a string instead of an integer", () => {
+    const output = Buffer.concat([
+      Buffer.from([0xa3]),
+      enc(0),
+      enc(tyUtils.getAddressFromString(PAYEE).getBytes()),
+      enc(1),
+      enc(3_000_000),
+      enc("3"),
+      enc(Buffer.from("8200", "hex")),
+    ]);
+    const b = Buffer.concat([
+      Buffer.from([0xa3]),
+      enc(0),
+      enc([[Buffer.from(TXID, "hex"), 0]]),
+      enc(1),
+      Buffer.from([0x81]),
+      output,
+      enc(2),
+      enc(170_000),
+    ]);
+    const hex = Buffer.concat([Buffer.from([0x84]), b, Buffer.from([0xa0, 0xf5, 0xf6])]).toString("hex");
+    expect(() => summariseTx(hex, own.addresses, own.inputs, 0)).toThrow(/an output has a field this wallet cannot describe/);
+  });
+
+  it("refuses a body that states no fee, rather than showing a fee of 0", () => {
+    const b = Buffer.concat([
+      Buffer.from([0xa2]),
+      enc(0),
+      enc([[Buffer.from(TXID, "hex"), 0]]),
+      enc(1),
+      enc([[tyUtils.getAddressFromString(PAYEE).getBytes(), 3_000_000]]),
+    ]);
+    const hex = Buffer.concat([Buffer.from([0x84]), b, Buffer.from([0xa0, 0xf5, 0xf6])]).toString("hex");
+    expect(() => summariseTx(hex, own.addresses, own.inputs, 0)).toThrow(/states no fee/);
+  });
 });
 
 // A reference-script UTxO the wallet owns is dropped from the spendable set

@@ -256,7 +256,10 @@ function readOutput(o: unknown): ReadOutput {
     const m = o as Map<unknown, unknown>;
     if (!m.has(0) || !m.has(1)) bad("an output has an unexpected shape");
     for (const k of m.keys()) {
-      if (![0, 1, 2, 3].includes(Number(k))) bad("an output has a field this wallet cannot describe");
+      // `typeof`, not `Number(k)`: a text key "3" would pass a numeric
+      // allow-list while `m.has(3)` below stays false, and the script check
+      // would never run. Same rule as the body's key loop.
+      if (typeof k !== "number" || ![0, 1, 2, 3].includes(k)) bad("an output has a field this wallet cannot describe");
     }
     // A reference script means the output publishes code, and this decoder
     // cannot say what that code does. A datum is different: it is the state a
@@ -649,7 +652,10 @@ export function summariseTx(
     }
   }
 
-  const fee = asBigInt(b.get(2) ?? 0, "the fee");
+  // A body with no fee is not a free transaction; showing 0 would be a number
+  // the wallet made up.
+  if (!b.has(2)) bad("this transaction states no fee");
+  const fee = asBigInt(b.get(2), "the fee");
 
   // ── withdrawals ───────────────────────────────────────────────────────────
   // A withdrawal takes staking rewards out of a reward account and hands them

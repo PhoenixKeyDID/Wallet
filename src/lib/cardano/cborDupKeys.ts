@@ -46,15 +46,21 @@
  *
  * Normalizing can only make the walker refuse MORE than the decoder collapses
  * (for huge integers the decoder hands back distinct objects while this folds
- * equal values together), never less — and a well-formed Cardano transaction
- * never carries two keys that normalize alike, so nothing legitimate trips it.
+ * equal values together), never less.
  *
  * ## Scope
  *
  * It walks the whole value recursively, so a duplicate anywhere — the body, a
  * map-form output, an auxiliary-data map, a witness map — is caught, not only
- * the top level. A well-formed Cardano transaction never has a duplicate map
- * key, so nothing legitimate trips it.
+ * the top level.
+ *
+ * That is stricter than the ledger. Plutus data (`plutus_data` in the witness
+ * set, redeemer data) is a list of pairs on chain, and a contract may build a
+ * map that repeats a key (`AssocMap` from an unsorted list, Aiken `Pairs`). A
+ * transaction carrying such a datum is valid, and this walker refuses it: the
+ * person sees "a field is given twice" and no signature is made. The refusal
+ * costs availability, never funds, and is kept deliberately until the walk can
+ * be narrowed to the ledger's own structures without opening a gap.
  */
 
 /** Thrown when a map carries the same key twice. The callers translate it. */

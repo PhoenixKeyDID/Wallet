@@ -212,6 +212,12 @@ type Phase =
        */
       view?: WalletView;
       undescribable?: string;
+      /**
+       * Reading this wallet's coins failed (network, indexer). Not a verdict
+       * on the transaction — the screen says so and offers a retry, which
+       * clears this and lets the read run again.
+       */
+      readFailed?: string;
       /** `signData` only: which key, which address, which bytes — decided before the screen opens. */
       dataSign?: DataSignPlan;
     };
@@ -242,6 +248,9 @@ export function Approve() {
   const [account, setAccount] = useState<Account | null>(null);
   const [port, setPort] = useState<Port | null>(null);
   const [phase, setPhase] = useState<Phase>({ at: "unlock" });
+  /** `phase` as of the latest render, for answers that land after an await. */
+  const phaseRef = useRef<Phase>(phase);
+  phaseRef.current = phase;
   /**
    * Whether a request is already on screen. A ref rather than `phase`, because
    * the port listener is installed once and would otherwise close over whatever
@@ -413,7 +422,7 @@ export function Approve() {
 
   // Describe a signing request as soon as it arrives, or say it cannot be.
   useEffect(() => {
-    if (phase.at !== "decide" || phase.summary || phase.undescribable) return;
+    if (phase.at !== "decide" || phase.summary || phase.undescribable || phase.readFailed) return;
     const { req } = phase;
     // `submitTx` is described exactly like `signTx`: the bytes are a whole,
     // already-signed transaction, and what the person approves is putting it
@@ -433,6 +442,10 @@ export function Approve() {
     let cancelled = false;
     const stillOnScreen = (cur: Phase): cur is Extract<Phase, { at: "decide" }> => decidingFor(cur, req);
     void (async () => {
+      // Two failures, two screens. A failed read of this wallet's coins says
+      // nothing about the transaction — telling the person it "cannot be read"
+      // sends them back to the site for a transaction that was fine.
+      let view: WalletView;
       try {
         const wp = localPort(account);
         // The reference-script UTxOs this wallet owns but never spends: read
@@ -440,7 +453,13 @@ export function Approve() {
         // spends one, instead of letting it pass as a stranger's input while
         // this wallet's key signs it away.
         const refScriptInputs = wp.getRefScriptInputs ? await wp.getRefScriptInputs() : [];
-        const view = walletViewFrom(await wp.getInputs(), await wp.getOwnedAddressesHex(), refScriptInputs);
+        view = walletViewFrom(await wp.getInputs(), await wp.getOwnedAddressesHex(), refScriptInputs);
+      } catch {
+        const why = t("cip30_wallet_read_failed");
+        if (!cancelled) setPhase((cur) => (stillOnScreen(cur) ? { ...cur, readFailed: why } : cur));
+        return;
+      }
+      try {
         const summary = summariseTx(cbor, view.ownAddressesHex, view.held, account.network === 1 ? 1 : 0, view.heldWithScript);
         if (!cancelled) setPhase((cur) => (stillOnScreen(cur) ? { ...cur, summary, view } : cur));
       } catch (e) {
@@ -477,9 +496,21 @@ export function Approve() {
     }
   };
 
-  const answer = (result: Answer) => {
-    if ((phase.at !== "decide" && phase.at !== "connect") || !port) return;
-    port.postMessage({ type: "result", id: phase.req.id, result });
+  /**
+   * Answer the request on screen — or, for an answer that arrives after an
+   * await, only the request it was started for.
+   *
+   * `phase` here is the value this render closed over. A broadcast that takes
+   * ten seconds answers from a closure ten seconds old: if the screen has since
+   * moved to another request, posting `phase.req.id` and going idle would wipe
+   * that request off the screen while its site still waits. `phaseRef` is read
+   * instead, and the answer is dropped unless it is still the same request.
+   */
+  const answer = (result: Answer, forReq?: unknown) => {
+    const cur = phaseRef.current;
+    if ((cur.at !== "decide" && cur.at !== "connect") || !port) return;
+    if (forReq !== undefined && cur.req !== forReq) return;
+    port.postMessage({ type: "result", id: cur.req.id, result });
     decidingRef.current = false;
     setPhase({ at: "idle" });
   };
@@ -560,12 +591,13 @@ export function Approve() {
       answer({ ok: false, error: invalid(t("cip30_not_a_tx")) });
       return;
     }
+    const req = phase.req;
     setBusy(true);
     try {
-      answer({ ok: true, value: await submitTx(account.network, cbor) });
+      answer({ ok: true, value: await submitTx(account.network, cbor) }, req);
     } catch (e) {
       const why = e instanceof Error ? e.message : String(e);
-      answer({ ok: false, error: sendFailed(why) });
+      answer({ ok: false, error: sendFailed(why) }, req);
     } finally {
       setBusy(false);
     }
@@ -647,7 +679,8 @@ export function Approve() {
   }
 
   if (phase.at === "decide") {
-    const { summary, undescribable, req, dataSign } = phase;
+    const { summary, undescribable, readFailed, req, dataSign } = phase;
+    const describesTx = req.method === "signTx" || req.method === "submitTx";
     return (
       <div className="approve">
         <OriginLine />
@@ -662,11 +695,30 @@ export function Approve() {
           </div>
         )}
 
+        {readFailed && (
+          <div className="approve-refuse" role="alert">
+            <p className="approve-note">{readFailed}</p>
+            <button onClick={() => setPhase((cur) => (cur.at === "decide" && cur.req === req ? { ...cur, readFailed: undefined } : cur))}>
+              {t("retry")}
+            </button>
+          </div>
+        )}
+
+        {describesTx && !summary && !undescribable && !readFailed && (
+          <p className="approve-note" role="status">
+            {t("cip30_reading_tx")}
+          </p>
+        )}
+
         {summary && <TxSummaryView summary={summary} />}
         {dataSign && <DataSignView plan={dataSign} />}
 
         <div className="approve-actions">
+          {/* Locked while a send is out: "rejected" for bytes already on their
+              way to the node tells the site to build and ask again, and the
+              person pays twice. */}
           <button
+            disabled={busy}
             onClick={() =>
               answer({
                 ok: false,
@@ -690,7 +742,9 @@ export function Approve() {
             className="approve-primary"
           >
             {req.method === "submitTx"
-              ? t("cip30_submit_cta")
+              ? busy
+                ? t("cip30_submitting")
+                : t("cip30_submit_cta")
               : req.method === "signData"
                 ? t("cip30_sign_data_cta")
                 : t("cip30_approve")}

@@ -345,6 +345,47 @@ describe("submitTx is described, then sent — or refused with TxSendError.Refus
     expect(mocks.submitTx).not.toHaveBeenCalled();
   });
 
+  it("while the send is out, Reject is locked and the button says it is sending; the node's answer is posted once", async () => {
+    mocks.fetchUtxos.mockResolvedValue(ourInputs());
+    let finishSend: (hash: string) => void = () => {};
+    mocks.submitTx.mockImplementation(() => new Promise<string>((res) => (finishSend = res)));
+    const { port, view } = await unlocked();
+    act(() => port.deliver({ type: "request", id: "s4", origin: ORIGIN, method: "submitTx", params: [SIGNED_TX] }));
+    const send = await view.findByText(en.cip30_submit_cta);
+    await waitFor(() => expect((send as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(send);
+    await view.findByText(en.cip30_submitting);
+    const reject = view.getByText(en.cip30_reject) as HTMLButtonElement;
+    expect(reject.disabled).toBe(true);
+    fireEvent.click(reject);
+    expect(port.sent.filter((m) => m.type === "result" && m.id === "s4")).toHaveLength(0);
+    await act(async () => {
+      finishSend("cd".repeat(32));
+    });
+    await waitFor(() => expect(port.sent.filter((m) => m.type === "result" && m.id === "s4")).toHaveLength(1));
+    expect(port.sent.find((m) => m.id === "s4")!.result).toEqual({ ok: true, value: "cd".repeat(32) });
+  });
+
+  it("says it is reading, and a failed read of the wallet's coins is a network notice with Retry, not a bad transaction", async () => {
+    let failRead: (e: Error) => void = () => {};
+    mocks.fetchUtxos.mockImplementationOnce(() => new Promise((_, rej) => (failRead = rej)));
+    mocks.fetchUtxos.mockResolvedValue(ourInputs());
+    const { port, view } = await unlocked();
+    act(() => port.deliver({ type: "request", id: "s5", origin: ORIGIN, method: "submitTx", params: [SIGNED_TX] }));
+    await view.findByText(en.cip30_reading_tx);
+    await act(async () => {
+      failRead(new Error("fetch failed"));
+    });
+    await view.findByText(en.cip30_wallet_read_failed);
+    expect(view.queryByText(en.cip30_undescribable, { exact: false })).toBeNull();
+    expect((view.getByText(en.cip30_submit_cta) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(view.getByText(en.retry));
+    const send = view.getByText(en.cip30_submit_cta) as HTMLButtonElement;
+    await waitFor(() => expect(send.disabled).toBe(false));
+    expect(view.queryByText(en.cip30_wallet_read_failed)).toBeNull();
+    expect(port.sent.filter((m) => m.type === "result" && m.id === "s5")).toHaveLength(0);
+  });
+
   it("a node rejection comes back as TxSendError.Failure with the node's reason", async () => {
     mocks.fetchUtxos.mockResolvedValue(ourInputs());
     mocks.submitTx.mockRejectedValue(new Error("BadInputsUTxO"));
