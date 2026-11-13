@@ -4,10 +4,12 @@ import {
   DELEGATION_WATCH_LIMIT_MS,
   VOTE_DELEGATION_TTL_SLOTS,
   VOTE_DELEGATION_WATCH_LIMIT_MS,
+  clockTime,
   delegationWatch,
   lookUpVoteTx,
   nextAccountIndex,
   voteDelegationLanded,
+  voteDelegationExpiresAt,
   voteDelegationPending,
   voteDelegationWatch,
   type SentDelegation,
@@ -122,6 +124,23 @@ describe("wording", () => {
     }
   });
 
+  it("the vote-delegation lines carry the clock time they name", () => {
+    for (const [lng, l] of Object.entries(locales)) {
+      expect(l.vote_delegation_unseen, lng).toContain("{{time}}");
+      expect(l.vote_delegation_expired, lng).toContain("{{time}}");
+      expect(l.gov_delegate_inflight_warn, lng).toContain("{{time}}");
+      // The plain waiting line promises nothing about the Withdraw button.
+      expect(l.vote_delegation_pending, lng).toContain(l.withdraw_rewards);
+      expect(l.vote_delegation_pending_plain, lng).not.toContain(l.withdraw_rewards);
+    }
+  });
+
+  it("user-facing text writes DRep, never dRep", () => {
+    for (const [lng, l] of Object.entries(locales)) {
+      for (const [k, v] of Object.entries(l)) expect(v, `${lng}.${k}`).not.toContain("dRep");
+    }
+  });
+
   it("the switch-account help no longer opens by denying a fault", () => {
     expect(en.local_account_switch_help).not.toMatch(/fault/i);
     expect(vi.local_account_switch_help).not.toMatch(/trục trặc/);
@@ -135,29 +154,60 @@ describe("lookUpVoteTx — the transaction itself, found in a block", () => {
   const vote: SentVoteDelegation = { account: ACCOUNT, network: 2, sentAt: T0, txHash: TX };
   const flush = () => new Promise((r) => setTimeout(r, 0));
 
-  it("reports the hash once the look-up says it is in a block, asking on the record's network", async () => {
+  const onChain = async () => true;
+
+  it("reports the hash once the look-up says it is in a block and the re-read shows a vote delegation", async () => {
     const lookUp = vitest.fn(async () => true);
+    const confirm = vitest.fn(async () => true);
     const onLanded = vitest.fn();
-    lookUpVoteTx(vote, lookUp, onLanded);
+    lookUpVoteTx(vote, lookUp, confirm, onLanded);
     await flush();
     expect(lookUp).toHaveBeenCalledWith(2, TX);
+    expect(confirm).toHaveBeenCalledWith(vote);
     expect(onLanded).toHaveBeenCalledWith(TX);
   });
 
   it("does nothing on 'not yet', on a failed look-up, or after release", async () => {
     const onLanded = vitest.fn();
-    lookUpVoteTx(vote, async () => false, onLanded);
-    lookUpVoteTx(vote, async () => Promise.reject(new Error("koios down")), onLanded);
-    const release = lookUpVoteTx(vote, async () => true, onLanded);
+    lookUpVoteTx(vote, async () => false, onChain, onLanded);
+    lookUpVoteTx(vote, async () => Promise.reject(new Error("koios down")), onChain, onLanded);
+    const release = lookUpVoteTx(vote, async () => true, onChain, onLanded);
     release();
-    lookUpVoteTx(null, async () => true, onLanded);
+    lookUpVoteTx(null, async () => true, onChain, onLanded);
     await flush();
     expect(onLanded).not.toHaveBeenCalled();
+  });
+
+  it("in a block but the account re-read still shows none, or fails: keeps waiting", async () => {
+    const onLanded = vitest.fn();
+    lookUpVoteTx(vote, async () => true, async () => false, onLanded);
+    lookUpVoteTx(vote, async () => true, async () => Promise.reject(new Error("koios down")), onLanded);
+    await flush();
+    expect(onLanded).not.toHaveBeenCalled();
+  });
+
+  it("does not re-read the account when the transaction is not in a block", async () => {
+    const confirm = vitest.fn(async () => true);
+    lookUpVoteTx(vote, async () => false, confirm, vitest.fn());
+    await flush();
+    expect(confirm).not.toHaveBeenCalled();
   });
 
   it("the DRep-change signal stays secondary: equal or unread says nothing", () => {
     expect(voteDelegationLanded({ ...vote, drepBefore: "drep1x" }, "drep1x")).toBe(false);
     expect(voteDelegationLanded({ ...vote }, "drep1x")).toBe(false);
     expect(voteDelegationLanded({ ...vote, drepBefore: null }, "drep1x")).toBe(true);
+  });
+});
+
+describe("clock time of a vote delegation", () => {
+  it("formats local HH:MM, zero-padded", () => {
+    expect(clockTime(new Date(2026, 10, 13, 7, 5).getTime())).toBe("07:05");
+    expect(clockTime(new Date(2026, 10, 13, 23, 59).getTime())).toBe("23:59");
+  });
+
+  it("expires at sentAt plus the watch limit", () => {
+    const sent: SentVoteDelegation = { account: ACCOUNT, network: 0, sentAt: T0, txHash: "ab".repeat(32) };
+    expect(voteDelegationExpiresAt(sent)).toBe(T0 + VOTE_DELEGATION_WATCH_LIMIT_MS);
   });
 });

@@ -112,28 +112,60 @@ export function voteDelegationLanded(
 
 /**
  * One look-up of the sent vote-delegation transaction, for a tab's re-read
- * timer. Calls `onLanded(txHash)` only on a definite "it is in a block"; "not
- * yet" and a failed look-up both do nothing — a failure is "not known", and
- * must neither clear the waiting line nor be shown as "not in". Returns a
- * release that drops a late answer (the tab moved on, or unmounted).
+ * timer. Calls `onLanded(txHash)` only on a definite "it is in a block" AND a
+ * fresh account read that already shows a vote delegation; "not yet", a failed
+ * look-up and a failed or empty re-read all do nothing — a failure is "not
+ * known", and must neither clear the waiting line nor be shown as "not in".
+ *
+ * Why the second read: `/tx_status` and the account endpoint can be answered
+ * by Koios instances that lag each other. Clearing on the hash alone let the
+ * same tick's account read still say "no DRep", so the Staking tab offered
+ * Abstain again — a second, paid vote delegation — and stopped re-reading. A
+ * transaction seen at zero confirmations and then rolled back fails the same
+ * re-read, so it keeps the record too; the record still ends at
+ * {@link VOTE_DELEGATION_WATCH_LIMIT_MS} like any other.
+ *
+ * `confirmOnChain` is the tab's own re-read: it resolves `true` only when that
+ * read succeeded and shows a vote delegation (a DRep, Abstain or No
+ * Confidence). Returns a release that drops a late answer (the tab moved on,
+ * or unmounted).
  */
 export function lookUpVoteTx(
   sent: SentVoteDelegation | null,
   lookUp: (network: PhoenixNetwork, txHash: string) => Promise<boolean>,
+  confirmOnChain: (sent: SentVoteDelegation) => Promise<boolean>,
   onLanded: (txHash: string) => void,
 ): () => void {
   if (sent === null) return () => {};
   let alive = true;
   const { network, txHash } = sent;
-  lookUp(network, txHash).then(
-    (seen) => {
-      if (alive && seen) onLanded(txHash);
-    },
-    () => {},
-  );
+  lookUp(network, txHash)
+    .then((seen) => (alive && seen ? confirmOnChain(sent) : false))
+    .then(
+      (onChain) => {
+        if (alive && onChain) onLanded(txHash);
+      },
+      () => {},
+    );
   return () => {
     alive = false;
   };
+}
+
+/** When a sent vote delegation can no longer land (see {@link VOTE_DELEGATION_WATCH_LIMIT_MS}). */
+export function voteDelegationExpiresAt(sent: SentVoteDelegation): number {
+  return sent.sentAt + VOTE_DELEGATION_WATCH_LIMIT_MS;
+}
+
+/**
+ * A moment as the reader's own clock shows it, `HH:MM` in local time. Used in
+ * the sentences that say when a vote delegation was sent or stops being able
+ * to land, so the time can be matched against the History tab.
+ */
+export function clockTime(ms: number): string {
+  const d = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 export type VoteDelegationWatch = { kind: "none" } | { kind: "pending" } | { kind: "unseen" };

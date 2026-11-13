@@ -6,7 +6,12 @@ import type { PhoenixNetwork, WalletPort } from "@/lib/cardano";
 import { SendPanel } from "./SendPanel";
 import { ReceivePanel } from "./ReceivePanel";
 import { StakingPanel } from "./StakingPanel";
-import type { SentDelegation, SentVoteDelegation } from "./delegationFeedback";
+import {
+  voteDelegationExpiresAt,
+  type SentDelegation,
+  type SentVoteDelegation,
+} from "./delegationFeedback";
+import { clearSentVote, readSentVote, writeSentVote, type StoredVoteDelegation } from "./voteDelegationStore";
 import { GovernancePanel } from "./GovernancePanel";
 import { ConnectPanel } from "./ConnectPanel";
 import { HistoryPanel } from "./HistoryPanel";
@@ -21,6 +26,16 @@ import {
 } from "./uncertainStore";
 
 type Tab = "send" | "receive" | "history" | "staking" | "governance" | "connect";
+
+/** The vote delegation in flight, and one that just ran past its watch limit. */
+type VoteSlot = { live: SentVoteDelegation | null; expired: SentVoteDelegation | null };
+
+const voteSlotFrom = (stored: StoredVoteDelegation): VoteSlot =>
+  stored.kind === "live"
+    ? { live: stored.sent, expired: null }
+    : stored.kind === "expired"
+      ? { live: null, expired: stored.sent }
+      : { live: null, expired: null };
 
 const TABS: { id: Tab; labelKey: string; icon: string }[] = [
   { id: "send", labelKey: "tab_send", icon: "📤" },
@@ -232,16 +247,76 @@ export function WalletTabs({
    * same record, so an Abstain sent on Staking is not met there by a bare
    * "None", and its own choice is still marked after a trip away and back.
    */
-  const [sentVoteDelegation, setSentVoteDelegation] = useState<SentVoteDelegation | null>(null);
+  //
+  // Also on disk (`voteDelegationStore`): the local wallet locks when the page
+  // is hidden, which unmounts this component, and a reload does the same —
+  // both inside the minute or two the waiting line asks the reader to wait.
+  // `expired` is a record dropped because it ran past its watch limit, held
+  // for the render so the tabs can say so instead of silently forgetting it.
+  const [voteSlot, setVoteSlot] = useState<VoteSlot>(() =>
+    voteSlotFrom(readSentVote(store, network, accountKey, Date.now())),
+  );
+  const sentVoteDelegation = voteSlot.live;
+  const liveVoteRef = useRef(voteSlot.live);
+  liveVoteRef.current = voteSlot.live;
+
+  const rememberVoteDelegation = useCallback(
+    (sent: SentVoteDelegation) => {
+      // A failed write keeps the in-memory copy, which is what there was
+      // before this was persisted; nothing on screen promises durability.
+      writeSentVote(store, accountKey, sent);
+      setVoteSlot({ live: sent, expired: null });
+    },
+    // `store` is a handle, not a value (see the uncertain-submit effects).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [accountKey],
+  );
   /**
-   * Either tab found the sent transaction in a block: nothing left to wait
-   * for, on either tab. Only the record for that hash is dropped — a newer one
-   * sent meanwhile stays.
+   * Either tab found the sent transaction in a block, and a fresh account read
+   * already shows a vote delegation (`lookUpVoteTx`): nothing left to wait for,
+   * on either tab. Only the record for that hash is dropped — a newer one sent
+   * meanwhile stays.
    */
   const clearLandedVoteDelegation = useCallback(
-    (txHash: string) => setSentVoteDelegation((cur) => (cur !== null && cur.txHash === txHash ? null : cur)),
-    [],
+    (txHash: string) => {
+      const live = liveVoteRef.current;
+      if (live === null || live.txHash !== txHash) return;
+      clearSentVote(store, live.network, accountKey, txHash);
+      setVoteSlot((cur) => (cur.live !== null && cur.live.txHash === txHash ? { live: null, expired: null } : cur));
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [accountKey],
   );
+
+  // Re-read the stored record when the account or chain changes under us —
+  // the same split as the uncertain-submit lock: the initialiser owns mount.
+  const seenVote = useRef<string | null>(null);
+  useEffect(() => {
+    const id = `${network}:${accountKey}`;
+    if (seenVote.current === null || seenVote.current === id) {
+      seenVote.current = id;
+      return;
+    }
+    seenVote.current = id;
+    setVoteSlot(voteSlotFrom(readSentVote(store, network, accountKey, Date.now())));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [network, accountKey]);
+
+  // The record ends when its transaction can no longer land, whether or not a
+  // tab is mounted to notice: drop it from disk and say it ran out.
+  useEffect(() => {
+    const live = voteSlot.live;
+    if (live === null) return;
+    const timer = setTimeout(
+      () => {
+        clearSentVote(store, live.network, accountKey, live.txHash);
+        setVoteSlot((cur) => (cur.live === live ? { live: null, expired: live } : cur));
+      },
+      Math.max(0, voteDelegationExpiresAt(live) - Date.now()),
+    );
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [voteSlot.live, accountKey]);
 
   const panelProps = { port, network, changeAddress };
   const moneyProps = { ...panelProps, uncertainHash, onUncertain: rememberUncertain };
@@ -314,7 +389,8 @@ export function WalletTabs({
           onDelegationSent={setSentDelegation}
           onDelegationSettled={clearSentDelegation}
           sentVoteDelegation={sentVoteDelegation}
-          onVoteDelegationSent={setSentVoteDelegation}
+          expiredVoteDelegation={voteSlot.expired}
+          onVoteDelegationSent={rememberVoteDelegation}
           onVoteDelegationLanded={clearLandedVoteDelegation}
         />
       )}
@@ -322,7 +398,8 @@ export function WalletTabs({
         <GovernancePanel
           {...moneyProps}
           sentVoteDelegation={sentVoteDelegation}
-          onVoteDelegationSent={setSentVoteDelegation}
+          expiredVoteDelegation={voteSlot.expired}
+          onVoteDelegationSent={rememberVoteDelegation}
           onVoteDelegationLanded={clearLandedVoteDelegation}
         />
       )}

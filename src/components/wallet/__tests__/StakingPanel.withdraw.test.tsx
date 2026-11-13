@@ -15,10 +15,11 @@ import i18next, { type i18n as I18n } from "i18next";
 import { I18nextProvider, initReactI18next } from "react-i18next";
 import { type ReactNode, useState } from "react";
 import en from "../../../../locales/en/wallet.json";
-import type { WalletPort } from "@/lib/cardano";
+import type { PhoenixNetwork, WalletPort } from "@/lib/cardano";
 import {
   DELEGATION_UNSEEN_MS,
   VOTE_DELEGATION_WATCH_LIMIT_MS,
+  clockTime,
   type SentVoteDelegation,
 } from "../delegationFeedback";
 
@@ -119,12 +120,20 @@ const wrap = (ui: ReactNode) => <I18nextProvider i18n={i18n}>{ui}</I18nextProvid
  * what keeps the waiting line up — the state no longer lives inside the panel,
  * so a harness that does not keep it would drop the line the moment it is sent.
  */
-function Harness({ port, uncertainHash }: { port: WalletPort; uncertainHash: string | null }) {
+function Harness({
+  port,
+  uncertainHash,
+  network = NETWORK,
+}: {
+  port: WalletPort;
+  uncertainHash: string | null;
+  network?: PhoenixNetwork;
+}) {
   const [sv, setSv] = useState<SentVoteDelegation | null>(null);
   return (
     <StakingPanel
       port={port}
-      network={NETWORK}
+      network={network}
       changeAddress={CHANGE_HEX}
       uncertainHash={uncertainHash}
       onUncertain={() => {}}
@@ -142,6 +151,12 @@ function renderPanel(port = makePort(), uncertainHash: string | null = null) {
   render(wrap(<Harness port={port} uncertainHash={uncertainHash} />));
   return port;
 }
+
+/** A line whose text starts with the part of `key` before its `{{time}}`. */
+const startsLike = (key: keyof typeof en) => {
+  const head = (en[key] as string).split("{{time}}")[0]!;
+  return (content: string) => content.startsWith(head);
+};
 
 const withdrawButton = () => screen.queryByRole("button", { name: en.withdraw_rewards }) as HTMLButtonElement | null;
 const abstainButton = () =>
@@ -205,7 +220,7 @@ describe("StakingPanel withdraw door: rewards, no vote delegation", () => {
     expect(abstainButton()).toBeNull();
   });
 
-  it("records the submit's hash, and clears the waiting line once that transaction is in a block", async () => {
+  it("found by hash while the account still reads no DRep: keeps waiting, no second Abstain; clears once the DRep shows", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
     m.getStakeAccountState.mockResolvedValue(account(REWARDS, null));
     renderPanel();
@@ -214,13 +229,33 @@ describe("StakingPanel withdraw door: rewards, no vote delegation", () => {
     fireEvent.click(screen.getByRole("checkbox"));
     fireEvent.click(screen.getByRole("button", { name: en.withdraw_abstain_confirm }));
     await screen.findByText(en.vote_delegation_pending);
-    // Koios still reads no DRep, but the transaction is found by its hash.
+    // /tx_status has it in a block, but /account_info (another Koios instance)
+    // still reads no DRep. Clearing on the hash alone brought Abstain back.
     m.fetchTxSeen.mockResolvedValue(true);
     await act(async () => {
       vi.advanceTimersByTime(20_000);
     });
     expect(m.fetchTxSeen).toHaveBeenCalledWith(NETWORK, TX_HASH);
+    const readsAfterFirstTick = m.getStakeAccountState.mock.calls.length;
+    expect(readsAfterFirstTick).toBeGreaterThanOrEqual(3); // mount, tick, re-read on the hit
+    expect(screen.getByText(en.vote_delegation_pending)).toBeTruthy();
+    expect(abstainButton()).toBeNull();
+    expect(screen.queryByText(en.withdraw_needs_drep)).toBeNull();
+    // Still polling: the next tick asks again.
+    await act(async () => {
+      vi.advanceTimersByTime(20_000);
+    });
+    expect(m.getStakeAccountState.mock.calls.length).toBeGreaterThan(readsAfterFirstTick);
+    expect(screen.getByText(en.vote_delegation_pending)).toBeTruthy();
+    expect(abstainButton()).toBeNull();
+
+    // The account read catches up: the record goes, withdraw opens.
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, "drep_always_abstain"));
+    await act(async () => {
+      vi.advanceTimersByTime(20_000);
+    });
     await waitFor(() => expect(screen.queryByText(en.vote_delegation_pending)).toBeNull());
+    expect(withdrawButton()?.disabled).toBe(false);
   });
 
   it("re-reads the account while waiting, and opens withdraw once the chain shows the DRep", async () => {
@@ -292,7 +327,9 @@ describe("StakingPanel: a vote delegation in flight, over time and through a fai
     renderWithSentVote({ account: ACCOUNT, network: NETWORK, sentAt: Date.now(), txHash: TX_HASH, drepBefore: null });
     expect(await screen.findByText(en.stake_read_failed)).toBeTruthy();
     // Outside the error branch: a failed read must not hide that one is in flight.
-    expect(screen.getByText(en.vote_delegation_pending)).toBeTruthy();
+    // Rewards are not known, so the line does not promise Withdraw.
+    expect(screen.getByText(en.vote_delegation_pending_plain)).toBeTruthy();
+    expect(screen.queryByText(en.vote_delegation_pending)).toBeNull();
   });
 
   it("says 'not seen' after ten minutes, and still does not offer Abstain again", async () => {
@@ -304,7 +341,7 @@ describe("StakingPanel: a vote delegation in flight, over time and through a fai
       sentAt: Date.now() - DELEGATION_UNSEEN_MS - 60_000,
       drepBefore: null,
     });
-    expect(await screen.findByText(en.vote_delegation_unseen)).toBeTruthy();
+    expect(await screen.findByText(startsLike("vote_delegation_unseen"))).toBeTruthy();
     expect(screen.queryByText(en.vote_delegation_pending)).toBeNull();
     expect(abstainButton()).toBeNull();
     expect(screen.queryByText(en.withdraw_needs_drep)).toBeNull();
@@ -318,7 +355,7 @@ describe("StakingPanel: a vote delegation in flight, over time and through a fai
     await act(async () => {
       vi.advanceTimersByTime(DELEGATION_UNSEEN_MS + 20_000);
     });
-    expect(await screen.findByText(en.vote_delegation_unseen)).toBeTruthy();
+    expect(await screen.findByText(startsLike("vote_delegation_unseen"))).toBeTruthy();
     expect(screen.queryByText(en.vote_delegation_pending)).toBeNull();
   });
 
@@ -333,6 +370,68 @@ describe("StakingPanel: a vote delegation in flight, over time and through a fai
     });
     expect(await screen.findByText(en.withdraw_needs_drep)).toBeTruthy();
     expect(abstainButton()).toBeTruthy();
-    expect(screen.queryByText(en.vote_delegation_unseen)).toBeNull();
+    expect(screen.queryByText(startsLike("vote_delegation_unseen"))).toBeNull();
+  });
+});
+
+describe("StakingPanel: the waiting line names Withdraw only when there is something to withdraw", () => {
+  it("no rewards: the plain line, not the one about the Withdraw button", async () => {
+    m.getStakeAccountState.mockResolvedValue(account(BigInt(0), null));
+    renderWithSentVote({ account: ACCOUNT, network: NETWORK, sentAt: Date.now(), txHash: TX_HASH, drepBefore: null });
+    expect(await screen.findByText(en.vote_delegation_pending_plain)).toBeTruthy();
+    expect(screen.queryByText(en.vote_delegation_pending)).toBeNull();
+  });
+
+  it("the 'not seen' line names the clock time the transaction stops being able to land", async () => {
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, null));
+    const sentAt = Date.now() - DELEGATION_UNSEEN_MS - 60_000;
+    renderWithSentVote({ account: ACCOUNT, network: NETWORK, txHash: TX_HASH, sentAt, drepBefore: null });
+    const expiry = clockTime(sentAt + VOTE_DELEGATION_WATCH_LIMIT_MS);
+    expect(await screen.findByText(en.vote_delegation_unseen.replace("{{time}}", expiry))).toBeTruthy();
+  });
+});
+
+describe("StakingPanel: a network switch while a signature is open", () => {
+  it("drops the old network's account read that lands after the switch", async () => {
+    // Preprod has rewards and a DRep; Preview's read fails.
+    m.getStakeAccountState.mockImplementation(async (net: number) => {
+      if (net === 0) return account(REWARDS, "drep1preprodchoice");
+      throw new Error("preview down");
+    });
+    let finishSign: (hash: string) => void = () => {};
+    const port = makePort();
+    port.signAndSubmit.mockImplementation(() => new Promise<string>((r) => (finishSign = r)));
+    const view = render(wrap(<Harness port={port} uncertainHash={null} network={0} />));
+    fireEvent.click(await screen.findByRole("button", { name: en.withdraw_rewards }));
+    await screen.findByLabelText(en.withdraw_verify_checkbox);
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: en.confirm_withdraw }));
+    await waitFor(() => expect(port.signAndSubmit).toHaveBeenCalledTimes(1));
+
+    // The picker moves to Preview while the signer is still open.
+    view.rerender(wrap(<Harness port={port} uncertainHash={null} network={2} />));
+    expect(await screen.findByText(en.stake_read_failed)).toBeTruthy();
+
+    // The signature completes; its follow-up read goes to Preprod and answers.
+    await act(async () => {
+      finishSign(TX_HASH);
+    });
+    await waitFor(() => expect(m.getStakeAccountState).toHaveBeenCalledWith(0, ACCOUNT));
+    await act(async () => {});
+    // Preview's screen keeps its own (failed) answer: no Preprod rewards, no
+    // Withdraw button armed with them.
+    expect(screen.getByText(en.stake_read_failed)).toBeTruthy();
+    expect(withdrawButton()).toBeNull();
+  });
+
+  it("closes an open Abstain review", async () => {
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, null));
+    const port = makePort();
+    const view = render(wrap(<Harness port={port} uncertainHash={null} network={0} />));
+    fireEvent.click(await screen.findByRole("button", { name: en.withdraw_abstain_button }));
+    expect(await screen.findByText(en.withdraw_abstain_review_title)).toBeTruthy();
+    view.rerender(wrap(<Harness port={port} uncertainHash={null} network={2} />));
+    await waitFor(() => expect(screen.queryByText(en.withdraw_abstain_review_title)).toBeNull());
+    expect(port.signAndSubmit).not.toHaveBeenCalled();
   });
 });

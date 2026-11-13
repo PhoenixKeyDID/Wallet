@@ -93,6 +93,10 @@ const TESTS = [
   // The sent vote delegation found by its hash.
   "src/components/wallet/__tests__/delegationFeedback.test.ts",
   "src/lib/cardano/__tests__/txSeen.test.ts",
+  // The in-flight vote delegation kept across a lock and a reload, and the
+  // Governance tab's DRep read across a network switch.
+  "src/components/wallet/__tests__/voteDelegationStore.test.ts",
+  "src/components/wallet/__tests__/GovernancePanel.delegate.test.tsx",
 ];
 
 /**
@@ -1265,8 +1269,8 @@ const MUTANTS = [
   {
     name: "the sent vote-delegation transaction is never taken as found (X → X stays 'unseen')",
     file: FEEDBACK,
-    from: "      if (alive && seen) onLanded(txHash);",
-    to: "      if (alive && false) onLanded(txHash);",
+    from: "    .then((seen) => (alive && seen ? confirmOnChain(sent) : false))",
+    to: "    .then((seen) => (alive && false ? confirmOnChain(sent) : false))",
   },
   {
     name: "a transaction the indexer does not have in a block reads as found",
@@ -1279,6 +1283,27 @@ const MUTANTS = [
     file: STAKING,
     from: "      setAccountState(null);\n      setLoadError(false);",
     to: "      setLoadError(false);",
+  },
+  // ── Round nine (MUT56R3-*): a hash hit must be confirmed by the account
+  // read, a late read must not cross a network switch, and the in-flight
+  // record must come back after a lock ──
+  {
+    name: "MUT56R3-SEEN: a hash found in a block clears the record without the account re-read",
+    file: FEEDBACK,
+    from: "    .then((seen) => (alive && seen ? confirmOnChain(sent) : false))",
+    to: "    .then((seen) => (alive && seen ? true /* MUT56R3-SEEN */ : false))",
+  },
+  {
+    name: "MUT56R3-NET: the post-signature account read lands on the network it was not read on",
+    file: STAKING,
+    from: "      if (networkRef.current !== readOn) return; // switched while reading: not this screen's answer\n",
+    to: "      /* MUT56R3-NET */\n",
+  },
+  {
+    name: "MUT56R3-LOAD: the stored in-flight vote delegation is not loaded on mount",
+    file: TABS,
+    from: "  const [voteSlot, setVoteSlot] = useState<VoteSlot>(() =>\n    voteSlotFrom(readSentVote(store, network, accountKey, Date.now())),\n  );",
+    to: "  const [voteSlot, setVoteSlot] = useState<VoteSlot>(() => ({ live: null, expired: null }) /* MUT56R3-LOAD */);",
   },
 ];
 
@@ -1305,6 +1330,18 @@ const MUTANTS = [
  * from the screen, so no screen test can tell whether its own check is there.
  */
 
+/**
+ * `node scripts/mutants.mjs <text>` runs only the mutants whose name contains
+ * `<text>` (e.g. `MUT56R3-`), after the same baseline. A filter that matches
+ * nothing is an error, not an empty green run.
+ */
+const FILTER = process.argv[2];
+const SELECTED = FILTER ? MUTANTS.filter((m) => m.name.includes(FILTER)) : MUTANTS;
+if (SELECTED.length === 0) {
+  console.error(`No mutant name contains "${FILTER}".`);
+  process.exit(2);
+}
+
 const read = (rel) => readFileSync(join(REPO, rel), "utf8");
 const write = (rel, text) => writeFileSync(join(REPO, rel), text);
 
@@ -1313,7 +1350,7 @@ const runTests = () =>
 
 const editsOf = (m) => m.edits ?? [m];
 const originals = new Map();
-for (const m of MUTANTS) for (const e of editsOf(m)) if (!originals.has(e.file)) originals.set(e.file, read(e.file));
+for (const m of SELECTED) for (const e of editsOf(m)) if (!originals.has(e.file)) originals.set(e.file, read(e.file));
 const restoreAll = () => {
   for (const [rel, text] of originals) write(rel, text);
 };
@@ -1336,7 +1373,7 @@ try {
     process.exit(1);
   }
 
-  for (const m of MUTANTS) {
+  for (const m of SELECTED) {
     // Edits apply in order, each to the file as the previous ones left it.
     const next = new Map();
     let miss;
@@ -1366,7 +1403,7 @@ try {
 
 const bad = survived + unanchored;
 console.log(
-  `\n${MUTANTS.length - bad}/${MUTANTS.length} guards pinned` +
+  `\n${SELECTED.length - bad}/${SELECTED.length} guards pinned` +
     (survived ? ` · ${survived} removable with every test still green` : "") +
     (unanchored ? ` · ${unanchored} anchor(s) no longer match the source` : ""),
 );

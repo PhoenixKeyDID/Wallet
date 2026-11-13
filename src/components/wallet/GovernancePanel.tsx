@@ -66,7 +66,9 @@ import {
 } from "@/lib/cardano/governance";
 import {
   VOTE_DELEGATION_TTL_SLOTS,
+  clockTime,
   lookUpVoteTx,
+  voteDelegationExpiresAt,
   voteDelegationLanded,
   voteDelegationWatch,
   type SentVoteDelegation,
@@ -131,6 +133,7 @@ export function GovernancePanel({
   uncertainHash,
   onUncertain,
   sentVoteDelegation,
+  expiredVoteDelegation = null,
   onVoteDelegationSent,
   onVoteDelegationLanded,
 }: {
@@ -146,6 +149,12 @@ export function GovernancePanel({
    * (`undefined`) when the panel runs standalone: it then keeps its own.
    */
   sentVoteDelegation?: SentVoteDelegation | null;
+  /**
+   * A vote delegation the parent dropped because it ran past its watch limit
+   * without the chain showing it. Said once, while the chain still shows no
+   * vote delegation. Optional: absent means none.
+   */
+  expiredVoteDelegation?: SentVoteDelegation | null;
   /**
    * Called when a vote delegation (any DRep, or Abstain / No-Confidence) is
    * signed here, so the Staking tab knows one is in flight and does not then
@@ -384,6 +393,7 @@ export function GovernancePanel({
           loadCtx={loadCtx}
           feeRow={feeRow}
           sentVoteDelegation={sentVote}
+          expiredVoteDelegation={expiredVoteDelegation}
           onVoteDelegationSent={recordVoteSent}
           onVoteDelegationLanded={recordVoteLanded}
         />
@@ -445,12 +455,14 @@ function DelegateSection({
   loadCtx,
   feeRow,
   sentVoteDelegation,
+  expiredVoteDelegation,
   onVoteDelegationSent,
   onVoteDelegationLanded,
 }: SectionProps & {
   network: PhoenixNetwork;
   rewardBech32: string;
   sentVoteDelegation: SentVoteDelegation | null;
+  expiredVoteDelegation: SentVoteDelegation | null;
   onVoteDelegationSent: (sent: SentVoteDelegation) => void;
   onVoteDelegationLanded: (txHash: string) => void;
 }) {
@@ -489,6 +501,15 @@ function DelegateSection({
     };
   }, [network, rewardBech32]);
 
+  // The DRep read belongs to the network it was read on. Kept across a switch
+  // of the network picker, the old network's DRep would sit on the new one's
+  // screen (and become `drepBefore` of a choice sent there) until the new
+  // read answers — or for good, if it fails. Declared before the re-read so it
+  // runs first on a switch.
+  useEffect(() => {
+    setCurrent(undefined);
+  }, [network]);
+
   useEffect(() => reloadCurrent(), [reloadCurrent]);
 
   // While one is in flight: move the clock (pending → unseen → window closed)
@@ -497,18 +518,33 @@ function DelegateSection({
   // so a new record or callback does not restart the timer).
   const voteTxRef = useRef({ sent: sentVoteDelegation, onLanded: onVoteDelegationLanded });
   voteTxRef.current = { sent: sentVoteDelegation, onLanded: onVoteDelegationLanded };
+  //
+  // A hash found in a block lets the record go only once a fresh DRep read
+  // SUCCEEDS and shows a vote delegation (any non-null answer: a DRep, Abstain
+  // or No Confidence). The simplest rule that holds here: the account
+  // endpoint can lag `/tx_status`, a failed read is "not known", and a choice
+  // sent from this tab always leaves a non-null answer once it is on chain.
+  // Otherwise the record stays and the timer goes on (`lookUpVoteTx`).
   useEffect(() => {
     if (!voteInFlight) return;
+    let cancelled = false;
     let release: () => void = () => {};
     let releaseTx: () => void = () => {};
+    const confirmOnChain = (sent: SentVoteDelegation) =>
+      getVoteDelegationState(sent.network, sent.account).then((s) => {
+        const onChain = s.delegatedDRep ?? null;
+        if (!cancelled) setCurrent(onChain);
+        return !cancelled && onChain !== null;
+      });
     const timer = setInterval(() => {
       setNow(Date.now());
       release();
       release = reloadCurrent();
       releaseTx();
-      releaseTx = lookUpVoteTx(voteTxRef.current.sent, fetchTxSeen, voteTxRef.current.onLanded);
+      releaseTx = lookUpVoteTx(voteTxRef.current.sent, fetchTxSeen, confirmOnChain, voteTxRef.current.onLanded);
     }, VOTE_PENDING_POLL_MS);
     return () => {
+      cancelled = true;
       clearInterval(timer);
       release();
       releaseTx();
@@ -554,6 +590,13 @@ function DelegateSection({
           feeRow(built),
         ],
         submittedKey: "gov_delegation_submitted",
+        // One is already on its way: sending this replaces it and pays a second
+        // fee. Said on the review, not by disabling the buttons — changing the
+        // choice is legitimate, it just should not happen by accident.
+        warn:
+          voteInFlight && sentVoteDelegation !== null
+            ? t("gov_delegate_inflight_warn", { time: clockTime(sentVoteDelegation.sentAt) })
+            : undefined,
         onDone: (txHash) => {
           // Tell the parent a vote delegation is in flight: this tab shows its
           // waiting line from that record, and the Staking tab stops offering
@@ -580,9 +623,22 @@ function DelegateSection({
       {voteInFlight && voteWatch.kind === "pending" && (
         <p className="text-xs text-amber-brand">{t("gov_delegate_pending")}</p>
       )}
-      {voteInFlight && voteWatch.kind === "unseen" && (
-        <p className="text-xs text-amber-brand">{t("vote_delegation_unseen")}</p>
+      {voteInFlight && voteWatch.kind === "unseen" && sentVoteDelegation !== null && (
+        <p className="text-xs text-amber-brand">
+          {t("vote_delegation_unseen", { time: clockTime(voteDelegationExpiresAt(sentVoteDelegation)) })}
+        </p>
       )}
+      {/* Ran out without the chain showing it, and the chain still reads no
+          vote delegation: the choice did not happen, and may be made again. */}
+      {!voteInFlight &&
+        expiredVoteDelegation !== null &&
+        expiredVoteDelegation.account === rewardBech32 &&
+        expiredVoteDelegation.network === network &&
+        current === null && (
+          <p className="text-xs text-amber-brand">
+            {t("vote_delegation_expired", { time: clockTime(expiredVoteDelegation.sentAt) })}
+          </p>
+        )}
 
       <div className="flex gap-2">
         <button

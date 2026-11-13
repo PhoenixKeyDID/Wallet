@@ -37,8 +37,10 @@ import { buildVoteDelegation } from "@/lib/cardano/governance";
 import {
   DELEGATION_WATCH_LIMIT_MS,
   VOTE_DELEGATION_TTL_SLOTS,
+  clockTime,
   delegationWatch,
   lookUpVoteTx,
+  voteDelegationExpiresAt,
   voteDelegationWatch,
   type SentDelegation,
   type SentVoteDelegation,
@@ -66,6 +68,12 @@ export type DelegationSentProps = {
    * and on the Governance tab.
    */
   onVoteDelegationLanded: (txHash: string) => void;
+  /**
+   * A vote delegation that ran past its watch limit without the chain showing
+   * it (the parent drops it then). Said once, so the reader knows the choice
+   * did not happen and may be made again. Optional: absent means none.
+   */
+  expiredVoteDelegation?: SentVoteDelegation | null;
 };
 
 /** How often the account is re-read while a delegation waits to be recorded. */
@@ -99,6 +107,7 @@ export function StakingPanel({
   sentVoteDelegation,
   onVoteDelegationSent,
   onVoteDelegationLanded,
+  expiredVoteDelegation = null,
 }: {
   port: WalletPort;
   network: PhoenixNetwork;
@@ -178,16 +187,40 @@ export function StakingPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [port, network, reloadKey]);
 
+  // The network on screen now. `refreshAccountState` runs after a signature,
+  // from a closure made before it — the network picker can have moved while
+  // the signer was open, and the old network's answer must not land on the
+  // new network's screen (it would enable Withdraw with rewards that are not
+  // there). Compared after the read, and the stale answer is dropped.
+  const networkRef = useRef(network);
+  networkRef.current = network;
+
   const refreshAccountState = async () => {
     if (!rewardAddressBech32) return;
+    const readOn = network;
     try {
-      setAccountState(await getStakeAccountState(network, rewardAddressBech32));
+      const state = await getStakeAccountState(readOn, rewardAddressBech32);
+      if (networkRef.current !== readOn) return; // switched while reading: not this screen's answer
+      setAccountState(state);
       setLoadError(false);
     } catch (err) {
+      if (networkRef.current !== readOn) return;
       setLoadError(true);
       toastApiError(err);
     }
   };
+
+  // A review built on one network must not stay signable on another, and a
+  // pool list searched on one is not the other's. Cleared on a switch of the
+  // network picker, with the confirm tick that went with the review.
+  useEffect(() => {
+    setAbstainReview(null);
+    setWithdrawReview(null);
+    setPoolReview(null);
+    setChecked(false);
+    setPools([]);
+    setSearched(false);
+  }, [network]);
 
   // The chain shows it: nothing left to wait for.
   useEffect(() => {
@@ -244,10 +277,23 @@ export function StakingPanel({
   // The same tick also looks the sent transaction up by hash: found in a block
   // means landed, whatever the account's DRep reads, and the parent drops the
   // record — the only test that works for a re-delegation to the same DRep.
+  //
+  // Found by hash is not enough on its own: the account read can come from a
+  // Koios instance that has not caught up, and clearing the record then brings
+  // back "no DRep" with Abstain armed. So a hit re-reads the account, and only
+  // a read that shows a vote delegation lets the record go; otherwise the
+  // record stays and the timer keeps going (`lookUpVoteTx`).
   useEffect(() => {
     if (!voteInFlight || !rewardAddressBech32) return;
     let cancelled = false;
     let releaseTx: () => void = () => {};
+    const confirmOnChain = (sent: SentVoteDelegation) =>
+      getStakeAccountState(sent.network, sent.account).then((state) => {
+        if (cancelled || networkRef.current !== sent.network) return false;
+        setAccountState(state);
+        setLoadError(false);
+        return state.delegatedDRep !== null;
+      });
     const timer = setInterval(() => {
       setNow(Date.now());
       getStakeAccountState(network, rewardAddressBech32)
@@ -258,7 +304,7 @@ export function StakingPanel({
         })
         .catch(() => {});
       releaseTx();
-      releaseTx = lookUpVoteTx(voteTxRef.current.sent, fetchTxSeen, voteTxRef.current.onLanded);
+      releaseTx = lookUpVoteTx(voteTxRef.current.sent, fetchTxSeen, confirmOnChain, voteTxRef.current.onLanded);
     }, PENDING_POLL_MS);
     return () => {
       cancelled = true;
@@ -735,12 +781,34 @@ export function StakingPanel({
         {/* Same reason, for a vote delegation (Abstain here, or any choice on
             the Governance tab): the line names no choice, because it follows
             all of them alike. */}
+        {/* The line that promises Withdraw only where there is something to
+            withdraw; with no rewards (or none read) it just says it waits. */}
         {voteInFlight && voteWatch.kind === "pending" && (
-          <p className="text-xs text-amber-brand">{t("vote_delegation_pending")}</p>
+          <p className="text-xs text-amber-brand">
+            {t(
+              accountState !== null && accountState.rewardsAvailable > BigInt("0")
+                ? "vote_delegation_pending"
+                : "vote_delegation_pending_plain",
+            )}
+          </p>
         )}
-        {voteInFlight && voteWatch.kind === "unseen" && (
-          <p className="text-xs text-amber-brand">{t("vote_delegation_unseen")}</p>
+        {voteInFlight && voteWatch.kind === "unseen" && sentVoteDelegation !== null && (
+          <p className="text-xs text-amber-brand">
+            {t("vote_delegation_unseen", { time: clockTime(voteDelegationExpiresAt(sentVoteDelegation)) })}
+          </p>
         )}
+        {/* Ran out without the chain showing it, and the chain still shows no
+            vote delegation: say so once, the Abstain offer below is real again. */}
+        {!voteInFlight &&
+          expiredVoteDelegation !== null &&
+          expiredVoteDelegation.account === rewardAddressBech32 &&
+          expiredVoteDelegation.network === network &&
+          accountState !== null &&
+          accountState.delegatedDRep === null && (
+            <p className="text-xs text-amber-brand">
+              {t("vote_delegation_expired", { time: clockTime(expiredVoteDelegation.sentAt) })}
+            </p>
+          )}
         {/* The withdraw door is always on screen once the account is read.
             A button that only appears when there is something to take left a
             user with nothing yet looking for a feature that seemed missing. */}

@@ -24,7 +24,9 @@ import { I18nextProvider, initReactI18next } from "react-i18next";
 import type { ReactNode } from "react";
 import en from "../../../../locales/en/wallet.json";
 import type { WalletPort } from "@/lib/cardano";
-import { DELEGATION_UNSEEN_MS } from "../delegationFeedback";
+import { DELEGATION_UNSEEN_MS, VOTE_DELEGATION_WATCH_LIMIT_MS, clockTime } from "../delegationFeedback";
+import { accountKeyFrom } from "../uncertainStore";
+import { voteDelegationKey } from "../voteDelegationStore";
 
 const ACCOUNT = "stake_test1uqtestaccount";
 const DREP = "drep1testdrepidentifier0000abcd";
@@ -105,6 +107,9 @@ beforeEach(async () => {
   m.fetchTxSeen.mockResolvedValue(false);
   m.getVoteDelegationState.mockReset();
   m.getVoteDelegationState.mockResolvedValue({ delegatedDRep: null });
+  // The in-flight record is kept on disk now; one test's record must not
+  // leak into the next.
+  window.localStorage.clear();
 });
 
 afterEach(() => {
@@ -128,6 +133,12 @@ function makePort() {
     signAndSubmit: vi.fn(async () => "abcdef0123456789abcdef"),
   } as unknown as WalletPort & { signAndSubmit: ReturnType<typeof vi.fn> };
 }
+
+/** A line whose text starts with the part of `key` before its `{{time}}`. */
+const startsLike = (key: keyof typeof en) => {
+  const head = (en[key] as string).split("{{time}}")[0]!;
+  return (content: string) => content.startsWith(head);
+};
 
 const wrap = (ui: ReactNode) => <I18nextProvider i18n={i18n}>{ui}</I18nextProvider>;
 
@@ -293,17 +304,17 @@ describe("FIX-R2: a sent vote delegation found by its hash clears the line", () 
     m.fetchTxSeen.mockResolvedValue(true);
     await passTenMinutes();
     expect(m.fetchTxSeen).toHaveBeenCalledWith(NETWORK, TX_HASH);
-    await waitFor(() => expect(screen.queryByText(en.vote_delegation_unseen)).toBeNull());
+    await waitFor(() => expect(screen.queryByText(startsLike("vote_delegation_unseen"))).toBeNull());
     expect(screen.queryByText(en.gov_delegate_pending)).toBeNull();
 
     // The record is gone from the parent: the Staking tab shows no line either.
     fireEvent.click(stakingTab());
     await screen.findByText(en.withdraw_rewards);
     expect(screen.queryByText(en.vote_delegation_pending)).toBeNull();
-    expect(screen.queryByText(en.vote_delegation_unseen)).toBeNull();
+    expect(screen.queryByText(startsLike("vote_delegation_unseen"))).toBeNull();
   });
 
-  it("(b) the DRep before was never read, the tx is in a block ⇒ no 'unseen' line", async () => {
+  it("(b) the tx is in a block but the DRep read fails ⇒ still waiting; once it reads a DRep ⇒ cleared", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
     m.getStakeAccountState.mockResolvedValue(account(REWARDS, null));
     m.getVoteDelegationState.mockRejectedValue(new Error("koios down"));
@@ -312,9 +323,17 @@ describe("FIX-R2: a sent vote delegation found by its hash clears the line", () 
     await delegateOnGovernance(port);
     expect(screen.queryByText(en.gov_current_delegation, { exact: false })).toBeNull();
 
+    // Found by hash, but the account read is "not known": the record stays.
     m.fetchTxSeen.mockResolvedValue(true);
     await passTenMinutes();
-    await waitFor(() => expect(screen.queryByText(en.vote_delegation_unseen)).toBeNull());
+    expect(await screen.findByText(startsLike("vote_delegation_unseen"))).toBeTruthy();
+
+    // The read answers with the DRep: the hash hit is confirmed, the line goes.
+    m.getVoteDelegationState.mockResolvedValue({ delegatedDRep: DREP });
+    await act(async () => {
+      vi.advanceTimersByTime(20_000);
+    });
+    await waitFor(() => expect(screen.queryByText(startsLike("vote_delegation_unseen"))).toBeNull());
     expect(screen.queryByText(en.gov_delegate_pending)).toBeNull();
   });
 
@@ -329,7 +348,7 @@ describe("FIX-R2: a sent vote delegation found by its hash clears the line", () 
     m.fetchTxSeen.mockResolvedValue(false);
     await passTenMinutes();
     expect(m.fetchTxSeen).toHaveBeenCalledWith(NETWORK, TX_HASH);
-    expect(await screen.findByText(en.vote_delegation_unseen)).toBeTruthy();
+    expect(await screen.findByText(startsLike("vote_delegation_unseen"))).toBeTruthy();
   });
 
   it("a failed look-up is 'not known', not 'landed': the line stays", async () => {
@@ -346,5 +365,64 @@ describe("FIX-R2: a sent vote delegation found by its hash clears the line", () 
     });
     expect(m.fetchTxSeen).toHaveBeenCalled();
     expect(await screen.findByText(en.gov_delegate_pending)).toBeTruthy();
+  });
+});
+
+/**
+ * The in-flight record outlives the session lock and a reload. The local
+ * wallet locks when the page is hidden, which unmounts `WalletTabs`; held only
+ * in its state, the record was gone on unlock and Abstain was armed again.
+ */
+describe("FIX-R3: the in-flight vote delegation survives a lock and a reload", () => {
+  const HASH64 = "ab".repeat(32);
+  const storageKey = () => voteDelegationKey(NETWORK, accountKeyFrom(CHANGE_HEX));
+
+  it("send Abstain, lock (unmount), unlock (remount) ⇒ no Abstain button, the waiting line is back", async () => {
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, null));
+    const port = makePort();
+    port.signAndSubmit.mockResolvedValue(HASH64);
+    const first = render(wrap(<WalletTabs port={port} changeAddress={CHANGE_HEX} network={NETWORK} />));
+    fireEvent.click(stakingTab());
+    fireEvent.click(await screen.findByRole("button", { name: en.withdraw_abstain_button }));
+    await screen.findByText(en.withdraw_abstain_review_title);
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: en.withdraw_abstain_confirm }));
+    await screen.findByText(en.vote_delegation_pending);
+
+    first.unmount(); // the session locks
+    expect(screen.queryByText(en.vote_delegation_pending)).toBeNull();
+
+    render(wrap(<WalletTabs port={port} changeAddress={CHANGE_HEX} network={NETWORK} />)); // unlocked
+    fireEvent.click(stakingTab());
+    expect(await screen.findByText(en.vote_delegation_pending)).toBeTruthy();
+    expect(abstainButton()).toBeNull();
+    expect(screen.queryByText(en.withdraw_needs_drep)).toBeNull();
+    expect(port.signAndSubmit).toHaveBeenCalledTimes(1);
+  });
+
+  it("a stored record past its watch limit is dropped and said once; Abstain is offered again", async () => {
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, null));
+    const sentAt = Date.now() - VOTE_DELEGATION_WATCH_LIMIT_MS - 1000;
+    window.localStorage.setItem(
+      storageKey(),
+      JSON.stringify({ account: ACCOUNT, network: NETWORK, sentAt, txHash: HASH64, drepBefore: null }),
+    );
+    render(wrap(<WalletTabs port={makePort()} changeAddress={CHANGE_HEX} network={NETWORK} />));
+    fireEvent.click(stakingTab());
+    expect(
+      await screen.findByText(en.vote_delegation_expired.replace("{{time}}", clockTime(sentAt))),
+    ).toBeTruthy();
+    expect(abstainButton()).toBeTruthy();
+    expect(window.localStorage.getItem(storageKey())).toBeNull();
+  });
+
+  it("a malformed stored value is dropped, not shown: Abstain is offered, nothing waits", async () => {
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, null));
+    window.localStorage.setItem(storageKey(), JSON.stringify({ account: ACCOUNT, network: NETWORK }));
+    render(wrap(<WalletTabs port={makePort()} changeAddress={CHANGE_HEX} network={NETWORK} />));
+    fireEvent.click(stakingTab());
+    expect(await screen.findByRole("button", { name: en.withdraw_abstain_button })).toBeTruthy();
+    expect(screen.queryByText(en.vote_delegation_pending)).toBeNull();
+    expect(window.localStorage.getItem(storageKey())).toBeNull();
   });
 });
