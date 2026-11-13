@@ -63,7 +63,15 @@ import {
   infoAction,
   treasuryWithdrawalAction,
 } from "@/lib/cardano/governance";
-import type { SentVoteDelegation } from "@/components/wallet/delegationFeedback";
+import {
+  VOTE_DELEGATION_TTL_SLOTS,
+  voteDelegationLanded,
+  voteDelegationWatch,
+  type SentVoteDelegation,
+} from "@/components/wallet/delegationFeedback";
+
+/** How often the current DRep is re-read while a sent vote delegation waits. */
+const VOTE_PENDING_POLL_MS = 20_000;
 
 type Section = "delegate" | "actions" | "become" | "submit";
 /**
@@ -119,11 +127,21 @@ export function GovernancePanel({
   changeAddress,
   uncertainHash,
   onUncertain,
+  sentVoteDelegation,
   onVoteDelegationSent,
 }: {
   port: WalletPort;
   network: PhoenixNetwork;
   changeAddress: string;
+  /**
+   * A vote delegation in flight, from this tab or from the Staking tab's
+   * Abstain, held by the parent above the tab switch. This panel unmounts
+   * whenever another tab is opened, so a flag of its own would be gone on
+   * return — and an Abstain sent on Staking would never be seen here at all,
+   * leaving a bare "None" that invites a second, paid delegation. Absent
+   * (`undefined`) when the panel runs standalone: it then keeps its own.
+   */
+  sentVoteDelegation?: SentVoteDelegation | null;
   /**
    * Called when a vote delegation (any DRep, or Abstain / No-Confidence) is
    * signed here, so the Staking tab knows one is in flight and does not then
@@ -133,6 +151,16 @@ export function GovernancePanel({
   onVoteDelegationSent?: (sent: SentVoteDelegation) => void;
 } & UncertainLock) {
   const { t } = useTranslation("wallet");
+  // Standalone fallback only; under `WalletTabs` the parent's record is used.
+  const [ownSentVote, setOwnSentVote] = useState<SentVoteDelegation | null>(null);
+  const sentVote = sentVoteDelegation !== undefined ? sentVoteDelegation : ownSentVote;
+  const recordVoteSent = useCallback(
+    (sent: SentVoteDelegation) => {
+      setOwnSentVote(sent);
+      onVoteDelegationSent?.(sent);
+    },
+    [onVoteDelegationSent],
+  );
   const [section, setSection] = useState<Section>("delegate");
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState<Pending | null>(null);
@@ -179,7 +207,8 @@ export function GovernancePanel({
       inputs,
       protocolParams,
       changeAddress: changeAddr,
-      ttl: tip + 7200,
+      // Shared with the vote-delegation waiting line, which is timed off it.
+      ttl: tip + VOTE_DELEGATION_TTL_SLOTS,
     };
   }, [port, network, changeAddr, t]);
 
@@ -337,7 +366,8 @@ export function GovernancePanel({
           onReview={review}
           loadCtx={loadCtx}
           feeRow={feeRow}
-          onVoteDelegationSent={onVoteDelegationSent}
+          sentVoteDelegation={sentVote}
+          onVoteDelegationSent={recordVoteSent}
         />
       )}
       {section === "actions" && (
@@ -396,11 +426,13 @@ function DelegateSection({
   onReview,
   loadCtx,
   feeRow,
+  sentVoteDelegation,
   onVoteDelegationSent,
 }: SectionProps & {
   network: PhoenixNetwork;
   rewardBech32: string;
-  onVoteDelegationSent?: (sent: SentVoteDelegation) => void;
+  sentVoteDelegation: SentVoteDelegation | null;
+  onVoteDelegationSent: (sent: SentVoteDelegation) => void;
 }) {
   const { t } = useTranslation("wallet");
   const [query, setQuery] = useState("");
@@ -411,8 +443,16 @@ function DelegateSection({
    * A delegation that was just submitted is not yet visible to the indexer —
    * it needs a block first. Showing the old delegation with no note reads as
    * "it did not work", which is what makes people delegate a second time.
+   * The record is the parent's (`WalletTabs`), shared with the Staking tab, so
+   * the line is there after a tab switch and after an Abstain sent on Staking.
+   * It goes once the chain shows a DRep other than the one before sending,
+   * or once the transaction's validity window has closed; past the "unseen"
+   * mark it says the transaction most likely did not get in.
    */
-  const [justDelegated, setJustDelegated] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
+  const voteWatch = voteDelegationWatch(sentVoteDelegation, rewardBech32 || null, network, now);
+  const voteInFlight =
+    voteWatch.kind !== "none" && !voteDelegationLanded(sentVoteDelegation, current);
 
   const reloadCurrent = useCallback(() => {
     if (!rewardBech32) return () => {};
@@ -426,6 +466,22 @@ function DelegateSection({
   }, [network, rewardBech32]);
 
   useEffect(() => reloadCurrent(), [reloadCurrent]);
+
+  // While one is in flight: move the clock (pending → unseen → window closed)
+  // and re-read the current DRep, so a landed choice clears the line by itself.
+  useEffect(() => {
+    if (!voteInFlight) return;
+    let release: () => void = () => {};
+    const timer = setInterval(() => {
+      setNow(Date.now());
+      release();
+      release = reloadCurrent();
+    }, VOTE_PENDING_POLL_MS);
+    return () => {
+      clearInterval(timer);
+      release();
+    };
+  }, [voteInFlight, reloadCurrent]);
 
   const search = async () => {
     setSearching(true);
@@ -467,13 +523,15 @@ function DelegateSection({
         ],
         submittedKey: "gov_delegation_submitted",
         onDone: () => {
-          setJustDelegated(true);
+          // Tell the parent a vote delegation is in flight: this tab shows its
+          // waiting line from that record, and the Staking tab stops offering
+          // Abstain — which would overwrite the choice just made. `current` is
+          // the chain's answer before this one, kept so a later answer that
+          // differs can be read as "landed".
+          const sentAt = Date.now();
+          setNow(sentAt);
+          onVoteDelegationSent({ account: rewardBech32, network, sentAt, drepBefore: current });
           reloadCurrent();
-          // Tell the parent a vote delegation is in flight, so the Staking tab
-          // stops offering Abstain — which would overwrite the choice just made.
-          if (rewardBech32) {
-            onVoteDelegationSent?.({ account: rewardBech32, network, sentAt: Date.now() });
-          }
         },
       };
     });
@@ -487,7 +545,12 @@ function DelegateSection({
           <span className="mono">{current ? short(current) : t("gov_none")}</span>
         </p>
       )}
-      {justDelegated && <p className="text-xs text-amber-brand">{t("gov_delegate_pending")}</p>}
+      {voteInFlight && voteWatch.kind === "pending" && (
+        <p className="text-xs text-amber-brand">{t("gov_delegate_pending")}</p>
+      )}
+      {voteInFlight && voteWatch.kind === "unseen" && (
+        <p className="text-xs text-amber-brand">{t("vote_delegation_unseen")}</p>
+      )}
 
       <div className="flex gap-2">
         <button

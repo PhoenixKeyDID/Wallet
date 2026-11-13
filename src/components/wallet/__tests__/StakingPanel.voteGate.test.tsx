@@ -143,7 +143,7 @@ describe("FIX1: an Abstain sent on the Staking tab survives a tab switch", () =>
     fireEvent.click(screen.getByRole("checkbox"));
     fireEvent.click(screen.getByRole("button", { name: en.withdraw_abstain_confirm }));
 
-    expect(await screen.findByText(en.withdraw_abstain_waiting)).toBeTruthy();
+    expect(await screen.findByText(en.vote_delegation_pending)).toBeTruthy();
     expect(abstainButton()).toBeNull();
     expect(screen.queryByText(en.withdraw_needs_drep)).toBeNull();
     expect(port.signAndSubmit).toHaveBeenCalledTimes(1);
@@ -155,7 +155,7 @@ describe("FIX1: an Abstain sent on the Staking tab survives a tab switch", () =>
 
     // The waiting line is back, the Abstain offer is NOT — the exact moment the
     // old local state had been dropped and a second Abstain could be signed.
-    expect(await screen.findByText(en.withdraw_abstain_waiting)).toBeTruthy();
+    expect(await screen.findByText(en.vote_delegation_pending)).toBeTruthy();
     expect(abstainButton()).toBeNull();
     expect(screen.queryByText(en.withdraw_needs_drep)).toBeNull();
   });
@@ -183,11 +183,54 @@ describe("FIX2: a DRep chosen on the Governance tab stops Staking offering Absta
     // Now the Staking tab. It must NOT offer Abstain (that would overwrite the
     // DRep just chosen) and must NOT claim the account has no DRep.
     fireEvent.click(stakingTab());
-    expect(await screen.findByText(en.withdraw_abstain_waiting)).toBeTruthy();
+    expect(await screen.findByText(en.vote_delegation_pending)).toBeTruthy();
     expect(abstainButton()).toBeNull();
     expect(screen.queryByText(en.withdraw_needs_drep)).toBeNull();
     // The Abstain path was never signed from here.
     expect(m.buildVoteDelegation).toHaveBeenCalledTimes(1);
     expect(m.buildVoteDelegation.mock.calls[0]![0]).toMatchObject({ target: { kind: "drep", drepId: DREP } });
+  });
+});
+
+describe("FIX5: the Governance tab reads the same in-flight record", () => {
+  it("an Abstain sent on Staking shows as waiting on Governance, not as a bare 'None'", async () => {
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, null));
+    const port = makePort();
+    render(wrap(<WalletTabs port={port} changeAddress={CHANGE_HEX} network={NETWORK} />));
+
+    fireEvent.click(stakingTab());
+    fireEvent.click(await screen.findByRole("button", { name: en.withdraw_abstain_button }));
+    await screen.findByText(en.withdraw_abstain_review_title);
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: en.withdraw_abstain_confirm }));
+    await screen.findByText(en.vote_delegation_pending);
+
+    // Koios still reports no DRep. Without the shared record the Governance
+    // tab showed "None" alone — the screen that invites a second, paid one.
+    fireEvent.click(governanceTab());
+    expect(await screen.findByText(en.gov_delegate_pending)).toBeTruthy();
+    expect(port.signAndSubmit).toHaveBeenCalledTimes(1);
+  });
+
+  it("a choice made on Governance is still marked after History and back", async () => {
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, null));
+    const port = makePort();
+    render(wrap(<WalletTabs port={port} changeAddress={CHANGE_HEX} network={NETWORK} />));
+
+    fireEvent.click(governanceTab());
+    await waitFor(() => expect(port.getDrepKeyHashHex).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: en.gov_search }));
+    const row = (await screen.findByText(DREP)).parentElement!;
+    fireEvent.click(within(row).getByRole("button", { name: en.gov_delegate }));
+    fireEvent.click(await screen.findByLabelText(en.gov_verify_checkbox));
+    const confirm = screen.getByRole("button", { name: en.gov_confirm }) as HTMLButtonElement;
+    await waitFor(() => expect(confirm.disabled).toBe(false));
+    fireEvent.click(confirm);
+    expect(await screen.findByText(en.gov_delegate_pending)).toBeTruthy();
+
+    fireEvent.click(historyTab());
+    expect(await screen.findByText("history-stub")).toBeTruthy();
+    fireEvent.click(governanceTab());
+    expect(await screen.findByText(en.gov_delegate_pending)).toBeTruthy();
   });
 });

@@ -1,9 +1,15 @@
 import { describe, it, expect } from "vitest";
 import {
   DELEGATION_UNSEEN_MS,
+  DELEGATION_WATCH_LIMIT_MS,
+  VOTE_DELEGATION_TTL_SLOTS,
+  VOTE_DELEGATION_WATCH_LIMIT_MS,
   delegationWatch,
   nextAccountIndex,
+  voteDelegationPending,
+  voteDelegationWatch,
   type SentDelegation,
+  type SentVoteDelegation,
 } from "../delegationFeedback";
 import en from "../../../../locales/en/wallet.json";
 import vi from "../../../../locales/vi/wallet.json";
@@ -46,6 +52,33 @@ describe("delegationWatch", () => {
   });
 });
 
+describe("voteDelegationWatch", () => {
+  const vote: SentVoteDelegation = { account: ACCOUNT, network: 2, sentAt: T0 };
+
+  it("is none when nothing was sent, or under another account or network", () => {
+    expect(voteDelegationWatch(null, ACCOUNT, 2, T0)).toEqual({ kind: "none" });
+    expect(voteDelegationWatch(vote, OTHER, 2, T0)).toEqual({ kind: "none" });
+    expect(voteDelegationWatch(vote, null, 2, T0)).toEqual({ kind: "none" });
+    expect(voteDelegationWatch(vote, ACCOUNT, 0, T0)).toEqual({ kind: "none" });
+  });
+
+  it("is pending up to the unseen limit, then unseen", () => {
+    expect(voteDelegationWatch(vote, ACCOUNT, 2, T0 + DELEGATION_UNSEEN_MS)).toEqual({ kind: "pending" });
+    expect(voteDelegationWatch(vote, ACCOUNT, 2, T0 + DELEGATION_UNSEEN_MS + 1)).toEqual({ kind: "unseen" });
+  });
+
+  it("lets go when the transaction's validity window closes, not an hour later", () => {
+    // `ttl = tip + VOTE_DELEGATION_TTL_SLOTS`, one slot per second.
+    expect(VOTE_DELEGATION_WATCH_LIMIT_MS).toBe(VOTE_DELEGATION_TTL_SLOTS * 1000);
+    expect(VOTE_DELEGATION_TTL_SLOTS).toBe(7200);
+    expect(VOTE_DELEGATION_WATCH_LIMIT_MS).toBeLessThan(DELEGATION_WATCH_LIMIT_MS);
+    expect(voteDelegationWatch(vote, ACCOUNT, 2, T0 + VOTE_DELEGATION_WATCH_LIMIT_MS - 1)).toEqual({ kind: "unseen" });
+    expect(voteDelegationWatch(vote, ACCOUNT, 2, T0 + VOTE_DELEGATION_WATCH_LIMIT_MS)).toEqual({ kind: "none" });
+    expect(voteDelegationPending(vote, ACCOUNT, 2, T0 + VOTE_DELEGATION_WATCH_LIMIT_MS)).toBe(false);
+    expect(voteDelegationPending(vote, ACCOUNT, 2, T0 + DELEGATION_UNSEEN_MS + 1)).toBe(true);
+  });
+});
+
 describe("nextAccountIndex", () => {
   it("opens the form on the account after the one in use", () => {
     expect(nextAccountIndex(0)).toBe(1);
@@ -73,6 +106,17 @@ describe("wording", () => {
       expect(l.stake_delegate_pending, lng).toContain("{{pool}}");
       expect(l.stake_delegate_unseen, lng).toContain("{{pool}}");
       expect(l.stake_delegate_unseen, lng).not.toBe(l.stake_delegate_pending);
+    }
+  });
+
+  it("vote delegation has a pending line and an unseen line that name no choice", () => {
+    for (const [lng, l] of Object.entries(locales)) {
+      expect(l.vote_delegation_pending, lng).toBeTruthy();
+      expect(l.vote_delegation_unseen, lng).toBeTruthy();
+      expect(l.vote_delegation_unseen, lng).not.toBe(l.vote_delegation_pending);
+      // The same line follows an Abstain, a DRep and No Confidence alike.
+      expect(l.vote_delegation_pending, lng).not.toContain(l.gov_abstain);
+      expect(l.vote_delegation_unseen, lng).not.toContain(l.gov_abstain);
     }
   });
 

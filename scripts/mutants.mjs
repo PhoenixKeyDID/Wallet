@@ -37,6 +37,9 @@ const STAKING = "src/components/wallet/StakingPanel.tsx";
 const STAKING_LIB = "src/lib/cardano/staking.ts";
 const GOV = "src/components/wallet/GovernancePanel.tsx";
 const TABS = "src/components/wallet/WalletTabs.tsx";
+// What the delegation waiting lines decide from: when "waiting" becomes "not
+// seen", and when a sent vote delegation can no longer land.
+const FEEDBACK = "src/components/wallet/delegationFeedback.ts";
 const PROVIDER = "src/lib/cardano/provider.ts";
 const BLOCKFROST = "src/lib/cardano/blockfrost.ts";
 const TX_SUMMARY = "src/lib/cardano/txSummary.ts";
@@ -83,6 +86,10 @@ const TESTS = [
   "scripts/__tests__/checkLocales.test.ts",
   "src/components/wallet/__tests__/StakingPanel.withdraw.test.tsx",
   "src/lib/cardano/__tests__/stakeAccountState.test.ts",
+  // The Delegate-while-loading refusal, and the in-flight vote delegation as
+  // both tabs read it across a tab switch.
+  "src/components/wallet/__tests__/StakingPanel.delegation.test.tsx",
+  "src/components/wallet/__tests__/StakingPanel.voteGate.test.tsx",
 ];
 
 /**
@@ -1199,7 +1206,7 @@ const MUTANTS = [
   {
     name: "after Abstain is sent, nobody re-reads the account and withdraw never opens",
     file: STAKING,
-    from: "    if (!abstainWaiting || !rewardAddressBech32) return;",
+    from: "    if (!voteInFlight || !rewardAddressBech32) return;",
     to: "    if (true) return;",
   },
   {
@@ -1211,8 +1218,44 @@ const MUTANTS = [
   {
     name: "the Abstain button ignores the uncertain-submit lock",
     file: STAKING,
-    from: "            disabled={locked}\n            onClick={onAbstain}",
-    to: "            disabled={false}\n            onClick={onAbstain}",
+    from: "          disabled={locked}\n          onClick={onAbstain}",
+    to: "          disabled={false}\n          onClick={onAbstain}",
+  },
+  {
+    name: "Delegate is pressable while the account is still loading (phantom 2 ADA registration)",
+    file: STAKING,
+    from: "disabled={busy || uncertainHash !== null || accountState === null}",
+    to: "disabled={busy || uncertainHash !== null || loadError}",
+  },
+  {
+    name: "the vote-delegation waiting line hides behind a failed account read",
+    file: STAKING,
+    from: '        {voteInFlight && voteWatch.kind === "pending" && (',
+    to: '        {voteInFlight && voteWatch.kind === "pending" && !loadError && (',
+  },
+  {
+    name: "a vote delegation never turns 'not seen' after ten minutes",
+    file: FEEDBACK,
+    from: '  if (age > DELEGATION_UNSEEN_MS) return { kind: "unseen" };\n',
+    to: "",
+  },
+  {
+    name: "the vote-delegation watch outlives the transaction's TTL by the pool margin",
+    file: FEEDBACK,
+    from: "export const VOTE_DELEGATION_WATCH_LIMIT_MS = VOTE_DELEGATION_TTL_SLOTS * 1000;",
+    to: "export const VOTE_DELEGATION_WATCH_LIMIT_MS = DELEGATION_WATCH_LIMIT_MS;",
+  },
+  {
+    name: "the Governance tab is not handed the shared in-flight vote delegation",
+    file: TABS,
+    from: "          {...moneyProps}\n          sentVoteDelegation={sentVoteDelegation}",
+    to: "          {...moneyProps}\n          sentVoteDelegation={undefined}",
+  },
+  {
+    name: "the Governance tab ignores the parent's record and keeps a flag of its own",
+    file: GOV,
+    from: "  const sentVote = sentVoteDelegation !== undefined ? sentVoteDelegation : ownSentVote;",
+    to: "  const sentVote = ownSentVote;",
   },
 ];
 

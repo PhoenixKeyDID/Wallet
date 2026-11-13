@@ -228,6 +228,9 @@ export function WalletTabs({
    * still be known to the Staking tab after a tab switch — otherwise it brings
    * back "this account has no DRep", offers Abstain again, and signs a second
    * vote delegation that costs a fee and overwrites the choice already made.
+   * Read by BOTH tabs: the Governance tab shows its waiting line from this
+   * same record, so an Abstain sent on Staking is not met there by a bare
+   * "None", and its own choice is still marked after a trip away and back.
    */
   const [sentVoteDelegation, setSentVoteDelegation] = useState<SentVoteDelegation | null>(null);
 
@@ -306,7 +309,11 @@ export function WalletTabs({
         />
       )}
       {activeTab === "governance" && (
-        <GovernancePanel {...moneyProps} onVoteDelegationSent={setSentVoteDelegation} />
+        <GovernancePanel
+          {...moneyProps}
+          sentVoteDelegation={sentVoteDelegation}
+          onVoteDelegationSent={setSentVoteDelegation}
+        />
       )}
       {activeTab === "connect" && <ConnectPanel network={network} changeAddress={changeAddress} />}
     </div>

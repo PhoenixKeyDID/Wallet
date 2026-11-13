@@ -16,7 +16,11 @@ import { I18nextProvider, initReactI18next } from "react-i18next";
 import { type ReactNode, useState } from "react";
 import en from "../../../../locales/en/wallet.json";
 import type { WalletPort } from "@/lib/cardano";
-import type { SentVoteDelegation } from "../delegationFeedback";
+import {
+  DELEGATION_UNSEEN_MS,
+  VOTE_DELEGATION_WATCH_LIMIT_MS,
+  type SentVoteDelegation,
+} from "../delegationFeedback";
 
 const ACCOUNT = "stake_test1uqtestaccount";
 const NETWORK = 0 as const;
@@ -186,7 +190,7 @@ describe("StakingPanel withdraw door: rewards, no vote delegation", () => {
     expect(confirm.disabled).toBe(false);
     fireEvent.click(confirm);
 
-    expect(await screen.findByText(en.withdraw_abstain_waiting)).toBeTruthy();
+    expect(await screen.findByText(en.vote_delegation_pending)).toBeTruthy();
     expect(port.signAndSubmit).toHaveBeenCalledTimes(1);
     expect(port.signAndSubmit.mock.calls[0]![0]).toBe(ABSTAIN_TX);
     expect(m.toastSuccess).toHaveBeenCalledWith("withdraw_abstain_submitted", expect.anything());
@@ -203,7 +207,7 @@ describe("StakingPanel withdraw door: rewards, no vote delegation", () => {
     await screen.findByText(en.withdraw_abstain_review_title);
     fireEvent.click(screen.getByRole("checkbox"));
     fireEvent.click(screen.getByRole("button", { name: en.withdraw_abstain_confirm }));
-    await screen.findByText(en.withdraw_abstain_waiting);
+    await screen.findByText(en.vote_delegation_pending);
     expect(m.getStakeAccountState).toHaveBeenCalledTimes(1);
 
     m.getStakeAccountState.mockResolvedValue(account(REWARDS, "drep_always_abstain"));
@@ -212,7 +216,7 @@ describe("StakingPanel withdraw door: rewards, no vote delegation", () => {
     });
     expect(m.getStakeAccountState).toHaveBeenCalledTimes(2);
     await waitFor(() => expect(withdrawButton()?.disabled).toBe(false));
-    expect(screen.queryByText(en.withdraw_abstain_waiting)).toBeNull();
+    expect(screen.queryByText(en.vote_delegation_pending)).toBeNull();
   });
 
   it("a lock that arrives while the Abstain review is open still stops the signature", async () => {
@@ -234,5 +238,74 @@ describe("StakingPanel withdraw door: rewards, no vote delegation", () => {
     renderPanel(makePort(), "deadbeef".repeat(8));
     await screen.findByText(en.withdraw_needs_drep);
     expect(abstainButton()!.disabled).toBe(true);
+  });
+});
+
+/** The panel with a vote delegation already in flight, as the parent hands it down. */
+function renderWithSentVote(sent: SentVoteDelegation) {
+  render(
+    wrap(
+      <StakingPanel
+        port={makePort()}
+        network={NETWORK}
+        changeAddress={CHANGE_HEX}
+        uncertainHash={null}
+        onUncertain={() => {}}
+        sentDelegation={null}
+        onDelegationSent={() => {}}
+        onDelegationSettled={() => {}}
+        sentVoteDelegation={sent}
+        onVoteDelegationSent={() => {}}
+      />,
+    ),
+  );
+}
+
+describe("StakingPanel: a vote delegation in flight, over time and through a failed read", () => {
+  it("keeps the waiting line when the account read fails", async () => {
+    m.getStakeAccountState.mockRejectedValue(new Error("koios down"));
+    renderWithSentVote({ account: ACCOUNT, network: NETWORK, sentAt: Date.now(), drepBefore: null });
+    expect(await screen.findByText(en.stake_read_failed)).toBeTruthy();
+    // Outside the error branch: a failed read must not hide that one is in flight.
+    expect(screen.getByText(en.vote_delegation_pending)).toBeTruthy();
+  });
+
+  it("says 'not seen' after ten minutes, and still does not offer Abstain again", async () => {
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, null));
+    renderWithSentVote({
+      account: ACCOUNT,
+      network: NETWORK,
+      sentAt: Date.now() - DELEGATION_UNSEEN_MS - 60_000,
+      drepBefore: null,
+    });
+    expect(await screen.findByText(en.vote_delegation_unseen)).toBeTruthy();
+    expect(screen.queryByText(en.vote_delegation_pending)).toBeNull();
+    expect(abstainButton()).toBeNull();
+    expect(screen.queryByText(en.withdraw_needs_drep)).toBeNull();
+  });
+
+  it("turns 'waiting' into 'not seen' on an open panel once ten minutes pass", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, null));
+    renderWithSentVote({ account: ACCOUNT, network: NETWORK, sentAt: Date.now(), drepBefore: null });
+    await screen.findByText(en.vote_delegation_pending);
+    await act(async () => {
+      vi.advanceTimersByTime(DELEGATION_UNSEEN_MS + 20_000);
+    });
+    expect(await screen.findByText(en.vote_delegation_unseen)).toBeTruthy();
+    expect(screen.queryByText(en.vote_delegation_pending)).toBeNull();
+  });
+
+  it("offers Abstain again once the transaction's validity window has closed", async () => {
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, null));
+    renderWithSentVote({
+      account: ACCOUNT,
+      network: NETWORK,
+      sentAt: Date.now() - VOTE_DELEGATION_WATCH_LIMIT_MS,
+      drepBefore: null,
+    });
+    expect(await screen.findByText(en.withdraw_needs_drep)).toBeTruthy();
+    expect(abstainButton()).toBeTruthy();
+    expect(screen.queryByText(en.vote_delegation_unseen)).toBeNull();
   });
 });

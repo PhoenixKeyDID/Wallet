@@ -35,8 +35,9 @@ import {
 import { buildVoteDelegation } from "@/lib/cardano/governance";
 import {
   DELEGATION_WATCH_LIMIT_MS,
+  VOTE_DELEGATION_TTL_SLOTS,
   delegationWatch,
-  voteDelegationPending,
+  voteDelegationWatch,
   type SentDelegation,
   type SentVoteDelegation,
 } from "@/components/wallet/delegationFeedback";
@@ -208,16 +209,21 @@ export function StakingPanel({
     };
   }, [waiting, network, rewardAddressBech32]);
 
-  // A vote delegation (Abstain here, or any DRep choice on the Governance tab)
-  // is in flight and the chain has not shown it yet. Held by the parent, so it
+  // A vote delegation (Abstain here, or any choice on the Governance tab) is
+  // in flight and the chain has not shown it yet. Held by the parent, so it
   // survives this panel unmounting on a tab switch. While it holds, the Abstain
   // offer is suppressed and the account is re-read on a timer, until the chain
-  // shows a vote delegation or the transaction's validity window has closed.
-  const abstainWaiting =
-    voteDelegationPending(sentVoteDelegation, rewardAddressBech32, network, now) &&
-    accountState?.delegatedDRep == null;
+  // shows a vote delegation or the transaction's validity window has closed
+  // (`VOTE_DELEGATION_WATCH_LIMIT_MS`, derived from the TTL the build uses).
+  // Past `DELEGATION_UNSEEN_MS` the waiting line turns into "not seen": it most
+  // likely did not get in, but can still land until the window closes, so the
+  // offer stays suppressed and the re-read goes on. An account whose read failed
+  // (`accountState` null) counts as "chain shows none" — the line must outlive
+  // a failed read, or the next press sends a second one.
+  const voteWatch = voteDelegationWatch(sentVoteDelegation, rewardAddressBech32, network, now);
+  const voteInFlight = voteWatch.kind !== "none" && accountState?.delegatedDRep == null;
   useEffect(() => {
-    if (!abstainWaiting || !rewardAddressBech32) return;
+    if (!voteInFlight || !rewardAddressBech32) return;
     let cancelled = false;
     const timer = setInterval(() => {
       setNow(Date.now());
@@ -233,7 +239,7 @@ export function StakingPanel({
       cancelled = true;
       clearInterval(timer);
     };
-  }, [abstainWaiting, network, rewardAddressBech32]);
+  }, [voteInFlight, network, rewardAddressBech32]);
 
   const runSearch = async () => {
     setSearching(true);
@@ -266,10 +272,19 @@ export function StakingPanel({
     // "delegate", nothing moved, and nothing said why. The reward address is
     // still being read from the wallet — say so.
     if (!rewardAddressHex) return toastError(t("reward_addr_not_ready"));
+    // Whether the stake key is registered is read from the chain. Until that
+    // read lands — still loading, or failed — there is no answer, and guessing
+    // "not registered" attaches a registration certificate the node rejects for
+    // a key that already is one, behind a review showing a 2 ADA deposit that
+    // would never be taken. The button is disabled in that state; this is the
+    // refusal behind it.
+    if (accountState === null) {
+      return toastError(t(loadError ? "stake_read_failed" : "reward_addr_not_ready"));
+    }
     setBusy(true);
     try {
       const { inputs, changeAddr, params, tip } = await prepareInputs();
-      const needsRegistration = !(accountState?.registered ?? false);
+      const needsRegistration = !accountState.registered;
       const built = buildDelegation({
         rewardAddress: rewardAddressHex,
         poolId: pool.poolId,
@@ -378,7 +393,8 @@ export function StakingPanel({
         inputs,
         changeAddress: changeAddr,
         protocolParams: params,
-        ttl: tip + 7200,
+        // The waiting line after submit is timed off this same constant.
+        ttl: tip + VOTE_DELEGATION_TTL_SLOTS,
       });
       setAbstainReview({ built });
       setChecked(false);
@@ -400,7 +416,12 @@ export function StakingPanel({
       const sentAt = Date.now();
       setNow(sentAt);
       if (rewardAddressBech32) {
-        onVoteDelegationSent({ account: rewardAddressBech32, network, sentAt });
+        onVoteDelegationSent({
+          account: rewardAddressBech32,
+          network,
+          sentAt,
+          drepBefore: accountState ? accountState.delegatedDRep : undefined,
+        });
       }
       setAbstainReview(null);
       setChecked(false);
@@ -684,13 +705,22 @@ export function StakingPanel({
             {t("stake_delegate_unseen", { pool: shortPoolId(watch.poolId) })}
           </p>
         )}
+        {/* Same reason, for a vote delegation (Abstain here, or any choice on
+            the Governance tab): the line names no choice, because it follows
+            all of them alike. */}
+        {voteInFlight && voteWatch.kind === "pending" && (
+          <p className="text-xs text-amber-brand">{t("vote_delegation_pending")}</p>
+        )}
+        {voteInFlight && voteWatch.kind === "unseen" && (
+          <p className="text-xs text-amber-brand">{t("vote_delegation_unseen")}</p>
+        )}
         {/* The withdraw door is always on screen once the account is read.
             A button that only appears when there is something to take left a
             user with nothing yet looking for a feature that seemed missing. */}
         {!loadingAccount && !loadError && accountState && (
           <WithdrawDoor
             state={accountState}
-            abstainWaiting={abstainWaiting}
+            voteInFlight={voteInFlight}
             locked={busy || uncertainHash !== null}
             busy={busy}
             onWithdraw={reviewWithdraw}
@@ -746,13 +776,15 @@ export function StakingPanel({
                   ) : (
                     <button
                       type="button"
-                      // Also disabled on a read failure: with `accountState`
-                      // null, `reviewDelegate` cannot tell a registered key
-                      // from an unregistered one, defaults to "needs
-                      // registration", and would attach a STAKE_KEY_REGISTRATION
-                      // cert the node rejects for an already-registered key,
-                      // killing the whole tx and showing a phantom 2 ADA deposit.
-                      disabled={busy || uncertainHash !== null || loadError}
+                      // Also disabled until the account has been read — while
+                      // it is still loading and after a failed read alike: with
+                      // `accountState` null nothing says whether the stake key
+                      // is registered, and guessing "not registered" attaches a
+                      // STAKE_KEY_REGISTRATION cert the node rejects for a key
+                      // that already is, killing the whole tx behind a review
+                      // that shows a phantom 2 ADA deposit. `reviewDelegate`
+                      // refuses the same state.
+                      disabled={busy || uncertainHash !== null || accountState === null}
                       onClick={() => reviewDelegate(pool)}
                       className="px-3 py-1.5 rounded-brand-sm border border-border-amber bg-amber-brand/10 hover:bg-amber-brand/20 text-xs text-amber-brand disabled:opacity-50"
                     >
@@ -789,13 +821,15 @@ export function StakingPanel({
  * this account" and "waiting for the fix to land" never look the same:
  *
  * - no rewards        → button shown, disabled, with the reason;
- * - no vote delegation → the rule explained, and a one-step Abstain offered
- *                        (or, once sent, a waiting line);
+ * - no vote delegation → the rule explained, and Abstain offered — or, once a
+ *                        vote delegation is in flight, nothing here: the
+ *                        waiting line above (outside the read-error branch)
+ *                        says it, and the offer must not be made again;
  * - otherwise          → the button.
  */
 function WithdrawDoor({
   state,
-  abstainWaiting,
+  voteInFlight,
   locked,
   busy,
   onWithdraw,
@@ -803,7 +837,7 @@ function WithdrawDoor({
   t,
 }: {
   state: StakeAccountState;
-  abstainWaiting: boolean;
+  voteInFlight: boolean;
   locked: boolean;
   busy: boolean;
   onWithdraw: () => void;
@@ -815,28 +849,24 @@ function WithdrawDoor({
   const withdrawCls =
     "w-full p-3 rounded-brand border border-border-teal bg-teal-brand/10 hover:bg-teal-brand/20 text-sm text-teal-brand disabled:opacity-50";
 
+  // A vote delegation is already in flight (this tab's Abstain, or any choice
+  // on the Governance tab). The waiting line above says so — showing "this
+  // account has not made one yet" and offering Abstain again would invite a
+  // second, paid tx that replaces the choice made.
+  if (needsDRep && voteInFlight) return null;
+
   if (needsDRep) {
     return (
       <div className="rounded-brand-sm border border-border-amber bg-amber-brand/10 p-3 text-sm space-y-2">
-        {abstainWaiting ? (
-          // A vote delegation is already in flight (this tab's Abstain, or a
-          // DRep chosen on the Governance tab). Say only that it is waiting —
-          // showing "this account has not made one yet" and offering Abstain
-          // again would invite a second, paid tx that replaces the choice made.
-          <p className="text-xs text-amber-brand">{t("withdraw_abstain_waiting")}</p>
-        ) : (
-          <>
-            <p className="text-amber-brand">{t("withdraw_needs_drep")}</p>
-            <button
-              type="button"
-              disabled={locked}
-              onClick={onAbstain}
-              className="w-full p-3 rounded-brand border border-border-amber bg-amber-brand/10 hover:bg-amber-brand/20 text-sm text-amber-brand disabled:opacity-50"
-            >
-              {busy ? t("building") : t("withdraw_abstain_button")}
-            </button>
-          </>
-        )}
+        <p className="text-amber-brand">{t("withdraw_needs_drep")}</p>
+        <button
+          type="button"
+          disabled={locked}
+          onClick={onAbstain}
+          className="w-full p-3 rounded-brand border border-border-amber bg-amber-brand/10 hover:bg-amber-brand/20 text-sm text-amber-brand disabled:opacity-50"
+        >
+          {busy ? t("building") : t("withdraw_abstain_button")}
+        </button>
       </div>
     );
   }

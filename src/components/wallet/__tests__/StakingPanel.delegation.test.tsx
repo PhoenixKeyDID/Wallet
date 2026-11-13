@@ -187,6 +187,38 @@ describe("StakingPanel: a signed delegation is handed to the parent", () => {
   });
 });
 
+describe("StakingPanel: Delegate waits for the account read", () => {
+  // Until the read lands nothing says whether the stake key is registered;
+  // a guess of "not registered" builds a registration cert the node rejects
+  // for a key that already is, behind a phantom 2 ADA deposit.
+  it("is disabled while the account is still loading, and builds nothing", async () => {
+    m.getStakeAccountState.mockReturnValue(new Promise(() => {}));
+    renderPanel({ sentDelegation: null });
+    expect(screen.getByText(en.loading)).toBeTruthy();
+    fireEvent.change(screen.getByPlaceholderText(en.search_pools_placeholder), {
+      target: { value: "TEST" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: en.search_pools_button }));
+    const button = (await screen.findByRole("button", { name: en.delegate_button })) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    fireEvent.click(button);
+    expect(m.buildDelegation).not.toHaveBeenCalled();
+    expect(screen.getByText(en.loading)).toBeTruthy();
+  });
+
+  it("is disabled after a failed read too", async () => {
+    m.getStakeAccountState.mockRejectedValue(new Error("koios down"));
+    renderPanel({ sentDelegation: null });
+    await screen.findByText(en.stake_read_failed);
+    fireEvent.change(screen.getByPlaceholderText(en.search_pools_placeholder), {
+      target: { value: "TEST" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: en.search_pools_button }));
+    const button = (await screen.findByRole("button", { name: en.delegate_button })) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+  });
+});
+
 describe("StakingPanel: the waiting line comes from the parent's record", () => {
   it("shows the pending line while the chain does not show the pool", async () => {
     renderPanel({ sentDelegation: sentNow() });

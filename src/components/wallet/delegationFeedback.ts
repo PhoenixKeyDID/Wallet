@@ -41,14 +41,34 @@ export const DELEGATION_UNSEEN_MS = 10 * 60_000;
 export const DELEGATION_WATCH_LIMIT_MS = 3 * 60 * 60_000;
 
 /**
+ * Validity window, in slots, of a vote-delegation transaction: `ttl = tip +`
+ * this, on the Staking tab's Abstain and on every Governance-tab build. One
+ * slot is one second on mainnet, preprod and preview, so the watch below is
+ * derived from it — change the TTL here and the watch follows.
+ */
+export const VOTE_DELEGATION_TTL_SLOTS = 7200;
+
+/**
+ * How long a sent vote delegation is still worth waiting for. It cannot land
+ * after its TTL, and `sentAt` is taken after the tip that TTL was counted from
+ * was read, so `TTL slots × 1 s` after `sentAt` is an upper bound on when it
+ * can still land. Kept apart from {@link DELEGATION_WATCH_LIMIT_MS}, which the
+ * pool-delegation watch uses with its own margin: held past the TTL, the vote
+ * watch would keep "Choose Abstain" hidden for an hour after the transaction
+ * could no longer get in.
+ */
+export const VOTE_DELEGATION_WATCH_LIMIT_MS = VOTE_DELEGATION_TTL_SLOTS * 1000;
+
+/**
  * A vote (DRep) delegation this wallet just sent and the chain has not shown
  * yet. Held above the tab switch, the same reason {@link SentDelegation} is:
- * the Staking tab unmounts when another tab is opened, and the fact that an
- * Abstain is already in flight must still be there on return. It is also set
- * when a DRep choice is signed on the Governance tab, so the Staking tab does
- * not then offer "Choose Abstain" and replace a choice already made. No
- * `poolId`/target — the Staking tab only needs to know one is in flight, not
- * which, and the chain is the authority on what it becomes.
+ * the Staking and Governance tabs unmount when another tab is opened, and the
+ * fact that one is already in flight must still be there on return — on both
+ * tabs, since either one can send the next, paid, vote delegation. Set when
+ * Staking signs Abstain and when Governance signs any choice (a DRep, Abstain,
+ * No Confidence). No target is kept: the screens only need to know one is in
+ * flight, so every sentence about it names no choice, and the chain is the
+ * authority on what it becomes.
  */
 export type SentVoteDelegation = {
   /** Reward address (bech32) that signed the vote-delegation certificate. */
@@ -56,15 +76,61 @@ export type SentVoteDelegation = {
   network: PhoenixNetwork;
   /** `Date.now()` at submit. */
   sentAt: number;
+  /**
+   * The DRep the chain showed for this account just before sending (`null`:
+   * none; absent: not read). A chain answer that differs from it means the new
+   * choice has landed — the only "landed" test that needs no guess at how the
+   * indexer spells a choice. Absent ⇒ the clock alone decides.
+   */
+  drepBefore?: string | null;
 };
 
 /**
- * Whether a just-sent vote delegation is still inside the window where the
- * chain may not have recorded it. While true the Staking tab must not offer
- * Abstain again, and must not claim the account has no DRep. Reuses
- * {@link DELEGATION_WATCH_LIMIT_MS}: once it elapses, or the chain shows a
- * DRep, behaviour returns to reading the chain directly. Tied to the account
- * and network it was sent from, so it never suppresses the offer under another.
+ * Whether the chain's current answer shows the sent vote delegation landed:
+ * it is known, the answer before sending is known, and they differ.
+ * `onChain` undefined = not read (or the read failed).
+ */
+export function voteDelegationLanded(
+  sent: SentVoteDelegation | null,
+  onChain: string | null | undefined,
+): boolean {
+  if (sent === null || sent.drepBefore === undefined || onChain === undefined) return false;
+  return onChain !== sent.drepBefore;
+}
+
+export type VoteDelegationWatch = { kind: "none" } | { kind: "pending" } | { kind: "unseen" };
+
+/**
+ * Where a just-sent vote delegation stands, by the clock alone:
+ *
+ * - `none`: nothing sent, sent from another account or network, or past
+ *   {@link VOTE_DELEGATION_WATCH_LIMIT_MS} — it can no longer land, so the
+ *   screens go back to reading the chain directly.
+ * - `pending`: within {@link DELEGATION_UNSEEN_MS} of sending — the usual wait.
+ * - `unseen`: longer than that, still inside the validity window — it most
+ *   likely did not get in, but still can until the window closes.
+ *
+ * Whether the chain already shows it is the caller's half: the Staking tab
+ * reads any recorded DRep as "landed", since it only offers Abstain to an
+ * account that had none.
+ */
+export function voteDelegationWatch(
+  sent: SentVoteDelegation | null,
+  account: string | null,
+  network: PhoenixNetwork,
+  now: number,
+): VoteDelegationWatch {
+  if (sent === null || sent.account !== account || sent.network !== network) return { kind: "none" };
+  const age = now - sent.sentAt;
+  if (age >= VOTE_DELEGATION_WATCH_LIMIT_MS) return { kind: "none" };
+  if (age > DELEGATION_UNSEEN_MS) return { kind: "unseen" };
+  return { kind: "pending" };
+}
+
+/**
+ * Whether a just-sent vote delegation may still land ({@link voteDelegationWatch}
+ * is `pending` or `unseen`). While true neither tab may offer a vote delegation
+ * as though none were in flight.
  */
 export function voteDelegationPending(
   sent: SentVoteDelegation | null,
@@ -72,8 +138,7 @@ export function voteDelegationPending(
   network: PhoenixNetwork,
   now: number,
 ): boolean {
-  if (sent === null || sent.account !== account || sent.network !== network) return false;
-  return now - sent.sentAt < DELEGATION_WATCH_LIMIT_MS;
+  return voteDelegationWatch(sent, account, network, now).kind !== "none";
 }
 
 export type DelegationWatch =
