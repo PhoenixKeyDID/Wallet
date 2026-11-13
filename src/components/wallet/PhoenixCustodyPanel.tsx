@@ -11,7 +11,7 @@ import { BalanceView } from "./BalanceView";
 import { CopyBtn } from "@/components/CopyBtn";
 
 /**
- * Phoenix custody wallet = a script enterprise address bound to a DID
+ * Phoenix custody wallet = a script address bound to a DID
  * (`did + anchor_nft_policy`), invariant across key rotation/recovery.
  * View-only in v1: the address + balances come from the backend; spending needs
  * the controller key (mobile / air-gap), which is phase 2.
