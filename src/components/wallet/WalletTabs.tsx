@@ -11,7 +11,13 @@ import {
   type SentDelegation,
   type SentVoteDelegation,
 } from "./delegationFeedback";
-import { clearSentVote, readSentVote, writeSentVote, type StoredVoteDelegation } from "./voteDelegationStore";
+import {
+  clearSentVote,
+  readSentVote,
+  voteDelegationKey,
+  writeSentVote,
+  type StoredVoteDelegation,
+} from "./voteDelegationStore";
 import { GovernancePanel } from "./GovernancePanel";
 import { ConnectPanel } from "./ConnectPanel";
 import { HistoryPanel } from "./HistoryPanel";
@@ -191,9 +197,20 @@ export function WalletTabs({
    * that sent is showing a warning. The event also fires when the key is
    * cleared elsewhere, so acknowledging in one tab releases both.
    */
+  //
+  // The same listener follows the sent vote delegation (`voteDelegationStore`,
+  // further down): one sent in the other tab must hold the Abstain offer back
+  // here too, and a record dropped there (landed, or ran out) must not linger
+  // here. Only this account's record on this chain is followed, and a
+  // wholesale clear (`e.key === null`) is not word that it landed — the copy
+  // held here stays until it lands or runs out.
   useEffect(() => {
     if (typeof window === "undefined") return;
     const onStorage = (e: StorageEvent) => {
+      if (e.key === voteDelegationKey(network, accountKey)) {
+        setVoteSlot(voteSlotFrom(readSentVote(store, network, accountKey, Date.now())));
+        return;
+      }
       if (e.key !== null && e.key !== lockKey(network, accountKey)) return;
       const next = readLock(store, network, accountKey);
       // `e.key === null` is a wholesale `localStorage.clear()`, which is site
@@ -264,8 +281,10 @@ export function WalletTabs({
     (sent: SentVoteDelegation) => {
       // A failed write keeps the in-memory copy, which is what there was
       // before this was persisted; nothing on screen promises durability.
-      writeSentVote(store, accountKey, sent);
-      setVoteSlot({ live: sent, expired: null });
+      // The hash is held lower-case, as the store and the indexer hold it.
+      const record = { ...sent, txHash: sent.txHash.toLowerCase() };
+      writeSentVote(store, accountKey, record);
+      setVoteSlot({ live: record, expired: null });
     },
     // `store` is a handle, not a value (see the uncertain-submit effects).
     // eslint-disable-next-line react-hooks/exhaustive-deps

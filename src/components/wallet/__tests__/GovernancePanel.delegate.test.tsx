@@ -103,7 +103,7 @@ const currentLine = () => screen.queryByText(new RegExp(`^${en.gov_current_deleg
 describe("GovernancePanel: a network switch drops the old network's DRep", () => {
   it("the old DRep is gone while the new network's read has not answered", async () => {
     m.getVoteDelegationState.mockImplementation((net: number) =>
-      net === 0 ? Promise.resolve({ delegatedDRep: DREP }) : new Promise(() => {}),
+      net === 0 ? Promise.resolve({ found: true, status: "registered", delegatedDRep: DREP }) : new Promise(() => {}),
     );
     const port = makePort();
     const view = render(panel(port, 0, null));
@@ -116,9 +116,39 @@ describe("GovernancePanel: a network switch drops the old network's DRep", () =>
   });
 });
 
+describe("GovernancePanel: what the current-delegation line says", () => {
+  it("a read without the DRep field (or any failed read) says it could not read, never 'None'", async () => {
+    m.getVoteDelegationState.mockRejectedValue(new Error("Indexer response has no delegated_drep field"));
+    const port = makePort();
+    render(panel(port, 0, null));
+    expect(await screen.findByText(en.gov_current_read_failed, undefined, SETTLE)).toBeTruthy();
+    expect(currentLine()).toBeNull();
+    expect(screen.queryByText(en.gov_none)).toBeNull();
+  });
+
+  it("Abstain and No Confidence are named in words, not as the indexer's internal ids", async () => {
+    m.getVoteDelegationState.mockResolvedValue({ found: true, status: "registered", delegatedDRep: "drep_always_abstain" });
+    const port = makePort();
+    const view = render(panel(port, 0, null));
+    await waitFor(() => expect(currentLine()).toBeTruthy(), SETTLE);
+    expect(currentLine()!.textContent).toBe(`${en.gov_current_delegation}: ${en.gov_abstain}`);
+    expect(screen.queryByText(/drep_always/)).toBeNull();
+    view.unmount();
+
+    m.getVoteDelegationState.mockResolvedValue({
+      found: true,
+      status: "registered",
+      delegatedDRep: "drep_always_no_confidence",
+    });
+    render(panel(port, 0, null));
+    await waitFor(() => expect(currentLine()).toBeTruthy(), SETTLE);
+    expect(currentLine()!.textContent).toBe(`${en.gov_current_delegation}: ${en.gov_no_confidence}`);
+  });
+});
+
 describe("GovernancePanel: a second choice while one is in flight", () => {
   it("the review warns that it replaces the choice sent at HH:MM and costs another fee", async () => {
-    m.getVoteDelegationState.mockResolvedValue({ delegatedDRep: null });
+    m.getVoteDelegationState.mockResolvedValue({ found: true, status: "registered", delegatedDRep: null });
     const sentAt = Date.now() - 60_000;
     const sent: SentVoteDelegation = {
       account: ACCOUNT,
@@ -140,7 +170,7 @@ describe("GovernancePanel: a second choice while one is in flight", () => {
   });
 
   it("no choice in flight: no such warning", async () => {
-    m.getVoteDelegationState.mockResolvedValue({ delegatedDRep: null });
+    m.getVoteDelegationState.mockResolvedValue({ found: true, status: "registered", delegatedDRep: null });
     const port = makePort();
     render(panel(port, 0, null));
     await waitFor(() => expect(port.getDrepKeyHashHex).toHaveBeenCalled(), SETTLE);

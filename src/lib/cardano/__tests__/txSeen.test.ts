@@ -52,6 +52,13 @@ describe("fetchTxSeen", () => {
     await expect(fetchTxSeen(0, HASH)).rejects.toThrow();
   });
 
+  it("a hash held in capitals (as a CIP-30 wallet may return it) is still found", async () => {
+    const f = stubReply([{ tx_hash: HASH, num_confirmations: 2 }]);
+    await expect(fetchTxSeen(0, HASH.toUpperCase())).resolves.toBe(true);
+    const [, init] = f.mock.calls[0] as unknown as [string, { body: string }];
+    expect(JSON.parse(init.body)).toEqual({ _tx_hashes: [HASH] });
+  });
+
   it("an HTTP error is a failure", async () => {
     stubReply({}, 503);
     await expect(fetchTxSeen(0, HASH)).rejects.toThrow();

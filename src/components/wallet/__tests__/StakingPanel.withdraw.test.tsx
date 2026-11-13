@@ -36,6 +36,7 @@ const m = vi.hoisted(() => ({
   toastSuccess: vi.fn(),
   toastError: vi.fn(),
   fetchTxSeen: vi.fn(),
+  rewardBech32: null as string | null,
 }));
 
 vi.mock("@/lib/cardano/staking", async (orig) => {
@@ -44,7 +45,7 @@ vi.mock("@/lib/cardano/staking", async (orig) => {
     ...real,
     getStakeAccountState: m.getStakeAccountState,
     buildWithdrawal: m.buildWithdrawal,
-    rewardAddressFromHex: () => ({ getBech32: () => ACCOUNT, stakeCredential: {} }),
+    rewardAddressFromHex: () => ({ getBech32: () => m.rewardBech32 ?? ACCOUNT, stakeCredential: {} }),
   };
 });
 vi.mock("@/lib/cardano/governance", async (orig) => {
@@ -89,6 +90,7 @@ beforeEach(async () => {
   m.toastError.mockReset();
   m.fetchTxSeen.mockReset();
   m.fetchTxSeen.mockResolvedValue(false);
+  m.rewardBech32 = null;
 });
 
 afterEach(() => {
@@ -184,6 +186,24 @@ describe("StakingPanel withdraw door: rewards, vote delegation present", () => {
     await screen.findByText(en.withdraw_review_title);
     expect(m.buildWithdrawal).toHaveBeenCalledTimes(1);
     expect(m.buildWithdrawal.mock.calls[0]![0]).toMatchObject({ amount: REWARDS });
+  });
+});
+
+describe("StakingPanel: an Abstain sent with no account to file it under", () => {
+  it("says so in an error, instead of quietly keeping no waiting line", async () => {
+    m.rewardBech32 = "";
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, null));
+    const port = renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: en.withdraw_abstain_button }));
+    await screen.findByText(en.withdraw_abstain_review_title);
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: en.withdraw_abstain_confirm }));
+    await waitFor(() => expect(port.signAndSubmit).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(m.toastError).toHaveBeenCalledWith(
+        en.vote_delegation_untracked.replace("{{hash}}", TX_HASH.slice(0, 12)),
+      ),
+    );
   });
 });
 

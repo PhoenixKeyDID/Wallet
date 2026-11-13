@@ -8,6 +8,7 @@ import {
   delegationWatch,
   lookUpVoteTx,
   nextAccountIndex,
+  voteDelegationConfirmed,
   voteDelegationLanded,
   voteDelegationExpiresAt,
   voteDelegationPending,
@@ -197,6 +198,72 @@ describe("lookUpVoteTx — the transaction itself, found in a block", () => {
     expect(voteDelegationLanded({ ...vote, drepBefore: "drep1x" }, "drep1x")).toBe(false);
     expect(voteDelegationLanded({ ...vote }, "drep1x")).toBe(false);
     expect(voteDelegationLanded({ ...vote, drepBefore: null }, "drep1x")).toBe(true);
+  });
+});
+
+/**
+ * Round 4: the chain must show the TARGET that was sent, not just any vote
+ * delegation. `/tx_status` and `/account_info` can be answered by Koios
+ * instances that lag each other, so right after the transaction is seen the
+ * account can still read the DRep held before — non-null, and wrong.
+ */
+describe("voteDelegationConfirmed — the sent target, not any vote delegation", () => {
+  const OLD = "drep1old";
+  const NEW = "drep1new";
+  const base: SentVoteDelegation = { account: ACCOUNT, network: 2, sentAt: T0, txHash: "ab".repeat(32) };
+
+  it("X → Y: the old DRep X does not confirm; Y does", () => {
+    const sent = { ...base, drepBefore: OLD, target: NEW };
+    expect(voteDelegationConfirmed(sent, OLD)).toBe(false);
+    expect(voteDelegationConfirmed(sent, NEW)).toBe(true);
+    expect(voteDelegationConfirmed(sent, null)).toBe(false);
+    expect(voteDelegationConfirmed(sent, undefined)).toBe(false);
+  });
+
+  it("X → X: the target read back confirms (the hash look-up said it is in a block)", () => {
+    expect(voteDelegationConfirmed({ ...base, drepBefore: OLD, target: OLD }, OLD)).toBe(true);
+  });
+
+  it("Abstain: only drep_always_abstain confirms, not No Confidence or a DRep", () => {
+    const sent = { ...base, drepBefore: null, target: "drep_always_abstain" };
+    expect(voteDelegationConfirmed(sent, "drep_always_abstain")).toBe(true);
+    expect(voteDelegationConfirmed(sent, "drep_always_no_confidence")).toBe(false);
+    expect(voteDelegationConfirmed(sent, OLD)).toBe(false);
+  });
+
+  it("one DRep written as hex in two cases is the same DRep", () => {
+    const hex = "ab".repeat(28);
+    expect(voteDelegationConfirmed({ ...base, target: hex }, hex.toUpperCase())).toBe(true);
+  });
+
+  it("a record from before `target` existed: differs from the DRep before, or never", () => {
+    expect(voteDelegationConfirmed({ ...base, drepBefore: OLD }, OLD)).toBe(false);
+    expect(voteDelegationConfirmed({ ...base, drepBefore: OLD }, NEW)).toBe(true);
+    expect(voteDelegationConfirmed({ ...base, drepBefore: null }, NEW)).toBe(true);
+    // DRep before never read: no read can tell old from new; the record waits
+    // out its watch limit instead of ending on a stale answer.
+    expect(voteDelegationConfirmed({ ...base }, NEW)).toBe(false);
+  });
+
+  it("the DRep-change signal on the Governance tab needs the target, and a change", () => {
+    expect(voteDelegationLanded({ ...base, drepBefore: OLD, target: NEW }, NEW)).toBe(true);
+    expect(voteDelegationLanded({ ...base, drepBefore: OLD, target: NEW }, "drep1third")).toBe(false);
+    expect(voteDelegationLanded({ ...base, drepBefore: OLD, target: OLD }, OLD)).toBe(false);
+    expect(voteDelegationLanded({ ...base, target: NEW }, NEW)).toBe(false);
+    expect(voteDelegationLanded({ ...base, drepBefore: null, target: NEW }, NEW)).toBe(true);
+  });
+
+  it("lookUpVoteTx tells the tab once the look-up has answered, whatever the answer", async () => {
+    const flush = () => new Promise((r) => setTimeout(r, 0));
+    const settled = vitest.fn();
+    lookUpVoteTx(base, async () => false, async () => true, vitest.fn(), settled);
+    lookUpVoteTx(base, async () => Promise.reject(new Error("down")), async () => true, vitest.fn(), settled);
+    const landed = vitest.fn();
+    lookUpVoteTx(base, async () => true, async () => true, landed, settled);
+    lookUpVoteTx(base, async () => true, async () => true, vitest.fn(), settled)();
+    await flush();
+    expect(settled).toHaveBeenCalledTimes(3);
+    expect(landed).toHaveBeenCalledWith(base.txHash);
   });
 });
 

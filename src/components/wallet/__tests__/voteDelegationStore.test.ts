@@ -56,6 +56,35 @@ describe("voteDelegationStore", () => {
     expect(got.kind === "live" && "drepBefore" in got.sent).toBe(false);
   });
 
+  it("keeps the sent target, and still reads a record written before the target existed", () => {
+    const store = memStore();
+    const withTarget = { ...SENT, target: "drep_always_abstain" };
+    writeSentVote(store, ACCT_KEY, withTarget);
+    expect(readSentVote(store, 0, ACCT_KEY, T0)).toEqual({ kind: "live", sent: withTarget });
+
+    // An older record (no `target`): read, not dropped — dropping it would
+    // bring the Abstain offer back while that delegation may still land.
+    store.setItem(
+      voteDelegationKey(0, ACCT_KEY),
+      JSON.stringify({ account: SENT.account, network: 0, sentAt: T0, txHash: HASH, drepBefore: "drep1old" }),
+    );
+    const got = readSentVote(store, 0, ACCT_KEY, T0);
+    expect(got).toEqual({ kind: "live", sent: { ...SENT, drepBefore: "drep1old" } });
+    expect(got.kind === "live" && "target" in got.sent).toBe(false);
+  });
+
+  it("a target that is there but not a non-empty string is malformed", () => {
+    for (const target of ["", 7, null]) {
+      const store = memStore();
+      store.setItem(
+        voteDelegationKey(0, ACCT_KEY),
+        JSON.stringify({ account: SENT.account, network: 0, sentAt: T0, txHash: HASH, target }),
+      );
+      expect(readSentVote(store, 0, ACCT_KEY, T0)).toEqual({ kind: "none" });
+      expect(store.data.size).toBe(0);
+    }
+  });
+
   it("drops a record past its watch limit and reports it once as expired", () => {
     const store = memStore();
     writeSentVote(store, ACCT_KEY, SENT);

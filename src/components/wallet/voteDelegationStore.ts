@@ -46,12 +46,20 @@ export type StoredVoteDelegation =
   | { kind: "live"; sent: SentVoteDelegation }
   | { kind: "expired"; sent: SentVoteDelegation };
 
-const FIELDS = new Set(["account", "network", "sentAt", "txHash", "drepBefore"]);
+const FIELDS = new Set(["account", "network", "sentAt", "txHash", "drepBefore", "target"]);
 
 /**
  * The stored text as a record for `network`, or `null` if it is anything else.
  * Exact shape only: an unknown field, a missing one, or a record for another
  * network is "not ours".
+ *
+ * `target` is optional on read: records written before it existed (at most
+ * one watch window, two hours, old) are still read, and judged by the older
+ * "differs from the DRep before" rule (`voteDelegationConfirmed`). Dropping
+ * them instead would bring the Abstain offer back while a vote delegation may
+ * still be on its way — the paid double-send this record exists to stop —
+ * while keeping them costs at most a waiting line held to its watch limit.
+ * A `target` that is present but not a non-empty string is malformed.
  */
 function parseRecord(raw: string, network: number): SentVoteDelegation | null {
   let v: unknown;
@@ -63,7 +71,7 @@ function parseRecord(raw: string, network: number): SentVoteDelegation | null {
   if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
   const o = v as Record<string, unknown>;
   if (Object.keys(o).some((k) => !FIELDS.has(k))) return null;
-  const { account, sentAt, txHash, drepBefore } = o;
+  const { account, sentAt, txHash, drepBefore, target } = o;
   if (typeof account !== "string" || account.length === 0) return null;
   if (o.network !== network || (network !== 0 && network !== 1 && network !== 2)) return null;
   if (typeof sentAt !== "number" || !Number.isSafeInteger(sentAt) || sentAt < 0) return null;
@@ -77,6 +85,10 @@ function parseRecord(raw: string, network: number): SentVoteDelegation | null {
   if ("drepBefore" in o) {
     if (drepBefore !== null && typeof drepBefore !== "string") return null;
     sent.drepBefore = drepBefore;
+  }
+  if ("target" in o) {
+    if (typeof target !== "string" || target.length === 0) return null;
+    sent.target = target;
   }
   return sent;
 }
@@ -144,6 +156,7 @@ export function writeSentVote(
     txHash: sent.txHash.toLowerCase(),
   };
   if (sent.drepBefore !== undefined) record.drepBefore = sent.drepBefore;
+  if (sent.target !== undefined) record.target = sent.target;
   try {
     store.setItem(voteDelegationKey(sent.network, accountKey), JSON.stringify(record));
     return true;

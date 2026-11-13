@@ -9,6 +9,7 @@
  */
 
 import type { PhoenixNetwork } from "@/lib/cardano";
+import { sameVoteTarget } from "@/lib/cardano/governance";
 
 /**
  * A delegation this wallet sent and the chain has not shown yet. Held above
@@ -66,9 +67,9 @@ export const VOTE_DELEGATION_WATCH_LIMIT_MS = VOTE_DELEGATION_TTL_SLOTS * 1000;
  * fact that one is already in flight must still be there on return — on both
  * tabs, since either one can send the next, paid, vote delegation. Set when
  * Staking signs Abstain and when Governance signs any choice (a DRep, Abstain,
- * No Confidence). No target is kept: the screens only need to know one is in
- * flight, so every sentence about it names no choice, and the chain is the
- * authority on what it becomes.
+ * No Confidence). The screens' sentences about it still name no choice; the
+ * {@link target} is kept so that the chain's answer can be checked against
+ * what was sent, not merely for being non-empty.
  */
 export type SentVoteDelegation = {
   /** Reward address (bech32) that signed the vote-delegation certificate. */
@@ -93,27 +94,59 @@ export type SentVoteDelegation = {
    * says nothing — {@link txHash} decides those.
    */
   drepBefore?: string | null;
+  /**
+   * The choice sent, as the account endpoint names it (`voteTargetId`): a
+   * `drep1…` id, `drep_always_abstain` or `drep_always_no_confidence`. The
+   * record ends only when the chain shows THIS: an account read that still
+   * shows the old DRep after `/tx_status` has seen the transaction (the two
+   * endpoints can be served by Koios instances that lag each other) must not
+   * end it. Absent only on a record written by an earlier version of this
+   * wallet; {@link voteDelegationConfirmed} then falls back to "differs from
+   * {@link drepBefore}".
+   */
+  target?: string;
 };
 
 /**
+ * Whether the chain's vote delegation `onChain` is the one `sent` asked for:
+ * the target when it is known; for an older record without one, a delegation
+ * different from the one read before sending (unknown before ⟹ never: the
+ * record then waits out its watch limit, at most two hours). `null` (no
+ * delegation) and `undefined` (not read) never confirm.
+ */
+export function voteDelegationConfirmed(
+  sent: SentVoteDelegation,
+  onChain: string | null | undefined,
+): boolean {
+  if (onChain === undefined || onChain === null) return false;
+  if (sent.target !== undefined) return sameVoteTarget(onChain, sent.target);
+  return sent.drepBefore !== undefined && onChain !== sent.drepBefore;
+}
+
+/**
  * Whether the chain's current answer shows the sent vote delegation landed by
- * the secondary, DRep-change signal: it is known, the answer before sending is
- * known, and they differ. `onChain` undefined = not read (or the read failed).
- * The primary signal — the transaction itself found in a block — clears the
+ * the secondary, DRep-change signal: the answer before sending is known, the
+ * chain now shows the sent choice ({@link voteDelegationConfirmed}), and that
+ * is a change. `onChain` undefined = not read (or the read failed). When the
+ * choice equals the DRep before (X → X), or the DRep before was never read, a
+ * read cannot tell old from new and this says nothing; the primary signal —
+ * the transaction itself found in a block — decides those, and clears the
  * record instead, so it is not asked here.
  */
 export function voteDelegationLanded(
   sent: SentVoteDelegation | null,
   onChain: string | null | undefined,
 ): boolean {
-  if (sent === null || sent.drepBefore === undefined || onChain === undefined) return false;
-  return onChain !== sent.drepBefore;
+  if (sent === null || sent.drepBefore === undefined) return false;
+  if (!voteDelegationConfirmed(sent, onChain)) return false;
+  if (sent.drepBefore === null || sent.target === undefined) return true;
+  return !sameVoteTarget(sent.drepBefore, sent.target);
 }
 
 /**
  * One look-up of the sent vote-delegation transaction, for a tab's re-read
  * timer. Calls `onLanded(txHash)` only on a definite "it is in a block" AND a
- * fresh account read that already shows a vote delegation; "not yet", a failed
+ * fresh account read that already shows the sent choice; "not yet", a failed
  * look-up and a failed or empty re-read all do nothing — a failure is "not
  * known", and must neither clear the waiting line nor be shown as "not in".
  *
@@ -126,15 +159,23 @@ export function voteDelegationLanded(
  * {@link VOTE_DELEGATION_WATCH_LIMIT_MS} like any other.
  *
  * `confirmOnChain` is the tab's own re-read: it resolves `true` only when that
- * read succeeded and shows a vote delegation (a DRep, Abstain or No
- * Confidence). Returns a release that drops a late answer (the tab moved on,
- * or unmounted).
+ * read succeeded and {@link voteDelegationConfirmed} accepts it — the chain
+ * shows the sent target, not just any vote delegation (an old DRep still
+ * read from a lagging instance is not the new one). Returns a release that
+ * drops a late answer (the tab moved on, or unmounted).
+ *
+ * `onSettled(txHash)` runs once the whole look-up has answered, whatever the
+ * answer (also after `onLanded`, and after a failure), unless released first.
+ * The tabs hold the "not seen" line back until then for the record they are
+ * showing, so a tab opened past {@link DELEGATION_UNSEEN_MS} does not say "not
+ * seen" before it has asked.
  */
 export function lookUpVoteTx(
   sent: SentVoteDelegation | null,
   lookUp: (network: PhoenixNetwork, txHash: string) => Promise<boolean>,
   confirmOnChain: (sent: SentVoteDelegation) => Promise<boolean>,
   onLanded: (txHash: string) => void,
+  onSettled?: (txHash: string) => void,
 ): () => void {
   if (sent === null) return () => {};
   let alive = true;
@@ -146,7 +187,10 @@ export function lookUpVoteTx(
         if (alive && onChain) onLanded(txHash);
       },
       () => {},
-    );
+    )
+    .then(() => {
+      if (alive) onSettled?.(txHash);
+    });
   return () => {
     alive = false;
   };
@@ -182,10 +226,12 @@ export type VoteDelegationWatch = { kind: "none" } | { kind: "pending" } | { kin
  *
  * Whether the chain already shows it is the caller's half: each tab looks the
  * transaction up by {@link SentVoteDelegation.txHash} on its re-read timer and
- * reports a hit, which drops the record. On top of that the Staking tab reads
- * any recorded DRep as "landed", since it only offers Abstain to an account
- * that had none, and the Governance tab reads a DRep different from the one
- * before sending as "landed".
+ * reports a hit confirmed by an account read showing the sent target
+ * ({@link voteDelegationConfirmed}), which drops the record. On top of that
+ * the Staking tab stops its line once any DRep is recorded, since it only
+ * offers Abstain to an account that had none, and the Governance tab stops
+ * its line once the chain shows the sent target in place of a different one
+ * ({@link voteDelegationLanded}).
  */
 export function voteDelegationWatch(
   sent: SentVoteDelegation | null,

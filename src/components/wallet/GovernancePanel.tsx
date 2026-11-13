@@ -52,6 +52,9 @@ import {
   listDReps,
   listGovActions,
   getVoteDelegationState,
+  DREP_ALWAYS_ABSTAIN,
+  DREP_ALWAYS_NO_CONFIDENCE,
+  voteTargetId,
   rewardAddressFrom,
   parseGovActionId,
   parseDRepId,
@@ -69,6 +72,7 @@ import {
   clockTime,
   lookUpVoteTx,
   voteDelegationExpiresAt,
+  voteDelegationConfirmed,
   voteDelegationLanded,
   voteDelegationWatch,
   type SentVoteDelegation,
@@ -471,6 +475,10 @@ function DelegateSection({
   const [dreps, setDreps] = useState<DRepSummary[]>([]);
   const [searching, setSearching] = useState(false);
   const [current, setCurrent] = useState<string | null | undefined>(undefined);
+  // The last DRep read failed (indexer down, or an answer without the DRep
+  // field). Said on screen: a blank where "Currently delegated to" was is
+  // read as "none", the sentence that invites a second, paid delegation.
+  const [currentFailed, setCurrentFailed] = useState(false);
   /**
    * A delegation that was just submitted is not yet visible to the indexer —
    * it needs a block first. Showing the old delegation with no note reads as
@@ -494,8 +502,18 @@ function DelegateSection({
     if (!rewardBech32) return () => {};
     let alive = true;
     getVoteDelegationState(network, rewardBech32)
-      .then((s) => alive && setCurrent(s.delegatedDRep ?? null))
-      .catch(() => alive && setCurrent(undefined));
+      // Not found = an account the chain has never seen: no DRep. A row
+      // without the DRep field is not that — it throws, and stays "not read".
+      .then((s) => {
+        if (!alive) return;
+        setCurrent(s.found ? s.delegatedDRep : null);
+        setCurrentFailed(false);
+      })
+      .catch(() => {
+        if (!alive) return;
+        setCurrent(undefined);
+        setCurrentFailed(true);
+      });
     return () => {
       alive = false;
     };
@@ -508,6 +526,7 @@ function DelegateSection({
   // runs first on a switch.
   useEffect(() => {
     setCurrent(undefined);
+    setCurrentFailed(false);
   }, [network]);
 
   useEffect(() => reloadCurrent(), [reloadCurrent]);
@@ -518,13 +537,17 @@ function DelegateSection({
   // so a new record or callback does not restart the timer).
   const voteTxRef = useRef({ sent: sentVoteDelegation, onLanded: onVoteDelegationLanded });
   voteTxRef.current = { sent: sentVoteDelegation, onLanded: onVoteDelegationLanded };
+  // The hash whose look-up has answered on this screen. The "not seen" line
+  // waits for it: opened past the ten-minute mark, the tab must not say "not
+  // seen" for a transaction it has not yet asked about.
+  const [lookedUp, setLookedUp] = useState<string | null>(null);
   //
   // A hash found in a block lets the record go only once a fresh DRep read
-  // SUCCEEDS and shows a vote delegation (any non-null answer: a DRep, Abstain
-  // or No Confidence). The simplest rule that holds here: the account
-  // endpoint can lag `/tx_status`, a failed read is "not known", and a choice
-  // sent from this tab always leaves a non-null answer once it is on chain.
-  // Otherwise the record stays and the timer goes on (`lookUpVoteTx`).
+  // SUCCEEDS and shows the choice that was sent (`voteDelegationConfirmed`).
+  // Any non-null answer is not enough: the account endpoint can lag
+  // `/tx_status`, and a lagging read still shows the DRep held before — a
+  // different, non-null answer. A failed read is "not known". Otherwise the
+  // record stays and the timer goes on (`lookUpVoteTx`).
   useEffect(() => {
     if (!voteInFlight) return;
     let cancelled = false;
@@ -532,16 +555,28 @@ function DelegateSection({
     let releaseTx: () => void = () => {};
     const confirmOnChain = (sent: SentVoteDelegation) =>
       getVoteDelegationState(sent.network, sent.account).then((s) => {
-        const onChain = s.delegatedDRep ?? null;
+        const onChain = s.found ? s.delegatedDRep : null;
         if (!cancelled) setCurrent(onChain);
-        return !cancelled && onChain !== null;
+        return !cancelled && voteDelegationConfirmed(sent, onChain);
       });
+    const lookUpNow = () => {
+      releaseTx();
+      releaseTx = lookUpVoteTx(
+        voteTxRef.current.sent,
+        fetchTxSeen,
+        confirmOnChain,
+        voteTxRef.current.onLanded,
+        setLookedUp,
+      );
+    };
+    // Once now, not one interval from now: a record that landed while the tab
+    // was closed is found as the tab opens.
+    lookUpNow();
     const timer = setInterval(() => {
       setNow(Date.now());
       release();
       release = reloadCurrent();
-      releaseTx();
-      releaseTx = lookUpVoteTx(voteTxRef.current.sent, fetchTxSeen, confirmOnChain, voteTxRef.current.onLanded);
+      lookUpNow();
     }, VOTE_PENDING_POLL_MS);
     return () => {
       cancelled = true;
@@ -605,7 +640,16 @@ function DelegateSection({
           // answer before this one, a secondary "landed" signal when it changes.
           const sentAt = Date.now();
           setNow(sentAt);
-          onVoteDelegationSent({ account: rewardBech32, network, sentAt, txHash, drepBefore: current });
+          // `target` is what the chain must show before the record may end.
+          // The hash is kept lower-case, the form the indexer answers in.
+          onVoteDelegationSent({
+            account: rewardBech32,
+            network,
+            sentAt,
+            txHash: txHash.toLowerCase(),
+            drepBefore: current,
+            target: voteTargetId(target),
+          });
           reloadCurrent();
         },
       };
@@ -617,13 +661,25 @@ function DelegateSection({
       {current !== undefined && (
         <p className="text-xs text-text-dim">
           {t("gov_current_delegation")}:{" "}
-          <span className="mono">{current ? short(current) : t("gov_none")}</span>
+          {current === DREP_ALWAYS_ABSTAIN ? (
+            <span>{t("gov_abstain")}</span>
+          ) : current === DREP_ALWAYS_NO_CONFIDENCE ? (
+            <span>{t("gov_no_confidence")}</span>
+          ) : (
+            <span className="mono">{current ? short(current) : t("gov_none")}</span>
+          )}
         </p>
+      )}
+      {current === undefined && currentFailed && (
+        <p className="text-xs text-amber-brand">{t("gov_current_read_failed")}</p>
       )}
       {voteInFlight && voteWatch.kind === "pending" && (
         <p className="text-xs text-amber-brand">{t("gov_delegate_pending")}</p>
       )}
-      {voteInFlight && voteWatch.kind === "unseen" && sentVoteDelegation !== null && (
+      {voteInFlight &&
+        voteWatch.kind === "unseen" &&
+        sentVoteDelegation !== null &&
+        lookedUp === sentVoteDelegation.txHash && (
         <p className="text-xs text-amber-brand">
           {t("vote_delegation_unseen", { time: clockTime(voteDelegationExpiresAt(sentVoteDelegation)) })}
         </p>

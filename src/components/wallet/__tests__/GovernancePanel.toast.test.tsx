@@ -33,7 +33,7 @@ vi.mock("@/lib/cardano/governance", async (orig) => {
     ...real,
     listDReps: m.listDReps,
     listGovActions: m.listGovActions,
-    getVoteDelegationState: async () => ({ delegatedDRep: null }),
+    getVoteDelegationState: async () => ({ found: true, status: "registered", delegatedDRep: null }),
     rewardAddressFrom: () => ({ getBech32: () => ACCOUNT }),
     buildVoteDelegation: () => built,
     buildVote: () => built,

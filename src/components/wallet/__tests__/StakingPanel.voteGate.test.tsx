@@ -106,7 +106,7 @@ beforeEach(async () => {
   m.fetchTxSeen.mockReset();
   m.fetchTxSeen.mockResolvedValue(false);
   m.getVoteDelegationState.mockReset();
-  m.getVoteDelegationState.mockResolvedValue({ delegatedDRep: null });
+  m.getVoteDelegationState.mockResolvedValue({ found: true, status: "registered", delegatedDRep: null });
   // The in-flight record is kept on disk now; one test's record must not
   // leak into the next.
   window.localStorage.clear();
@@ -296,7 +296,7 @@ describe("FIX-R2: a sent vote delegation found by its hash clears the line", () 
   it("(a) X → X: the DRep before is the target, the tx is in a block ⇒ no 'unseen' line", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
     m.getStakeAccountState.mockResolvedValue(account(REWARDS, DREP));
-    m.getVoteDelegationState.mockResolvedValue({ delegatedDRep: DREP });
+    m.getVoteDelegationState.mockResolvedValue({ found: true, status: "registered", delegatedDRep: DREP });
     const port = makePort();
     render(wrap(<WalletTabs port={port} changeAddress={CHANGE_HEX} network={NETWORK} />));
     await delegateOnGovernance(port);
@@ -329,7 +329,7 @@ describe("FIX-R2: a sent vote delegation found by its hash clears the line", () 
     expect(await screen.findByText(startsLike("vote_delegation_unseen"))).toBeTruthy();
 
     // The read answers with the DRep: the hash hit is confirmed, the line goes.
-    m.getVoteDelegationState.mockResolvedValue({ delegatedDRep: DREP });
+    m.getVoteDelegationState.mockResolvedValue({ found: true, status: "registered", delegatedDRep: DREP });
     await act(async () => {
       vi.advanceTimersByTime(20_000);
     });
@@ -340,7 +340,7 @@ describe("FIX-R2: a sent vote delegation found by its hash clears the line", () 
   it("(c) control: the tx is not found after ten minutes ⇒ the 'unseen' line is up", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
     m.getStakeAccountState.mockResolvedValue(account(REWARDS, DREP));
-    m.getVoteDelegationState.mockResolvedValue({ delegatedDRep: DREP });
+    m.getVoteDelegationState.mockResolvedValue({ found: true, status: "registered", delegatedDRep: DREP });
     const port = makePort();
     render(wrap(<WalletTabs port={port} changeAddress={CHANGE_HEX} network={NETWORK} />));
     await delegateOnGovernance(port);
@@ -354,7 +354,7 @@ describe("FIX-R2: a sent vote delegation found by its hash clears the line", () 
   it("a failed look-up is 'not known', not 'landed': the line stays", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
     m.getStakeAccountState.mockResolvedValue(account(REWARDS, DREP));
-    m.getVoteDelegationState.mockResolvedValue({ delegatedDRep: DREP });
+    m.getVoteDelegationState.mockResolvedValue({ found: true, status: "registered", delegatedDRep: DREP });
     const port = makePort();
     render(wrap(<WalletTabs port={port} changeAddress={CHANGE_HEX} network={NETWORK} />));
     await delegateOnGovernance(port);
@@ -424,5 +424,165 @@ describe("FIX-R3: the in-flight vote delegation survives a lock and a reload", (
     expect(await screen.findByRole("button", { name: en.withdraw_abstain_button })).toBeTruthy();
     expect(screen.queryByText(en.vote_delegation_pending)).toBeNull();
     expect(window.localStorage.getItem(storageKey())).toBeNull();
+  });
+});
+
+/**
+ * Round 4. The record ends only when the chain shows the choice that was SENT:
+ * `/tx_status` and `/account_info` can be answered by Koios instances that lag
+ * each other, so a transaction already seen can still meet an account read
+ * that shows the DRep held before — non-null, and not the new one.
+ */
+describe("FIX-R4: a found hash ends the record only when the account shows the sent target", () => {
+  const OLD_DREP = "drep1olddrepidentifier000wxyz";
+  const storageKey = () => voteDelegationKey(NETWORK, accountKeyFrom(CHANGE_HEX));
+
+  it("X → Y: seen by hash while the account still reads X ⇒ still waiting; reads Y ⇒ cleared", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, OLD_DREP));
+    m.getVoteDelegationState.mockResolvedValue({ found: true, status: "registered", delegatedDRep: OLD_DREP });
+    const port = makePort();
+    port.signAndSubmit.mockResolvedValue("CD".repeat(32)); // a CIP-30 wallet answering in capitals
+    render(wrap(<WalletTabs port={port} changeAddress={CHANGE_HEX} network={NETWORK} />));
+
+    fireEvent.click(governanceTab());
+    await waitFor(() => expect(port.getDrepKeyHashHex).toHaveBeenCalled());
+    await waitFor(() => expect(m.getVoteDelegationState).toHaveBeenCalled());
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: en.gov_search }));
+    const row = (await screen.findByText(DREP)).parentElement!;
+    fireEvent.click(within(row).getByRole("button", { name: en.gov_delegate }));
+    fireEvent.click(await screen.findByLabelText(en.gov_verify_checkbox));
+    const confirm = screen.getByRole("button", { name: en.gov_confirm }) as HTMLButtonElement;
+    await waitFor(() => expect(confirm.disabled).toBe(false));
+    fireEvent.click(confirm);
+    expect(await screen.findByText(en.gov_delegate_pending)).toBeTruthy();
+    // Kept lower-case, with the target it must be confirmed by.
+    const stored = JSON.parse(window.localStorage.getItem(storageKey())!);
+    expect(stored).toMatchObject({ txHash: "cd".repeat(32), drepBefore: OLD_DREP, target: DREP });
+
+    m.fetchTxSeen.mockResolvedValue(true);
+    for (let i = 0; i < 3; i++) {
+      await act(async () => {
+        vi.advanceTimersByTime(20_000);
+      });
+    }
+    expect(m.fetchTxSeen).toHaveBeenCalledWith(NETWORK, "cd".repeat(32));
+    // The account still reads X: not the choice sent. The record stays.
+    expect(screen.getByText(en.gov_delegate_pending)).toBeTruthy();
+    expect(window.localStorage.getItem(storageKey())).not.toBeNull();
+
+    m.getVoteDelegationState.mockResolvedValue({ found: true, status: "registered", delegatedDRep: DREP });
+    await act(async () => {
+      vi.advanceTimersByTime(20_000);
+    });
+    await waitFor(() => expect(screen.queryByText(en.gov_delegate_pending)).toBeNull());
+  });
+
+  /** A record already ten minutes old, on disk, as a reopened tab finds it. */
+  function storeOldRecord(drep: string) {
+    const sentAt = Date.now() - DELEGATION_UNSEEN_MS - 60_000;
+    window.localStorage.setItem(
+      storageKey(),
+      JSON.stringify({
+        account: ACCOUNT,
+        network: NETWORK,
+        sentAt,
+        txHash: "ef".repeat(32),
+        drepBefore: drep,
+        target: drep,
+      }),
+    );
+  }
+
+  it("a tab opened past ten minutes looks the hash up at once: landed ⇒ no 'not seen' line, record gone", async () => {
+    // Only the interval is faked and never advanced: whatever happens, happens
+    // before the first 20 s tick.
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, DREP));
+    m.getVoteDelegationState.mockResolvedValue({ found: true, status: "registered", delegatedDRep: DREP });
+    m.fetchTxSeen.mockResolvedValue(true);
+    storeOldRecord(DREP); // X → X: only the hash can tell
+    render(wrap(<WalletTabs port={makePort()} changeAddress={CHANGE_HEX} network={NETWORK} />));
+    fireEvent.click(governanceTab());
+    expect(screen.queryByText(startsLike("vote_delegation_unseen"))).toBeNull();
+    await waitFor(() => expect(m.fetchTxSeen).toHaveBeenCalledWith(NETWORK, "ef".repeat(32)));
+    // Let the look-up and its account re-read answer (promises only, no tick).
+    for (let i = 0; i < 5; i++) await act(async () => {});
+    expect(window.localStorage.getItem(storageKey())).toBeNull();
+    expect(screen.queryByText(startsLike("vote_delegation_unseen"))).toBeNull();
+    expect(screen.queryByText(en.gov_delegate_pending)).toBeNull();
+  });
+
+  it("control: not in a block ⇒ the 'not seen' line comes up once the look-up has answered", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, DREP));
+    m.getVoteDelegationState.mockResolvedValue({ found: true, status: "registered", delegatedDRep: DREP });
+    m.fetchTxSeen.mockResolvedValue(false);
+    storeOldRecord(DREP);
+    render(wrap(<WalletTabs port={makePort()} changeAddress={CHANGE_HEX} network={NETWORK} />));
+    fireEvent.click(governanceTab());
+    expect(await screen.findByText(startsLike("vote_delegation_unseen"))).toBeTruthy();
+    expect(m.fetchTxSeen).toHaveBeenCalledTimes(1);
+  });
+
+  it("Staking tab: the same first look-up, before any tick", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, null));
+    m.fetchTxSeen.mockResolvedValue(false);
+    storeOldRecord("drep_always_abstain");
+    render(wrap(<WalletTabs port={makePort()} changeAddress={CHANGE_HEX} network={NETWORK} />));
+    fireEvent.click(stakingTab());
+    expect(await screen.findByText(startsLike("vote_delegation_unseen"))).toBeTruthy();
+    expect(m.fetchTxSeen).toHaveBeenCalledWith(NETWORK, "ef".repeat(32));
+  });
+});
+
+/**
+ * Round 4: the same wallet in a second browser tab. A vote delegation sent
+ * there is written to `localStorage`; this tab hears it through the `storage`
+ * event, as it already does for the unresolved-submit lock.
+ */
+describe("FIX-R4: a vote delegation sent in another browser tab", () => {
+  const storageKey = () => voteDelegationKey(NETWORK, accountKeyFrom(CHANGE_HEX));
+  const fire = (key: string | null, newValue: string | null) =>
+    act(() => {
+      window.dispatchEvent(new StorageEvent("storage", { key, newValue }));
+    });
+
+  it("a record written there hides the Abstain offer here; its removal there brings the offer back", async () => {
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, null));
+    render(wrap(<WalletTabs port={makePort()} changeAddress={CHANGE_HEX} network={NETWORK} />));
+    fireEvent.click(stakingTab());
+    expect(await screen.findByRole("button", { name: en.withdraw_abstain_button })).toBeTruthy();
+
+    // Another account's key, or another network's: not ours.
+    const record = JSON.stringify({
+      account: ACCOUNT,
+      network: NETWORK,
+      sentAt: Date.now(),
+      txHash: "ab".repeat(32),
+      drepBefore: null,
+      target: "drep_always_abstain",
+    });
+    await fire(voteDelegationKey(2, accountKeyFrom(CHANGE_HEX)), record);
+    expect(abstainButton()).toBeTruthy();
+
+    window.localStorage.setItem(storageKey(), record);
+    await fire(storageKey(), record);
+    expect(await screen.findByText(en.vote_delegation_pending)).toBeTruthy();
+    expect(abstainButton()).toBeNull();
+
+    // A wholesale clear is housekeeping, not word that it landed: the copy
+    // held here stays.
+    window.localStorage.clear();
+    await fire(null, null);
+    expect(screen.getByText(en.vote_delegation_pending)).toBeTruthy();
+    expect(abstainButton()).toBeNull();
+
+    // The record removed there (landed, or ran out): gone here too.
+    await fire(storageKey(), null);
+    expect(await screen.findByRole("button", { name: en.withdraw_abstain_button })).toBeTruthy();
+    expect(screen.queryByText(en.vote_delegation_pending)).toBeNull();
   });
 });

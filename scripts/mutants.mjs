@@ -40,6 +40,7 @@ const TABS = "src/components/wallet/WalletTabs.tsx";
 // What the delegation waiting lines decide from: when "waiting" becomes "not
 // seen", and when a sent vote delegation can no longer land.
 const FEEDBACK = "src/components/wallet/delegationFeedback.ts";
+const GOV_LIB = "src/lib/cardano/governance.ts";
 const PROVIDER = "src/lib/cardano/provider.ts";
 const BLOCKFROST = "src/lib/cardano/blockfrost.ts";
 const TX_SUMMARY = "src/lib/cardano/txSummary.ts";
@@ -97,6 +98,8 @@ const TESTS = [
   // Governance tab's DRep read across a network switch.
   "src/components/wallet/__tests__/voteDelegationStore.test.ts",
   "src/components/wallet/__tests__/GovernancePanel.delegate.test.tsx",
+  // The vote-delegation read refusing a row without its DRep field.
+  "src/lib/cardano/indexer-errors.test.ts",
 ];
 
 /**
@@ -1304,6 +1307,39 @@ const MUTANTS = [
     file: TABS,
     from: "  const [voteSlot, setVoteSlot] = useState<VoteSlot>(() =>\n    voteSlotFrom(readSentVote(store, network, accountKey, Date.now())),\n  );",
     to: "  const [voteSlot, setVoteSlot] = useState<VoteSlot>(() => ({ live: null, expired: null }) /* MUT56R3-LOAD */);",
+  },
+  // ── Round ten (MUT56R4-*): the account must show the TARGET sent; a read
+  // without the DRep field is a failure; a hash in capitals is still the
+  // same transaction; a reopened tab looks the hash up at once ──
+  {
+    name: "MUT56R4-TARGET: a found hash is confirmed by any vote delegation, not the one sent",
+    file: FEEDBACK,
+    from: "  if (sent.target !== undefined) return sameVoteTarget(onChain, sent.target);\n",
+    to: "  if (sent.target !== undefined) return true; /* MUT56R4-TARGET */\n",
+  },
+  {
+    name: "MUT56R4-ABSENT: a vote-delegation row without delegated_drep is padded to 'no DRep'",
+    file: GOV_LIB,
+    from:
+      "  if (row.delegated_drep === undefined) {\n" +
+      '    throw new Error("Indexer response has no delegated_drep field");\n' +
+      "  }\n",
+    to:
+      "  if (row.delegated_drep === undefined) {\n" +
+      '    return { found: true, status: row.status, delegatedDRep: null }; /* MUT56R4-ABSENT */\n' +
+      "  }\n",
+  },
+  {
+    name: "MUT56R4-CASE: the tx look-up compares the hash case-sensitively",
+    file: HISTORY,
+    from: "answered.toLowerCase() !== asked)",
+    to: "answered !== txHash /* MUT56R4-CASE */)",
+  },
+  {
+    name: "MUT56R4-FIRST: the Governance tab waits a full interval before its first hash look-up",
+    file: GOV,
+    from: "    // was closed is found as the tab opens.\n    lookUpNow();\n",
+    to: "    // was closed is found as the tab opens.\n    /* MUT56R4-FIRST */\n",
   },
 ];
 

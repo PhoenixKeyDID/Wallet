@@ -501,12 +501,16 @@ export async function fetchTxDetails(
  * a transaction in the tip block answers `num_confirmations: 0`.
  */
 export async function fetchTxSeen(network: PhoenixNetwork, txHash: string): Promise<boolean> {
+  // Hex is case-free: a hash held in capitals (as some CIP-30 wallets return
+  // it) is the same transaction as the indexer's lower-case answer.
+  const asked = txHash.toLowerCase();
   const rows = await koios<Array<{ tx_hash?: unknown; num_confirmations?: unknown }>>(
     network,
     "/tx_status",
-    { _tx_hashes: [txHash] },
+    { _tx_hashes: [asked] },
   );
-  if (!Array.isArray(rows) || rows.length !== 1 || rows[0]!.tx_hash !== txHash) {
+  const answered = rows?.[0]?.tx_hash;
+  if (!Array.isArray(rows) || rows.length !== 1 || typeof answered !== "string" || answered.toLowerCase() !== asked) {
     bad("the indexer did not answer for the transaction it was asked about");
   }
   const n = rows[0]!.num_confirmations;

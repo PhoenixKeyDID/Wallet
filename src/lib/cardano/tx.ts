@@ -201,7 +201,10 @@ export async function signAndSubmitCip30(
   for (const w of witnesses) built.transaction.addWitness(w);
   const signed = built.transaction.buildTransaction();
   try {
-    return await api.submitTx(signed.payload);
+    // Lower-case: the form this wallet stores and the indexer answers in. A
+    // CIP-30 wallet may return capitals, and a hash kept in capitals is never
+    // matched by the look-up that tells a sent transaction has landed.
+    return (await api.submitTx(signed.payload)).toLowerCase();
   } catch (err) {
     // TxSendError.Refused (1) is the wallet declining to send: the transaction
     // never left, and saying so plainly is safe. Anything else — a node error,

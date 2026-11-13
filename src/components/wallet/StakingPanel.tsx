@@ -33,13 +33,14 @@ import {
   type PoolSummary,
   type StakeAccountState,
 } from "@/lib/cardano/staking";
-import { buildVoteDelegation } from "@/lib/cardano/governance";
+import { DREP_ALWAYS_ABSTAIN, buildVoteDelegation } from "@/lib/cardano/governance";
 import {
   DELEGATION_WATCH_LIMIT_MS,
   VOTE_DELEGATION_TTL_SLOTS,
   clockTime,
   delegationWatch,
   lookUpVoteTx,
+  voteDelegationConfirmed,
   voteDelegationExpiresAt,
   voteDelegationWatch,
   type SentDelegation,
@@ -274,6 +275,9 @@ export function StakingPanel({
   // Read through a ref so a new parent callback does not restart the timer.
   const voteTxRef = useRef({ sent: sentVoteDelegation, onLanded: onVoteDelegationLanded });
   voteTxRef.current = { sent: sentVoteDelegation, onLanded: onVoteDelegationLanded };
+  // The hash whose look-up has answered here; the "not seen" line waits for it
+  // (see the Governance tab's twin).
+  const [lookedUp, setLookedUp] = useState<string | null>(null);
   // The same tick also looks the sent transaction up by hash: found in a block
   // means landed, whatever the account's DRep reads, and the parent drops the
   // record — the only test that works for a re-delegation to the same DRep.
@@ -281,8 +285,10 @@ export function StakingPanel({
   // Found by hash is not enough on its own: the account read can come from a
   // Koios instance that has not caught up, and clearing the record then brings
   // back "no DRep" with Abstain armed. So a hit re-reads the account, and only
-  // a read that shows a vote delegation lets the record go; otherwise the
-  // record stays and the timer keeps going (`lookUpVoteTx`).
+  // a read that shows the choice that was sent lets the record go
+  // (`voteDelegationConfirmed`) — a DRep read from a lagging instance can be
+  // the one held before a Governance-tab change; otherwise the record stays
+  // and the timer keeps going (`lookUpVoteTx`).
   useEffect(() => {
     if (!voteInFlight || !rewardAddressBech32) return;
     let cancelled = false;
@@ -292,8 +298,20 @@ export function StakingPanel({
         if (cancelled || networkRef.current !== sent.network) return false;
         setAccountState(state);
         setLoadError(false);
-        return state.delegatedDRep !== null;
+        return voteDelegationConfirmed(sent, state.delegatedDRep);
       });
+    const lookUpNow = () => {
+      releaseTx();
+      releaseTx = lookUpVoteTx(
+        voteTxRef.current.sent,
+        fetchTxSeen,
+        confirmOnChain,
+        voteTxRef.current.onLanded,
+        setLookedUp,
+      );
+    };
+    // Once now, not one interval from now (see the Governance tab's twin).
+    lookUpNow();
     const timer = setInterval(() => {
       setNow(Date.now());
       getStakeAccountState(network, rewardAddressBech32)
@@ -303,8 +321,7 @@ export function StakingPanel({
           setLoadError(false);
         })
         .catch(() => {});
-      releaseTx();
-      releaseTx = lookUpVoteTx(voteTxRef.current.sent, fetchTxSeen, confirmOnChain, voteTxRef.current.onLanded);
+      lookUpNow();
     }, PENDING_POLL_MS);
     return () => {
       cancelled = true;
@@ -483,7 +500,9 @@ export function StakingPanel({
     if (uncertainHash !== null) return toastError(t("uncertain_blocked"));
     setBusy(true);
     try {
-      const hash = await port.signAndSubmit(abstainReview.built, network);
+      // Lower-case, the form the indexer answers in: a CIP-30 wallet may
+      // return the hash in capitals, and the look-up compares it as text.
+      const hash = (await port.signAndSubmit(abstainReview.built, network)).toLowerCase();
       toastSuccess("withdraw_abstain_submitted", { hash: hash.slice(0, 12) });
       const sentAt = Date.now();
       setNow(sentAt);
@@ -494,7 +513,13 @@ export function StakingPanel({
           sentAt,
           txHash: hash,
           drepBefore: accountState ? accountState.delegatedDRep : undefined,
+          target: DREP_ALWAYS_ABSTAIN,
         });
+      } else {
+        // Sent, but with no account to file it under, nothing on screen will
+        // hold the Abstain offer back. Said, so the next press is not taken
+        // for a first one.
+        toastError(t("vote_delegation_untracked", { hash: hash.slice(0, 12) }));
       }
       setAbstainReview(null);
       setChecked(false);
@@ -792,7 +817,10 @@ export function StakingPanel({
             )}
           </p>
         )}
-        {voteInFlight && voteWatch.kind === "unseen" && sentVoteDelegation !== null && (
+        {voteInFlight &&
+          voteWatch.kind === "unseen" &&
+          sentVoteDelegation !== null &&
+          lookedUp === sentVoteDelegation.txHash && (
           <p className="text-xs text-amber-brand">
             {t("vote_delegation_unseen", { time: clockTime(voteDelegationExpiresAt(sentVoteDelegation)) })}
           </p>
