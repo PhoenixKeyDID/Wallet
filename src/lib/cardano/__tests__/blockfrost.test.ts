@@ -252,6 +252,16 @@ describe("blockfrost adapter — an output with no amount is not an empty output
     expect(utxos[100]!.txId).toBe((100).toString(16).padStart(64, "0"));
   });
 
+  it("a 404 on a later page is an error, not an address with no coins", async () => {
+    const row = (i: number) => ({ ...UTXO_ROW, tx_hash: i.toString(16).padStart(64, "0"), amount: AMOUNT });
+    const base = `/addresses/${encodeURIComponent(ADDR)}/utxos?count=100`;
+    routes({
+      [`${base}&page=1`]: { body: Array.from({ length: 100 }, (_, i) => row(i)) },
+      [`${base}&page=2`]: { status: 404, body: {} },
+    });
+    await expect(bfUtxos(EP, [ADDR])).rejects.toThrow(/404 on page 2 after 100 rows/);
+  });
+
   it("stops after a short page instead of asking for page after page", async () => {
     routes({ "/addresses/": { body: [{ ...UTXO_ROW, amount: AMOUNT }] } });
     await bfUtxos(EP, [ADDR]);

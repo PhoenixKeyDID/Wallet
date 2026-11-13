@@ -127,6 +127,16 @@ export function walletViewFrom(
   };
 }
 
+/**
+ * The transaction id: blake2b-256 of the body exactly as it was serialised.
+ *
+ * What a person looks up on an explorer when a submit came back with no answer
+ * and the bytes may already be on chain.
+ */
+export function txIdOf(txCborHex: string): string {
+  return toHex(blake2b256(bodyBytes(Buffer.from(txCborHex, "hex"))));
+}
+
 /** What the wallet must be able to sign for, derived from the body. */
 export type RequiredKeys = {
   /** Payment/stake key hashes, hex, in the order they were found. */

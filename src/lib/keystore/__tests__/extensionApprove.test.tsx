@@ -27,6 +27,8 @@ import { verifyCip8 } from "./vendor/lamp-drip-pot/cip8";
 import { formatAda } from "@/lib/cardano/provider";
 import { blake2b224, blake2b256 } from "@/lib/cardano/hash";
 import { dripClaimTxHex, AUTH_NAME } from "./fixtures/dripPotClaim";
+import { SubmitRejectedError } from "@/lib/cardano/submitError";
+import { txIdOf } from "@/lib/keystore/signForeign";
 
 const mocks = vi.hoisted(() => ({
   wallets: [] as unknown[],
@@ -388,7 +390,7 @@ describe("submitTx is described, then sent — or refused with TxSendError.Refus
 
   it("a node rejection comes back as TxSendError.Failure with the node's reason", async () => {
     mocks.fetchUtxos.mockResolvedValue(ourInputs());
-    mocks.submitTx.mockRejectedValue(new Error("BadInputsUTxO"));
+    mocks.submitTx.mockRejectedValue(new SubmitRejectedError(400, "BadInputsUTxO", "Koios /submittx"));
     const { port, view } = await unlocked();
     act(() => port.deliver({ type: "request", id: "s3", origin: ORIGIN, method: "submitTx", params: [SIGNED_TX] }));
     const send = await view.findByText(en.cip30_submit_cta);
@@ -399,6 +401,60 @@ describe("submitTx is described, then sent — or refused with TxSendError.Refus
       ok: false,
       error: { code: 2, info: expect.stringContaining("BadInputsUTxO") },
     });
+    // A definite no leaves nothing on chain: no "look it up" alarm.
+    expect(view.queryByRole("alert")).toBeNull();
+  });
+
+  it.each([
+    ["a dropped connection", () => new TypeError("Failed to fetch")],
+    ["a 503 from the node's proxy", () => new SubmitRejectedError(503, "upstream timeout", "Koios /submittx")],
+    ["a reply with no hash", () => new Error("Koios /submittx returned no tx hash: <html>")],
+  ])("%s is 'result unknown' with the id to look up, on the site and on screen", async (_name, err) => {
+    mocks.fetchUtxos.mockResolvedValue(ourInputs());
+    mocks.submitTx.mockRejectedValue(err());
+    const id = txIdOf(SIGNED_TX);
+    const { port, view } = await unlocked();
+    act(() => port.deliver({ type: "request", id: "s6", origin: ORIGIN, method: "submitTx", params: [SIGNED_TX] }));
+    const send = await view.findByText(en.cip30_submit_cta);
+    await waitFor(() => expect((send as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(send);
+    await waitFor(() => expect(port.sent.find((m) => m.id === "s6")).toBeDefined());
+    expect(id).toMatch(/^[0-9a-f]{64}$/);
+    expect(port.sent.find((m) => m.id === "s6")!.result).toMatchObject({
+      ok: false,
+      error: { code: 2, info: en.cip30_submit_unknown_site.replace("{{hash}}", id) },
+    });
+    const alert = await view.findByRole("alert");
+    expect(alert.textContent).toBe(en.cip30_submit_unknown.replace("{{hash}}", id));
+    // The site building the payment again is the next request most likely to
+    // arrive; the notice must still be on that screen.
+    act(() => port.deliver({ type: "request", id: "s7", origin: ORIGIN, method: "signTx", params: [SIGNED_TX] }));
+    await view.findByText(en.cip30_approve);
+    expect((await view.findByRole("alert")).textContent).toContain(id);
+  });
+
+  it("the idle lock waits while a send is out, so the site is not told 'refused' for bytes that may have landed", async () => {
+    mocks.fetchUtxos.mockResolvedValue(ourInputs());
+    let settle!: (hash: string) => void;
+    mocks.submitTx.mockImplementationOnce(() => new Promise<string>((res) => (settle = res)));
+    const { port, view } = await unlocked();
+    act(() => port.deliver({ type: "request", id: "s8", origin: ORIGIN, method: "submitTx", params: [SIGNED_TX] }));
+    const send = await view.findByText(en.cip30_submit_cta);
+    await waitFor(() => expect((send as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(send);
+    await view.findByText(en.cip30_submitting);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      fireEvent.mouseDown(window);
+      act(() => void vi.advanceTimersByTime(DEFAULT_LOCK_TIMEOUT_MS + 1));
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(port.disconnected).toBe(false);
+    expect(view.queryByPlaceholderText(en.local_password)).toBeNull();
+    await act(async () => settle("ab".repeat(32)));
+    await waitFor(() => expect(port.sent.find((m) => m.id === "s8")).toBeDefined());
+    expect(port.sent.find((m) => m.id === "s8")!.result).toEqual({ ok: true, value: "ab".repeat(32) });
   });
 });
 

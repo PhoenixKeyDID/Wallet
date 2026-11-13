@@ -319,7 +319,19 @@ const BF_MAX_PAGES = 1000;
 async function bfAllPages<T>(ep: BlockfrostEndpoint, path: string): Promise<T[]> {
   const all: T[] = [];
   for (let page = 1; page <= BF_MAX_PAGES; page++) {
-    const rows = await bf<unknown>(ep, `${path}?count=${BF_PAGE}&page=${page}`);
+    let rows: unknown;
+    try {
+      rows = await bf<unknown>(ep, `${path}?count=${BF_PAGE}&page=${page}`);
+    } catch (e) {
+      // A 404 on the first page is the chain saying "nothing here" and the
+      // caller may read it as empty. A 404 after rows were already read is not
+      // that: passing it up as `NotOnChainError` would turn 100 coins read into
+      // none at all, with no error, so it stops the read instead.
+      if (page > 1 && e instanceof NotOnChainError) {
+        throw new Error(`Chain endpoint ${path} answered 404 on page ${page} after ${all.length} rows — the list is not read whole`);
+      }
+      throw e;
+    }
     if (!Array.isArray(rows)) throw new Error(`Chain endpoint ${path} answered a page that is not a list`);
     all.push(...(rows as T[]));
     if (rows.length < BF_PAGE) return all;

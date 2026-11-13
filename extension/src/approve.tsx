@@ -38,7 +38,8 @@ import {
 import { vaultStore, type StoredWallet } from "../../src/lib/keystore/storage";
 import { DEFAULT_LOCK_TIMEOUT_MS } from "../../src/lib/keystore/session";
 import { summariseTx, UndescribableTxError, type TxSummary } from "../../src/lib/cardano/txSummary";
-import { signForeignTx, walletViewFrom, type WalletView } from "../../src/lib/keystore/signForeign";
+import { signForeignTx, txIdOf, walletViewFrom, type WalletView } from "../../src/lib/keystore/signForeign";
+import { isDefiniteRejection } from "../../src/lib/cardano/submitError";
 import { planDataSign, signDataCip8, DATA_SIGN_CODE, type DataSignPlan } from "../../src/lib/keystore/signData";
 import { encodeBalanceHex, encodeInputsAsUtxosHex } from "../../src/lib/cardano/utxoCbor";
 import {
@@ -218,6 +219,8 @@ type Phase =
        * clears this and lets the read run again.
        */
       readFailed?: string;
+      /** The reason the read failed, as thrown — Retry cannot fix every one of them. */
+      readFailedWhy?: string;
       /** `signData` only: which key, which address, which bytes — decided before the screen opens. */
       dataSign?: DataSignPlan;
     };
@@ -244,6 +247,15 @@ export function Approve() {
   const [pickedId, setPickedId] = useState<string | null>(null);
   const [pw, setPw] = useState("");
   const [busy, setBusy] = useState(false);
+  /** `busy` for the idle timer, which closes over the render it was armed in. */
+  const busyRef = useRef(false);
+  busyRef.current = busy;
+  /**
+   * A submit that went out and got no answer: the id to look up, or "" when
+   * the bytes gave none. Kept on every screen until the next send, because the
+   * request most likely to follow is the same site building the payment again.
+   */
+  const [sendUnknown, setSendUnknown] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [account, setAccount] = useState<Account | null>(null);
   const [port, setPort] = useState<Port | null>(null);
@@ -299,6 +311,13 @@ export function Approve() {
     if (!account) return;
     let timer: ReturnType<typeof setTimeout>;
     const relock = () => {
+      // Not while a send is out. Locking closes the port, and the worker then
+      // tells the site "refused" for bytes that may already be at the node —
+      // the answer that gets the same payment built and sent twice.
+      if (busyRef.current) {
+        restart();
+        return;
+      }
       accountRef.current = null;
       account.wipe();
       setAccount(null);
@@ -316,6 +335,18 @@ export function Approve() {
       for (const ev of ["mousedown", "keydown"]) window.removeEventListener(ev, restart);
     };
   }, [account]);
+
+  // Closing the window mid-send has the same effect as the idle lock above; the
+  // browser's own "leave this page?" is the one prompt that can stop it.
+  useEffect(() => {
+    if (!busy) return;
+    const hold = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", hold);
+    return () => window.removeEventListener("beforeunload", hold);
+  }, [busy]);
 
   // Connect to the background once unlocked, and answer what it forwards. One
   // port per unlocked account: locking, or unlocking another wallet, closes it,
@@ -454,9 +485,10 @@ export function Approve() {
         // this wallet's key signs it away.
         const refScriptInputs = wp.getRefScriptInputs ? await wp.getRefScriptInputs() : [];
         view = walletViewFrom(await wp.getInputs(), await wp.getOwnedAddressesHex(), refScriptInputs);
-      } catch {
+      } catch (e) {
         const why = t("cip30_wallet_read_failed");
-        if (!cancelled) setPhase((cur) => (stillOnScreen(cur) ? { ...cur, readFailed: why } : cur));
+        const detail = e instanceof Error ? e.message : String(e);
+        if (!cancelled) setPhase((cur) => (stillOnScreen(cur) ? { ...cur, readFailed: why, readFailedWhy: detail } : cur));
         return;
       }
       try {
@@ -593,17 +625,40 @@ export function Approve() {
     }
     const req = phase.req;
     setBusy(true);
+    setSendUnknown(null);
     try {
       answer({ ok: true, value: await submitTx(account.network, cbor) }, req);
     } catch (e) {
-      const why = e instanceof Error ? e.message : String(e);
-      answer({ ok: false, error: sendFailed(why) }, req);
+      if (isDefiniteRejection(e)) {
+        // The node read it and said no: nothing is on chain, and its reason is
+        // what the site's developer can act on.
+        answer({ ok: false, error: sendFailed(e.message) }, req);
+      } else {
+        // No answer, a 5xx, a dropped connection: the bytes may have arrived.
+        // "Failed" here is what gets the same payment sent twice, so the site
+        // and the screen both get the id to look up instead (`submitError.ts`).
+        let id = "";
+        try {
+          id = txIdOf(cbor);
+        } catch {
+          // Bytes with no readable body: the notice still stands without an id.
+        }
+        answer({ ok: false, error: sendFailed(t("cip30_submit_unknown_site", { hash: id || "?" })) }, req);
+        setSendUnknown(id);
+      }
     } finally {
       setBusy(false);
     }
   };
 
   // ── render ────────────────────────────────────────────────────────────────
+
+  const UnknownSend = () =>
+    sendUnknown === null ? null : (
+      <div className="approve-refuse" role="alert">
+        <p>{t("cip30_submit_unknown", { hash: sendUnknown || "?" })}</p>
+      </div>
+    );
 
   const OriginLine = () => (
     <div className="approve-origin">
@@ -679,12 +734,13 @@ export function Approve() {
   }
 
   if (phase.at === "decide") {
-    const { summary, undescribable, readFailed, req, dataSign } = phase;
+    const { summary, undescribable, readFailed, readFailedWhy, req, dataSign } = phase;
     const describesTx = req.method === "signTx" || req.method === "submitTx";
     return (
       <div className="approve">
         <OriginLine />
         <p className="mono approve-account">{primaryAddress(account)}</p>
+        <UnknownSend />
 
         {req.method === "submitTx" && <p className="approve-note">{t("cip30_submit_intro")}</p>}
 
@@ -698,7 +754,8 @@ export function Approve() {
         {readFailed && (
           <div className="approve-refuse" role="alert">
             <p className="approve-note">{readFailed}</p>
-            <button onClick={() => setPhase((cur) => (cur.at === "decide" && cur.req === req ? { ...cur, readFailed: undefined } : cur))}>
+            {readFailedWhy && <p className="approve-note mono">{readFailedWhy}</p>}
+            <button onClick={() => setPhase((cur) => (cur.at === "decide" && cur.req === req ? { ...cur, readFailed: undefined, readFailedWhy: undefined } : cur))}>
               {t("retry")}
             </button>
           </div>
@@ -758,6 +815,7 @@ export function Approve() {
     <div className="approve">
       <OriginLine />
       <p className="mono approve-account">{primaryAddress(account)}</p>
+      <UnknownSend />
       <p>{t("cip30_connected")}</p>
       <p className="approve-note">{t("cip30_close_to_disconnect")}</p>
       <p className="approve-note mono">{t("cip30_address_count", { n: allAddresses(account).length })}</p>
