@@ -46,7 +46,7 @@ const TXID = "77".repeat(32);
 
 let account: Account;
 /** A wallet holding nothing: every input is somebody else's. */
-const NO_VIEW: WalletView = { ownAddressesHex: [], held: new Map() };
+const NO_VIEW: WalletView = { ownAddressesHex: [], held: new Map(), heldWithScript: new Map() };
 
 async function fixture(outputs = 1) {
   account ??= await accountFromEntropy(ENTROPY, 0, NETWORK);

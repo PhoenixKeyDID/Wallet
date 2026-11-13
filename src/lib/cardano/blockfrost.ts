@@ -40,7 +40,7 @@ import { types as tyTypes, utils as tyUtils } from "@stricahq/typhonjs";
 import { ProviderUnreachableError } from "./provider";
 import type { AddressBalance } from "./provider";
 import { SubmitRejectedError } from "./submitError";
-import { addressHexOf, readChainDatum, walletOwnsOutput, type WalletInput } from "./ownUtxo";
+import { addressHexOf, readChainDatum, walletOwnsOutput, walletOwnsRefScriptOutput, type WalletInput } from "./ownUtxo";
 
 type ProtocolParams = tyTypes.ProtocolParams;
 
@@ -302,11 +302,26 @@ export async function bfAddressBalance(
   return { lovelace, assets: [...byUnit].map(([unit, v]) => ({ unit, ...v })) };
 }
 
+/** Spendable UTxOs only — the shape every transaction builder takes. */
 export async function bfUtxos(
   ep: BlockfrostEndpoint,
   addresses: string[],
 ): Promise<WalletInput[]> {
+  return (await bfOwnedUtxos(ep, addresses)).spendable;
+}
+
+/**
+ * The Blockfrost reader's UTxOs split into spendable and the reference-script
+ * ones this wallet owns but never spends (`walletOwnsRefScriptOutput`). The
+ * mirror of the Koios path's `fetchOwnedUtxos`: one read answers both the
+ * builder and the foreign-tx screen.
+ */
+export async function bfOwnedUtxos(
+  ep: BlockfrostEndpoint,
+  addresses: string[],
+): Promise<{ spendable: WalletInput[]; refScript: WalletInput[] }> {
   const out: WalletInput[] = [];
+  const refScript: WalletInput[] = [];
   for (const addr of addresses) {
     let rows: Array<{
       tx_hash?: string;
@@ -336,13 +351,14 @@ export async function bfUtxos(
       // inline one), so the inline datum is read first.
       const chainDatum = readChainDatum(r.inline_datum, r.data_hash, `${r.tx_hash}#${r.output_index}`);
       const address = tyUtils.getAddressFromString(r.address ?? addr) as tyTypes.ShelleyAddress;
-      if (
-        !walletOwnsOutput({
-          addressHex: addressHexOf(address),
-          datum: chainDatum !== undefined,
-          referenceScript: r.reference_script_hash != null,
-        })
-      ) {
+      const facts = {
+        addressHex: addressHexOf(address),
+        datum: chainDatum !== undefined,
+        referenceScript: r.reference_script_hash != null,
+      };
+      const spendable = walletOwnsOutput(facts);
+      const refScriptOwned = !spendable && walletOwnsRefScriptOutput(facts);
+      if (!spendable && !refScriptOwned) {
         continue;
       }
       // The same distinction the Koios path draws on `asset_list`, on the field
@@ -376,7 +392,7 @@ export async function bfUtxos(
             amount: new BigNumber(q.toString()),
           }),
       );
-      out.push({
+      (spendable ? out : refScript).push({
         txId: r.tx_hash,
         index: r.output_index,
         amount,
@@ -386,7 +402,7 @@ export async function bfUtxos(
       });
     }
   }
-  return out;
+  return { spendable: out, refScript };
 }
 
 /**

@@ -25,13 +25,13 @@ const THEIR_TXID = "11".repeat(32);
 
 let account: Account;
 /** A wallet holding nothing it can attribute: the cache is empty. */
-const NO_VIEW: WalletView = { ownAddressesHex: [], held: new Map() };
+const NO_VIEW: WalletView = { ownAddressesHex: [], held: new Map(), heldWithScript: new Map() };
 const acct = async () => (account ??= await accountFromEntropy(ENTROPY, 0, NETWORK));
 
 const addrHex = (bech32: string) =>
   (tyUtils.getAddressFromString(bech32) as tyTypes.ShelleyAddress).getHex();
 /** The wallet's own addresses and no UTxO: what the screen needs to count this wallet's rewards as its own. */
-const addressesOnly = (a: Account): WalletView => ({ ownAddressesHex: a.external.map((d) => addrHex(d.address)), held: new Map() });
+const addressesOnly = (a: Account): WalletView => ({ ownAddressesHex: a.external.map((d) => addrHex(d.address)), held: new Map(), heldWithScript: new Map() });
 
 /** `stake` reward account: một byte đầu (0xe0 | network) rồi 28 byte hash. */
 const rewardAccount = (stakeKeyHashHex: string) =>
@@ -227,6 +227,7 @@ describe("tài sản thế chấp 10.000 ADA không có phần trả lại", () 
     const mine = a.external[0]!.address;
     const view: WalletView = {
       ownAddressesHex: a.external.map((d) => addrHex(d.address)),
+      heldWithScript: new Map(),
       held: new Map([
         [`${OWN_BIG}#0`, { address: mine, lovelace: BigInt(10_000_000_000), assets: new Map() }],
         [`${OWN_SMALL}#0`, { address: mine, lovelace: BigInt(3_000_000), assets: new Map() }],
@@ -271,6 +272,7 @@ describe("đầu vào lạ (script hay không)", () => {
     ]);
   const viewOf = (a: Account): WalletView => ({
     ownAddressesHex: a.external.map((d) => addrHex(d.address)),
+    heldWithScript: new Map(),
     held: new Map([[`${OWN_SMALL}#0`, { address: a.external[0]!.address, lovelace: BigInt(3_000_000), assets: new Map() }]]),
   });
   const summary = (a: Account, b: Map<number, unknown>, witnesses: Map<number, unknown> = new Map()) =>

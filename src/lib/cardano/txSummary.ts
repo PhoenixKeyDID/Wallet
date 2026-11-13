@@ -32,6 +32,7 @@ import "../node-globals";
 import { Buffer } from "buffer";
 import { Decoder } from "@stricahq/cbors";
 import { utils as tyUtils } from "@stricahq/typhonjs";
+import { assertNoDuplicateMapKeys, DuplicateMapKeyError } from "./cborDupKeys";
 import { walletOwnsOutput } from "./ownUtxo";
 import { COLLATERAL_CAP_LOVELACE } from "./utxoSelect";
 
@@ -483,10 +484,38 @@ export function summariseTx(
   ownAddressesHex: Iterable<string>,
   ownInputs: ReadonlyMap<string, { lovelace: bigint; assets: Map<string, bigint> }>,
   networkId: 0 | 1,
+  /**
+   * UTxOs this wallet owns but the readers do NOT keep as spendable — a
+   * reference script at one of its key addresses. The readers drop them
+   * (`walletOwnsOutput`), so without this they would not be in `ownInputs` and
+   * would count as somebody else's: a tx spending one would show only "1 input
+   * not yours", while this wallet's key (justified by any tiny spendable UTxO
+   * at the same address) signs the large one away. A transaction that names one
+   * of these as an input is refused, because spending it destroys published
+   * code and "leaves the wallet: the fee" would be a lie about the real cost.
+   */
+  heldWithScript: ReadonlyMap<string, { lovelace: bigint; assets: Map<string, bigint> }> = new Map(),
 ): TxSummary {
+  const txBytes = Buffer.from(txCborHex, "hex");
+  // Read duplicate keys off the raw bytes before the decoder gets to pick a
+  // winner. `@stricahq/cbors` keeps the LATER value of a repeated map key and
+  // drops the earlier one silently, so `{… 4:[cert], 4:[] }` would be
+  // summarised as carrying no certificate — the cert hidden under a harmless
+  // empty duplicate. The same move hides mint (9), network id (15), outputs (1)
+  // and collateral (13). The Conway ledger rejects duplicate keys, but that is
+  // the node's refusal, after this wallet would already have signed what the
+  // screen described wrong, so it is refused here.
+  try {
+    assertNoDuplicateMapKeys(txBytes);
+  } catch (e) {
+    if (e instanceof DuplicateMapKeyError) {
+      bad("this transaction has a field given twice over — this wallet cannot say which value counts", "sign_foreign_duplicate_key");
+    }
+    return bad(`this is not a transaction this wallet can read (${(e as Error).message})`);
+  }
   let decoded: unknown;
   try {
-    decoded = Decoder.decode(Buffer.from(txCborHex, "hex")).value;
+    decoded = Decoder.decode(txBytes).value;
   } catch (e) {
     return bad(`this is not a transaction this wallet can read (${(e as Error).message})`);
   }
@@ -496,7 +525,12 @@ export function summariseTx(
   const b = body as Map<number, unknown>;
 
   for (const key of b.keys()) {
-    if (!KNOWN_BODY_KEYS.has(Number(key)))
+    // `typeof key === "number"` is load-bearing, not a tidy-up. A CBOR text key
+    // "4" passes `KNOWN_BODY_KEYS.has(Number("4"))` — it coerces to 4 — while
+    // `b.get(4)` looks up the integer 4 and never sees it, so a certificate (or
+    // any field) hidden under a string key sails through the allow-list and is
+    // then invisible to every reader below.
+    if (typeof key !== "number" || !KNOWN_BODY_KEYS.has(key))
       bad(`this transaction uses a feature this wallet cannot describe (field ${String(key)})`);
   }
 
@@ -551,6 +585,13 @@ export function summariseTx(
     const ref = `${Buffer.from(i[0] as Buffer).toString("hex")}#${Number(i[1])}`;
     if (seenInputs.has(ref)) bad("this transaction names the same input twice");
     seenInputs.add(ref);
+    // A UTxO this wallet owns that carries a reference script: the readers keep
+    // it out of what can be spent, so it is not in `ownInputs`, but it is not
+    // somebody else's either — this wallet's key can sign it away. Refuse,
+    // rather than let it pass as a foreign input whose value never enters `net`.
+    if (heldWithScript.has(ref)) {
+      bad("this transaction spends a coin of yours that publishes a script", "sign_foreign_own_script_input");
+    }
     const held = ownInputs.get(ref);
     if (!held) continue; // someone else's input; it costs this wallet nothing
     mineCount += 1;

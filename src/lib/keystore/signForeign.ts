@@ -39,6 +39,7 @@ import "../node-globals";
 import { Buffer } from "buffer";
 import { Decoder, Encoder } from "@stricahq/cbors";
 import { utils as tyUtils } from "@stricahq/typhonjs";
+import { assertNoDuplicateMapKeys, DuplicateMapKeyError } from "../cardano/cborDupKeys";
 import { blake2b256, toHex } from "../cardano/hash";
 import { isKeyRewardAccountOn, summariseTx, UndescribableTxError, type TxSummary } from "../cardano/txSummary";
 import { LocalSignError, type Account } from "./index";
@@ -65,36 +66,65 @@ export type HeldInput = {
 export type WalletView = {
   ownAddressesHex: readonly string[];
   held: ReadonlyMap<string, HeldInput>;
+  /**
+   * UTxOs this wallet owns at one of its key addresses that carry a reference
+   * script. The readers keep these OUT of `held` — spending one destroys
+   * published code — but they are still the wallet's, and this wallet's key can
+   * sign one away. Kept apart so the summary can refuse a transaction that
+   * spends one instead of counting it as a stranger's input whose value never
+   * reaches the screen. Empty when the reader supplied none.
+   */
+  heldWithScript: ReadonlyMap<string, HeldInput>;
 };
 
-/** Build the view from the wallet's input list, refusing a shape it cannot value. */
+/** One of the wallet's UTxOs, in the shape both input lists arrive in. */
+type ViewInput = {
+  txId: string;
+  index: number;
+  amount: { toFixed(n: number): string };
+  tokens?: readonly { policyId: string; assetName?: string; amount: { toFixed(n: number): string } }[];
+  address: { getBech32(): string };
+};
+
+/**
+ * Build the view from the wallet's input list, refusing a shape it cannot
+ * value.
+ *
+ * `inputsWithScript` are the wallet's own UTxOs the readers keep OUT of the
+ * spendable set because they carry a reference script. They are valued the same
+ * way and kept in `heldWithScript`, so the summary can refuse a transaction
+ * that spends one rather than mistake it for a stranger's input. A reader that
+ * does not surface them passes none, and `heldWithScript` is empty.
+ */
 export function walletViewFrom(
-  inputs: readonly {
-    txId: string;
-    index: number;
-    amount: { toFixed(n: number): string };
-    tokens?: readonly { policyId: string; assetName?: string; amount: { toFixed(n: number): string } }[];
-    address: { getBech32(): string };
-  }[],
+  inputs: readonly ViewInput[],
   ownAddressesHex: readonly string[],
+  inputsWithScript: readonly ViewInput[] = [],
 ): WalletView {
-  const held = new Map<string, HeldInput>();
   const whole = (v: { toFixed(n: number): string }, what: string): bigint => {
     const s = v.toFixed(0);
     if (!/^\d+$/.test(s)) throw new LocalSignError("sign_foreign_unreadable_own_utxo", what);
     return BigInt(s);
   };
-  for (const i of inputs) {
-    const ref = `${i.txId}#${i.index}`;
-    if (held.has(ref)) throw new LocalSignError("sign_foreign_unreadable_own_utxo", ref);
-    const assets = new Map<string, bigint>();
-    for (const tk of i.tokens ?? []) {
-      const unit = tk.policyId + (tk.assetName ?? "");
-      assets.set(unit, (assets.get(unit) ?? BigInt(0)) + whole(tk.amount, ref));
+  const collect = (list: readonly ViewInput[]): Map<string, HeldInput> => {
+    const m = new Map<string, HeldInput>();
+    for (const i of list) {
+      const ref = `${i.txId}#${i.index}`;
+      if (m.has(ref)) throw new LocalSignError("sign_foreign_unreadable_own_utxo", ref);
+      const assets = new Map<string, bigint>();
+      for (const tk of i.tokens ?? []) {
+        const unit = tk.policyId + (tk.assetName ?? "");
+        assets.set(unit, (assets.get(unit) ?? BigInt(0)) + whole(tk.amount, ref));
+      }
+      m.set(ref, { address: i.address.getBech32(), lovelace: whole(i.amount, ref), assets });
     }
-    held.set(ref, { address: i.address.getBech32(), lovelace: whole(i.amount, ref), assets });
-  }
-  return { ownAddressesHex: [...ownAddressesHex], held };
+    return m;
+  };
+  return {
+    ownAddressesHex: [...ownAddressesHex],
+    held: collect(inputs),
+    heldWithScript: collect(inputsWithScript),
+  };
 }
 
 /** What the wallet must be able to sign for, derived from the body. */
@@ -187,6 +217,24 @@ export function requiredKeysFor(
 ): RequiredKeys {
   const txBytes = Buffer.from(txCborHex, "hex");
   if (txBytes.length === 0) throw new LocalSignError("sign_foreign_not_a_tx");
+  // A duplicate map key lets a dangerous field hide behind a harmless one: the
+  // decoder keeps the later value, so `{… 4:[cert], 4:[] }` reads as having no
+  // certificate. The screen refuses it (`summariseTx`, run at the end here) and
+  // this function, which touches the keys, refuses it up front — the body hash
+  // is taken from these same bytes, so a body that cannot be read unambiguously
+  // must never reach the signer.
+  try {
+    assertNoDuplicateMapKeys(txBytes);
+  } catch (e) {
+    if (e instanceof DuplicateMapKeyError) throw new LocalSignError("sign_foreign_duplicate_key");
+    // Any OTHER failure means the bytes are not CBOR this walker can follow —
+    // malformed, truncated, a reserved encoding, an indefinite-length outer
+    // array. Giving a verdict here would mask the specific refusals below
+    // (`bodyBytes`' encoding check, then the decoder), which name the problem
+    // with the right error. A well-formed transaction the decoder can read is
+    // always one this walker can read too, so nothing carrying a real duplicate
+    // key reaches the signer by falling through this branch.
+  }
   const body = bodyBytes(txBytes);
   const bodyHashHex = toHex(blake2b256(body));
 
@@ -316,7 +364,7 @@ export function requiredKeysFor(
   // read from its answer.
   let summary: TxSummary;
   try {
-    summary = summariseTx(txCborHex, view.ownAddressesHex, view.held, ledgerNetworkId);
+    summary = summariseTx(txCborHex, view.ownAddressesHex, view.held, ledgerNetworkId, view.heldWithScript);
   } catch (e) {
     // A refusal the screen names by key (the collateral cap, tokens in the
     // collateral) is refused here under the same key.

@@ -31,6 +31,7 @@ import { dripClaimTxHex, AUTH_NAME } from "./fixtures/dripPotClaim";
 const mocks = vi.hoisted(() => ({
   wallets: [] as unknown[],
   fetchUtxos: vi.fn(),
+  fetchOwnedUtxos: vi.fn(async () => ({ spendable: [], refScript: [] })),
   submitTx: vi.fn(),
 }));
 
@@ -47,6 +48,7 @@ vi.mock("@/lib/keystore/storage", async (orig) => ({
 vi.mock("@/lib/cardano/provider", async (orig) => ({
   ...(await orig<typeof import("@/lib/cardano/provider")>()),
   fetchUtxos: mocks.fetchUtxos,
+  fetchOwnedUtxos: mocks.fetchOwnedUtxos,
   submitTx: mocks.submitTx,
 }));
 

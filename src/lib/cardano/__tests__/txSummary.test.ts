@@ -558,3 +558,159 @@ describe("summariseTx — an output to this wallet's key address under a datum i
     expect(s.toSelfWithDatum).toEqual([]);
   });
 });
+
+// A CBOR map with a duplicate integer key: `@stricahq/cbors` keeps the LATER
+// value and drops the earlier one without a word, so a dangerous field placed
+// first and a harmless duplicate second reads as the harmless one. Each case
+// below shapes the body that way; without the raw-bytes duplicate-key check the
+// summary describes the harmless duplicate (no throw, or a describable tx), so
+// the `toThrow(/given twice/)` assertion FAILS before the fix and PASSES after.
+describe("summariseTx — a field given twice cannot hide behind its duplicate", () => {
+  const own = ownership(myUtxo("10000000").held);
+  const BIG_OWN = "44".repeat(32);
+  const withBig = new Map([
+    ...own.inputs,
+    [`${BIG_OWN}#0`, { lovelace: BigInt(1_000_000_000), assets: new Map<string, bigint>() }],
+  ]);
+
+  const enc = (v: unknown): Buffer => Encoder.encode(v);
+  const outBytes = (addrBech32: string, lovelace: number) =>
+    enc([tyUtils.getAddressFromString(addrBech32).getBytes(), lovelace]);
+  // A map built by hand so a key can appear twice — JS `Map` cannot hold one.
+  // The count in the header includes the duplicate, exactly as the attack would
+  // encode it.
+  const rawMap = (pairs: [number, Buffer][]): Buffer => {
+    const n = pairs.length;
+    const header = n < 24 ? Buffer.from([0xa0 | n]) : Buffer.from([0xb8, n]);
+    const parts: Buffer[] = [header];
+    for (const [k, vBuf] of pairs) {
+      parts.push(enc(k));
+      parts.push(vBuf);
+    }
+    return Buffer.concat(parts);
+  };
+  const tx = (body: Buffer): string =>
+    Buffer.concat([Buffer.from([0x84]), body, Buffer.from([0xa0, 0xf5, 0xf6])]).toString("hex");
+
+  const inputs0 = enc([[Buffer.from(TXID, "hex"), 0]]);
+  const outputs1 = enc([[tyUtils.getAddressFromString(PAYEE).getBytes(), 3_000_000]]);
+  const fee2 = enc(170_000);
+  // stake_registration-shaped certificate: [0, [0, keyhash]]
+  const cert = enc([0, [0, Buffer.from("bb".repeat(28), "hex")]]);
+  const mintMap = enc(new Map([[Buffer.from("ab".repeat(28), "hex"), new Map([[Buffer.from("4142", "hex"), 5]])]]));
+
+  it("certificate (key 4): the cert, not the empty duplicate, is seen and refused", () => {
+    const body = rawMap([
+      [0, inputs0],
+      [1, outputs1],
+      [2, fee2],
+      [4, cert], // dangerous: a real certificate
+      [4, enc([])], // harmless: an empty certificate list
+    ]);
+    expect(() => summariseTx(tx(body), own.addresses, own.inputs, 0)).toThrow(/given twice/);
+  });
+
+  it("mint (key 9): the mint, not the empty duplicate, is seen and refused", () => {
+    const body = rawMap([
+      [0, inputs0],
+      [1, outputs1],
+      [2, fee2],
+      [9, mintMap], // dangerous: creates tokens
+      [9, enc(new Map())], // harmless: an empty mint
+    ]);
+    expect(() => summariseTx(tx(body), own.addresses, own.inputs, 0)).toThrow(/given twice/);
+  });
+
+  it("network id (key 15): the wrong network, not the matching duplicate, is seen and refused", () => {
+    const body = rawMap([
+      [0, inputs0],
+      [1, outputs1],
+      [2, fee2],
+      [15, enc(1)], // dangerous: mainnet, while the wallet is on 0
+      [15, enc(0)], // harmless: matches the wallet's network
+    ]);
+    expect(() => summariseTx(tx(body), own.addresses, own.inputs, 0)).toThrow(/given twice/);
+  });
+
+  it("outputs (key 1): the real outputs, not the empty duplicate, are seen and refused", () => {
+    const body = rawMap([
+      [0, inputs0],
+      [1, enc([outBytes(PAYEE, 999_000_000)])], // dangerous: a large payment
+      [2, fee2],
+      [1, enc([])], // harmless: no outputs
+    ]);
+    expect(() => summariseTx(tx(body), own.addresses, own.inputs, 0)).toThrow(/given twice/);
+  });
+
+  it("collateral (key 13): the collateral input, not the empty duplicate, is seen and refused", () => {
+    const body = rawMap([
+      [0, inputs0],
+      [1, outputs1],
+      [2, fee2],
+      [13, enc([[Buffer.from(BIG_OWN, "hex"), 0]])], // dangerous: puts up a 1000-ADA UTxO
+      [13, enc([])], // harmless: no collateral
+    ]);
+    expect(() => summariseTx(tx(body), own.addresses, withBig, 0)).toThrow(/given twice/);
+  });
+});
+
+// A CBOR *text* key "4" coerces to the integer 4 under `Number(key)`, so it used
+// to pass the body-field allow-list, while `b.get(4)` (an integer lookup) never
+// saw it — a certificate under a string key sailed through invisibly. Before the
+// `typeof key === "number"` guard the summary describes the tx (no cert seen);
+// after it, the unknown field is refused.
+describe("summariseTx — a text key is not an integer key", () => {
+  const own = ownership(myUtxo("10000000").held);
+  const enc = (v: unknown): Buffer => Encoder.encode(v);
+  // body map {0: inputs, 1: outputs, 2: fee, "4": [cert]} — the "4" is TEXT.
+  const body = Buffer.concat([
+    Buffer.from([0xa4]),
+    enc(0),
+    enc([[Buffer.from(TXID, "hex"), 0]]),
+    enc(1),
+    enc([[tyUtils.getAddressFromString(PAYEE).getBytes(), 3_000_000]]),
+    enc(2),
+    enc(170_000),
+    enc("4"), // a text key, not integer 4
+    enc([[0, [0, Buffer.from("bb".repeat(28), "hex")]]]),
+  ]);
+  const txHex = Buffer.concat([Buffer.from([0x84]), body, Buffer.from([0xa0, 0xf5, 0xf6])]).toString("hex");
+
+  it("refuses a body whose field is keyed by a string instead of an integer", () => {
+    expect(() => summariseTx(txHex, own.addresses, own.inputs, 0)).toThrow(/cannot describe/);
+  });
+});
+
+// A reference-script UTxO the wallet owns is dropped from the spendable set
+// (`walletOwnsOutput`), so without `heldWithScript` it counts as a stranger's
+// input: a tx spending it next to a 2-ADA plain UTxO at the same address shows
+// ~2 ADA leaving and "1 input not yours", while this wallet's key signs the
+// 50-ADA one away. With `heldWithScript` the summary refuses the tx instead.
+describe("summariseTx — a wallet-owned reference-script UTxO is not a stranger's input", () => {
+  const XID = "55".repeat(32); // the 50-ADA reference-script UTxO
+  const addresses = [hexOf(MINE), hexOf(MY_CHANGE)];
+  const held = new Map([[`${TXID}#0`, { lovelace: BigInt(2_000_000), assets: new Map<string, bigint>() }]]);
+  const heldWithScript = new Map([[`${XID}#0`, { lovelace: BigInt(50_000_000), assets: new Map<string, bigint>() }]]);
+  const spendsBoth = Encoder.encode([
+    new Map<number, unknown>([
+      [0, [[Buffer.from(TXID, "hex"), 0], [Buffer.from(XID, "hex"), 0]]],
+      [1, [[tyUtils.getAddressFromString(PAYEE).getBytes(), 1_000_000]]],
+      [2, 200_000],
+    ]),
+    new Map(),
+    true,
+    null,
+  ]).toString("hex");
+
+  it("without heldWithScript it undercounts — the 50 ADA UTxO drains behind a 2 ADA screen (the hole)", () => {
+    const s = summariseTx(spendsBoth, addresses, held, 0);
+    // Only the 2-ADA plain UTxO is counted; the 50-ADA one is "not yours".
+    expect(s.net).toEqual([{ unit: "", policyId: "", assetNameHex: "", amount: BigInt(2_000_000) }]);
+    expect(s.foreignInputs).toBe(1);
+  });
+
+  it("with heldWithScript it refuses the transaction that spends the reference-script UTxO", () => {
+    expect(() => summariseTx(spendsBoth, addresses, held, 0, heldWithScript)).toThrow(UndescribableTxError);
+    expect(() => summariseTx(spendsBoth, addresses, held, 0, heldWithScript)).toThrow(/publishes a script/);
+  });
+});

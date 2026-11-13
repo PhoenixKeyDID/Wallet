@@ -360,6 +360,8 @@
   "sign_foreign_unreadable_own_utxo": "无法读取此钱包的一个 UTxO。未签名。",
   "sign_foreign_declared_invalid": "该交易声明其自身脚本失败,结果只会失去抵押品。未签名。",
   "sign_foreign_unreadable_own_address": "无法读取此钱包自身的某个地址。未签名。",
+  "sign_foreign_duplicate_key": "该交易将其某个字段重复给出了两次，此钱包无法判断要签署哪个值。未签名。",
+  "sign_foreign_own_script_input": "该交易花费了你的一个发布了脚本的 UTxO，此钱包无法描述签署并放弃它会造成什么后果。未签名。",
   "sign_unjustified_signer": "该交易要求此钱包的一把密钥,而交易内容并不需要它。未签名。",
   "local_seed_notice": "此模式确实会询问你的助记词——因为这正是由本设备保管钱包的模式。只在你自己打开的这个页面上输入，绝不要因为有人要求你而输入。",
   "local_mainnet_warning": "真实资金。此模式未经审计。",

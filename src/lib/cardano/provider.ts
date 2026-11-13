@@ -25,14 +25,14 @@ import { types as tyTypes, utils as tyUtils } from "@stricahq/typhonjs";
 type ProtocolParams = tyTypes.ProtocolParams;
 import type { PhoenixNetwork } from "./address";
 import { getChainSource } from "./chainSource";
-import { addressHexOf, readChainDatum, walletOwnsOutput, type WalletInput } from "./ownUtxo";
+import { addressHexOf, readChainDatum, walletOwnsOutput, walletOwnsRefScriptOutput, type WalletInput } from "./ownUtxo";
 import { SubmitRejectedError } from "./submitError";
 import {
   bfProtocolParams,
   bfTipSlot,
   bfTipBlockHeight,
   bfAddressBalance,
-  bfUtxos,
+  bfOwnedUtxos,
   bfSubmitTx,
   assertNoRedirect,
 } from "./blockfrost";
@@ -644,9 +644,27 @@ export async function fetchUtxos(
   network: PhoenixNetwork,
   addresses: string[],
 ): Promise<WalletInput[]> {
-  if (addresses.length === 0) return [];
+  return (await fetchOwnedUtxos(network, addresses)).spendable;
+}
+
+/**
+ * The wallet's UTxOs split into what it may spend and the reference-script ones
+ * it owns but the builder never touches (`walletOwnsRefScriptOutput`).
+ *
+ * `fetchUtxos` returns only `spendable`, which is every caller that builds a
+ * transaction. The foreign-tx approval path takes `refScript` too, so it can
+ * refuse a website's transaction that spends one of these rather than describe
+ * it as a stranger's input and let this wallet's key sign it away unseen. One
+ * indexer read answers both.
+ */
+export async function fetchOwnedUtxos(
+  network: PhoenixNetwork,
+  addresses: string[],
+): Promise<{ spendable: WalletInput[]; refScript: WalletInput[] }> {
+  if (addresses.length === 0) return { spendable: [], refScript: [] };
   const src = getChainSource(network);
-  if (src.kind === "blockfrost") return bfUtxos(src, addresses);
+  if (src.kind === "blockfrost") return bfOwnedUtxos(src, addresses);
+  const refScript: WalletInput[] = [];
   const rows = await koios<
     Array<{
       tx_hash: string;
@@ -675,13 +693,16 @@ export async function fetchUtxos(
     }
     const chainDatum = readChainDatum(inlineHex, r.datum_hash, where);
     const address = tyUtils.getAddressFromString(r.address) as tyTypes.ShelleyAddress;
-    if (
-      !walletOwnsOutput({
-        addressHex: addressHexOf(address),
-        datum: chainDatum !== undefined,
-        referenceScript: r.reference_script != null,
-      })
-    ) {
+    const facts = {
+      addressHex: addressHexOf(address),
+      datum: chainDatum !== undefined,
+      referenceScript: r.reference_script != null,
+    };
+    const spendable = walletOwnsOutput(facts);
+    // A reference-script UTxO at a key address is kept apart, not dropped, so
+    // the foreign-tx screen can refuse a website that spends it.
+    const refScriptOwned = !spendable && walletOwnsRefScriptOutput(facts);
+    if (!spendable && !refScriptOwned) {
       continue;
     }
     // The same distinction `fetchAddressBalance` draws, on the endpoint that
@@ -710,7 +731,7 @@ export async function fetchUtxos(
           `would build a transaction the ledger rejects`,
       );
     }
-    out.push({
+    (spendable ? out : refScript).push({
       txId: r.tx_hash,
       index: r.tx_index,
       amount: new BigNumber(r.value),
@@ -723,7 +744,7 @@ export async function fetchUtxos(
       ...(chainDatum ? { chainDatum } : {}),
     });
   }
-  return out;
+  return { spendable: out, refScript };
 }
 
 /**

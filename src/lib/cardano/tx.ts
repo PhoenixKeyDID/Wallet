@@ -17,7 +17,7 @@ import BigNumber from "bignumber.js";
 import { CborTag, Decoder } from "@stricahq/cbors";
 import { Transaction, utils as tyUtils, types as tyTypes } from "@stricahq/typhonjs";
 import { assertSameNetwork, type Cip30Api } from "./cip30";
-import { walletOwnsOutput } from "./ownUtxo";
+import { walletOwnsOutput, walletOwnsRefScriptOutput } from "./ownUtxo";
 
 type ProtocolParams = tyTypes.ProtocolParams;
 type Input = tyTypes.Input;
@@ -83,6 +83,24 @@ function decodeValue(value: unknown): { ada: BigNumber; tokens: Token[] } {
  * de-duplicate here than to hand the user an unexplainable submit failure.
  */
 export function decodeUtxosToInputs(utxosHex: string[]): Input[] {
+  return decodeOwnUtxosWhere(utxosHex, (f) => walletOwnsOutput(f));
+}
+
+/**
+ * The wallet's reference-script UTxOs — the ones `decodeUtxosToInputs` drops
+ * (`walletOwnsOutput` returns false), decoded here so the foreign-tx screen can
+ * refuse a website that spends one. Never fed to the builder: these are kept
+ * out of what can be spent on purpose, and spending one destroys published code.
+ */
+export function decodeOwnedRefScriptInputs(utxosHex: string[]): Input[] {
+  return decodeOwnUtxosWhere(utxosHex, (f) => walletOwnsRefScriptOutput(f));
+}
+
+/** Decode a CIP-30 UTxO list, keeping the ones `keep` accepts. */
+function decodeOwnUtxosWhere(
+  utxosHex: string[],
+  keep: (facts: { addressHex: string; datum: boolean; referenceScript: boolean }) => boolean,
+): Input[] {
   const inputs: Input[] = [];
   const seen = new Set<string>();
   for (const hex of utxosHex) {
@@ -112,7 +130,7 @@ export function decodeUtxosToInputs(utxosHex: string[]): Input[] {
     } else {
       throw new Error("unrecognised UTxO output format");
     }
-    if (!walletOwnsOutput({ addressHex: addrBuf.toString("hex"), datum, referenceScript })) continue;
+    if (!keep({ addressHex: addrBuf.toString("hex"), datum, referenceScript })) continue;
 
     const { ada, tokens } = decodeValue(amountValue);
     const address = tyUtils.getAddressFromHex(addrBuf) as ShelleyAddress;

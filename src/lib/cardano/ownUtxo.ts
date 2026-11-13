@@ -72,6 +72,26 @@ export function walletOwnsOutput(o: OutputFacts): boolean {
   return true;
 }
 
+/**
+ * An output at one of this wallet's addresses that it does NOT keep as
+ * spendable — because it carries a reference script — yet whose payment
+ * credential is this wallet's key, so this wallet's signature is what spends it.
+ *
+ * `walletOwnsOutput` returns false for these (a reference script is never spent
+ * by a payment wallet), which drops them from every reader's result. That is
+ * right for *spending*, and wrong for *describing a transaction a website built*:
+ * the readers' silence lets such a UTxO count as a stranger's input, so a tx
+ * spending it shows "1 input not yours" and the wallet's key — justified by any
+ * tiny spendable UTxO at the same address — signs the large one away unseen. The
+ * foreign-tx path keeps these apart (`heldWithScript`) to refuse that, and this
+ * is the one predicate that names them. A script-locked output (script payment
+ * credential) is NOT here: this wallet holds no key for it, so no signature of
+ * its can move it.
+ */
+export function walletOwnsRefScriptOutput(o: OutputFacts): boolean {
+  return o.referenceScript && paymentCredentialIsKey(o.addressHex);
+}
+
 const HEX_RE = /^(?:[0-9a-f]{2})+$/i;
 
 /**

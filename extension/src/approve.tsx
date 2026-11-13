@@ -435,8 +435,13 @@ export function Approve() {
     void (async () => {
       try {
         const wp = localPort(account);
-        const view = walletViewFrom(await wp.getInputs(), await wp.getOwnedAddressesHex());
-        const summary = summariseTx(cbor, view.ownAddressesHex, view.held, account.network === 1 ? 1 : 0);
+        // The reference-script UTxOs this wallet owns but never spends: read
+        // alongside the spendable ones so the summary can refuse a website that
+        // spends one, instead of letting it pass as a stranger's input while
+        // this wallet's key signs it away.
+        const refScriptInputs = wp.getRefScriptInputs ? await wp.getRefScriptInputs() : [];
+        const view = walletViewFrom(await wp.getInputs(), await wp.getOwnedAddressesHex(), refScriptInputs);
+        const summary = summariseTx(cbor, view.ownAddressesHex, view.held, account.network === 1 ? 1 : 0, view.heldWithScript);
         if (!cancelled) setPhase((cur) => (stillOnScreen(cur) ? { ...cur, summary, view } : cur));
       } catch (e) {
         const why =

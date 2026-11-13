@@ -360,6 +360,8 @@
   "sign_foreign_unreadable_own_utxo": "One of this wallet's coins could not be read. Nothing was signed.",
   "sign_foreign_declared_invalid": "This transaction declares that its own script fails, which would only give up its collateral. Nothing was signed.",
   "sign_foreign_unreadable_own_address": "One of this wallet's own addresses could not be read. Nothing was signed.",
+  "sign_foreign_duplicate_key": "This transaction gives one of its fields twice over, so this wallet cannot tell which value it would be signing. Nothing was signed.",
+  "sign_foreign_own_script_input": "This transaction spends a coin of yours that publishes a script, and this wallet cannot describe what signing that away does. Nothing was signed.",
   "sign_unjustified_signer": "This transaction asks for a key of this wallet that nothing in it needs. Nothing was signed.",
   "local_seed_notice": "This mode does ask for your recovery phrase — because it is the mode where this device holds your wallet. Type it only here, on a page you reached yourself, and never because someone asked you to.",
   "local_mainnet_warning": "Real funds. This mode is unaudited.",

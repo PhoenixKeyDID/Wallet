@@ -60,6 +60,7 @@ beforeAll(async () => {
   ]);
   view = {
     ownAddressesHex: ownAddrs,
+    heldWithScript: new Map(),
     held: new Map([
       [`${FEE_IN.txId}#${FEE_IN.index}`, { address: account.external[0]!.address, ...held.get(`${FEE_IN.txId}#${FEE_IN.index}`)! }],
       [`${COLL_IN.txId}#${COLL_IN.index}`, { address: account.external[1]!.address, ...held.get(`${COLL_IN.txId}#${COLL_IN.index}`)! }],

@@ -29,7 +29,7 @@ import type { types as tyTypes } from "@stricahq/typhonjs";
 import type { AssetAmount, Cip30Api } from "./cip30";
 import { cip30NetworkId, type PhoenixNetwork } from "./address";
 import { blake2b224, fromHex, toHex } from "./hash";
-import { decodeUtxosToInputs, signAndSubmitCip30, type BuiltTx } from "./tx";
+import { decodeOwnedRefScriptInputs, decodeUtxosToInputs, signAndSubmitCip30, type BuiltTx } from "./tx";
 
 export type WalletPort = {
   /**
@@ -40,6 +40,15 @@ export type WalletPort = {
   kind: "cip30" | "local";
   /** Spendable inputs, already decoded — never a half-open CBOR string. */
   getInputs(): Promise<tyTypes.Input[]>;
+  /**
+   * The wallet's own UTxOs that carry a reference script — kept OUT of
+   * `getInputs` because the builder must never spend them, but surfaced here so
+   * the foreign-tx approval screen can refuse a website that tries to. Optional:
+   * a port that cannot tell these apart returns none, and the screen simply
+   * loses that one refusal (the same state as today). Never used to build a
+   * transaction.
+   */
+  getRefScriptInputs?(): Promise<tyTypes.Input[]>;
   /** Hex reward (stake) address. Hex because that is what CIP-30 returns. */
   getRewardAddressHex(): Promise<string>;
   /**
@@ -153,6 +162,11 @@ export function cip30Port(api: Cip30Api): WalletPort {
       const hex = await api.getUtxos();
       if (!hex || hex.length === 0) return [];
       return decodeUtxosToInputs(hex);
+    },
+    async getRefScriptInputs() {
+      const hex = await api.getUtxos();
+      if (!hex || hex.length === 0) return [];
+      return decodeOwnedRefScriptInputs(hex);
     },
     async getRewardAddressHex() {
       const addrs = await api.getRewardAddresses();

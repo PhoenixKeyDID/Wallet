@@ -29,7 +29,7 @@
  */
 import "../node-globals";
 import { utils as tyUtils, type types as tyTypes } from "@stricahq/typhonjs";
-import { fetchUtxos, submitTx } from "../cardano/provider";
+import { fetchOwnedUtxos, fetchUtxos, submitTx } from "../cardano/provider";
 import type { PhoenixNetwork } from "../cardano/address";
 import type { BuiltTx } from "../cardano/tx";
 import type { WalletPort } from "../cardano/walletPort";
@@ -126,6 +126,7 @@ export function localPort(account: Account): WalletPort {
   return {
     kind: "local",
     getInputs: () => fetchUtxos(network, allAddresses(account)),
+    getRefScriptInputs: async () => (await fetchOwnedUtxos(network, allAddresses(account))).refScript,
     getRewardAddressHex: async () => hexOf(account.rewardAddress),
     async getReceiveAddressHex() {
       // Ask the indexer which external addresses are currently empty, so the
