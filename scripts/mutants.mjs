@@ -65,6 +65,10 @@ const COPYABLE_ANCHOR = '    "src/components/wallet/WatchOnlyPanel.tsx#WatchOnly
 const FORWARDS_ANCHOR = '    "src/components/wallet/WalletTabs.tsx#WalletTabs: port",\n  ];';
 const PENDING = "extension/background/pending.ts";
 const SIGN_FOREIGN = "src/lib/keystore/signForeign.ts";
+// The raw-byte CBOR walker whose key identity must match what the decoder
+// collapses: revert any branch to raw bytes and a non-canonical duplicate the
+// decoder folds slips past, which the dup-key suite must catch.
+const CBOR_DUP = "src/lib/cardano/cborDupKeys.ts";
 const UTXO_CBOR = "src/lib/cardano/utxoCbor.ts";
 const APPROVE = "extension/src/approve.tsx";
 const UTXO_SELECT = "src/lib/cardano/utxoSelect.ts";
@@ -102,6 +106,7 @@ const TESTS = [
   "scripts/__tests__/checkLocales.test.ts",
   "extension/background/__tests__/pending.test.ts",
   "src/lib/keystore/__tests__/foreignTxAttack.test.ts",
+  "src/lib/cardano/__tests__/cborDupKeys.test.ts",
   "src/lib/cardano/__tests__/utxoCbor.test.ts",
   "src/lib/keystore/__tests__/extensionApprove.test.tsx",
   "src/lib/keystore/__tests__/dripPotClaim.test.ts",
@@ -1464,6 +1469,31 @@ const MUTANTS = [
     from: 'if (what === "collateral") throw',
     to: 'if (false /* MUT_SF_COLL */) throw',
     marker: "MUT_SF_COLL",
+  },
+  // ── The CBOR dup-key walker's identity, reverted to raw bytes per branch.
+  // Each revert reopens a class of hidden-field attack the decoder would
+  // collapse (integer re-encoding, text definite/indefinite, integer-valued
+  // float). The dup-key suite pins each one. ──
+  {
+    name: "cbor-dup: an integer key's identity is its raw bytes again (0x04 != 0x1804)",
+    file: CBOR_DUP,
+    from: "    return arg === null ? rawHex(bytes, start, end) : `${major}:${arg}`;",
+    to: "    return (void arg, rawHex(bytes, start, end)); /* MUT_CBOR_DUP_INT_RAW */",
+    marker: "MUT_CBOR_DUP_INT_RAW",
+  },
+  {
+    name: "cbor-dup: a text key's identity is its raw bytes again (definite != indefinite)",
+    file: CBOR_DUP,
+    from: "    return `3:${textContentHex(bytes, start)}`;",
+    to: "    return (void textContentHex(bytes, start), rawHex(bytes, start, end)); /* MUT_CBOR_DUP_TEXT_RAW */",
+    marker: "MUT_CBOR_DUP_TEXT_RAW",
+  },
+  {
+    name: "cbor-dup: a float key's identity is its raw bytes again (float 4.0 != int 4)",
+    file: CBOR_DUP,
+    from: "    return Number.isFinite(v) && Number.isInteger(v) ? intIdentityFromValue(v) : `7f:${v}`;",
+    to: "    return (void intIdentityFromValue(v), rawHex(bytes, start, end)); /* MUT_CBOR_DUP_FLOAT_RAW */",
+    marker: "MUT_CBOR_DUP_FLOAT_RAW",
   },
   {
     name: "screen: a tx declaring its own script fails is described",

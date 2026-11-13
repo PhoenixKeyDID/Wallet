@@ -11,7 +11,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { Buffer } from "buffer";
-import { Encoder } from "@stricahq/cbors";
+import { Encoder, Decoder } from "@stricahq/cbors";
 import { utils as tyUtils, types as tyTypes } from "@stricahq/typhonjs";
 import { accountFromEntropy, type Account } from "../derive";
 import { requiredKeysFor, signForeignTx, type WalletView } from "../signForeign";
@@ -330,5 +330,65 @@ describe("đầu vào lạ (script hay không)", () => {
       b.set(1, [[Buffer.from(addrHex(mine), "hex"), 2_700_000]]);
       expect(summary(a, b).foreignInputs).toBe(0);
     }
+  });
+});
+
+/**
+ * Chứng chỉ giấu sau một khoá map lặp không chính tắc.
+ *
+ * Trường 4 (certificates) xuất hiện HAI lần trong thân: một lần mã hoá chính
+ * tắc `0x04` mang chứng chỉ thật, một lần mã hoá dài hơn `0x1804` (vẫn là số
+ * nguyên 4) mang danh sách rỗng. `@stricahq/cbors` gộp hai khoá lại và giữ giá
+ * trị SAU — `b.get(4)` ra `[]`, nên cả màn hình lẫn nhánh từ chối chứng chỉ của
+ * hàm ký đều "thấy" không có chứng chỉ, trong khi chữ ký lại ký đúng những byte
+ * có chứng chỉ. Bộ quét byte thô trước bản vá coi `0x04` và `0x1804` là hai
+ * khoá khác nhau nên không chặn. Khoá được chuẩn hoá theo đúng cách decoder gộp
+ * thì bắt được. Đòn này đóng được một khoá thật nhập hệ (`cborDupKeys.ts`).
+ */
+describe("chứng chỉ giấu sau khoá map lặp không chính tắc", () => {
+  const OWN_TXID = "aa".repeat(32);
+  // Thân thô: trường 4 vừa là 0x04 (mang chứng chỉ) vừa là 0x1804 (mang []).
+  const dupBody = (ownAddrHex: string): string => {
+    const inputs = Encoder.encode([[Buffer.from(OWN_TXID, "hex"), 0]]).toString("hex");
+    const outputs = Encoder.encode([[Buffer.from(ownAddrHex, "hex"), 2_000_000]]).toString("hex");
+    const fee = Encoder.encode(200_000).toString("hex");
+    // [cert] với cert = [0, [0, keyhash28]] (một đăng ký stake, hình dạng hợp lệ).
+    const certList = Encoder.encode([[0, [0, Buffer.from("bb".repeat(28), "hex")]]]).toString("hex");
+    return (
+      "a5" + // map(5): 0,1,2, rồi 4 xuất hiện hai lần
+      "00" + inputs +
+      "01" + outputs +
+      "02" + fee +
+      "04" + certList + // 0x04: [cert]  — chứng chỉ thật, nằm trước
+      "1804" + "80" // 0x1804 (== 4): []  — bản sao vô hại, decoder giữ cái này
+    );
+  };
+
+  it("decoder gộp khoá 4 và giấu chứng chỉ (mô tả lỗ hổng, không có bản vá)", async () => {
+    const a = await acct();
+    const bodyHex = dupBody(addrHex(a.external[0]!.address));
+    const decoded = Decoder.decode(Buffer.from(bodyHex, "hex")).value as Map<number, unknown>;
+    // Dù byte thô có chứng chỉ, bản giải mã mà màn hình và hàm ký cùng đọc lại
+    // thấy danh sách chứng chỉ rỗng — đúng cái bẫy.
+    expect(Array.isArray(decoded.get(4))).toBe(true);
+    expect((decoded.get(4) as unknown[]).length).toBe(0);
+    // Byte thô vẫn chứa chứng chỉ: chuỗi credential hash có trong thân.
+    expect(bodyHex.includes("bb".repeat(28))).toBe(true);
+  });
+
+  it("hàm ký TỪ CHỐI (sign_foreign_duplicate_key) — trước bản vá thì ký", async () => {
+    const a = await acct();
+    const ownAddr = a.external[0]!.address;
+    const bodyHex = dupBody(addrHex(ownAddr));
+    const txHex = "84" + bodyHex + "a0" + "f5" + "f6";
+    // Ví giữ chính đầu vào, nên nếu chứng chỉ bị giấu thì hàm ký sẽ ra chữ ký
+    // thật cho khoá payment — tức giao dịch ĐƯỢC ký. Bản vá chặn ở bước quét
+    // khoá lặp, trước khi tới đó.
+    const view: WalletView = {
+      ownAddressesHex: a.external.map((d) => addrHex(d.address)),
+      heldWithScript: new Map(),
+      held: new Map([[`${OWN_TXID}#0`, { address: ownAddr, lovelace: BigInt(2_300_000), assets: new Map() }]]),
+    };
+    expect(() => signForeignTx(txHex, a, view, false)).toThrow(/sign_foreign_duplicate_key/);
   });
 });
