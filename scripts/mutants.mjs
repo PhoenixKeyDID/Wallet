@@ -33,8 +33,14 @@ const HISTORY = "src/lib/cardano/history.ts";
 const PRICE = "src/lib/cardano/price.ts";
 const SEND = "src/components/wallet/SendPanel.tsx";
 const STAKING = "src/components/wallet/StakingPanel.tsx";
+// The library read the withdraw door decides from.
+const STAKING_LIB = "src/lib/cardano/staking.ts";
 const GOV = "src/components/wallet/GovernancePanel.tsx";
 const TABS = "src/components/wallet/WalletTabs.tsx";
+// What the delegation waiting lines decide from: when "waiting" becomes "not
+// seen", and when a sent vote delegation can no longer land.
+const FEEDBACK = "src/components/wallet/delegationFeedback.ts";
+const GOV_LIB = "src/lib/cardano/governance.ts";
 const PROVIDER = "src/lib/cardano/provider.ts";
 const BLOCKFROST = "src/lib/cardano/blockfrost.ts";
 const TX_SUMMARY = "src/lib/cardano/txSummary.ts";
@@ -79,6 +85,21 @@ const TESTS = [
   "src/components/wallet/__tests__/LocalWalletPanel.context.test.tsx",
   "scripts/__tests__/checkPopupCss.test.ts",
   "scripts/__tests__/checkLocales.test.ts",
+  "src/components/wallet/__tests__/StakingPanel.withdraw.test.tsx",
+  "src/lib/cardano/__tests__/stakeAccountState.test.ts",
+  // The Delegate-while-loading refusal, and the in-flight vote delegation as
+  // both tabs read it across a tab switch.
+  "src/components/wallet/__tests__/StakingPanel.delegation.test.tsx",
+  "src/components/wallet/__tests__/StakingPanel.voteGate.test.tsx",
+  // The sent vote delegation found by its hash.
+  "src/components/wallet/__tests__/delegationFeedback.test.ts",
+  "src/lib/cardano/__tests__/txSeen.test.ts",
+  // The in-flight vote delegation kept across a lock and a reload, and the
+  // Governance tab's DRep read across a network switch.
+  "src/components/wallet/__tests__/voteDelegationStore.test.ts",
+  "src/components/wallet/__tests__/GovernancePanel.delegate.test.tsx",
+  // The vote-delegation read refusing a row without its DRep field.
+  "src/lib/cardano/indexer-errors.test.ts",
 ];
 
 /**
@@ -1165,6 +1186,161 @@ const MUTANTS = [
     from: 'if (json === null || typeof json !== "object" || Array.isArray(json)) {',
     to: "if (false) {",
   },
+  // ── The withdraw door: since Conway the node refuses a reward withdrawal from
+  // an account with no vote delegation, and a button that only appears with
+  // rewards in hand left new users looking for a feature that seemed missing ──
+  {
+    name: "the withdraw button hides again while there is nothing to take",
+    file: STAKING,
+    from: '  return (\n    <div className="space-y-1">',
+    to: '  if (!hasRewards) return null;\n  return (\n    <div className="space-y-1">',
+  },
+  {
+    name: "the DRep rule is not read, so withdraw is offered to an account the node refuses",
+    file: STAKING,
+    from: "  const needsDRep = hasRewards && state.delegatedDRep === null;",
+    to: "  const needsDRep = false;",
+  },
+  {
+    name: "an indexer row without delegated_drep reads as 'no DRep'",
+    file: STAKING_LIB,
+    from: "  if (r.delegated_drep === undefined) {",
+    to: "  if (false) {",
+  },
+  {
+    name: "the one-step fix delegates to No Confidence instead of Abstain",
+    file: STAKING,
+    from: '        target: { kind: "abstain" },',
+    to: '        target: { kind: "noConfidence" },',
+  },
+  {
+    name: "after Abstain is sent, nobody re-reads the account and withdraw never opens",
+    file: STAKING,
+    from: "    if (!voteInFlight || !rewardAddressBech32) return;",
+    to: "    if (true) return;",
+  },
+  {
+    name: "the Abstain confirm signs while a submit is uncertain",
+    file: STAKING,
+    from: '    if (!abstainReview) return;\n    // A third way to sign on this screen, so it carries the same refusal.\n    if (uncertainHash !== null) return toastError(t("uncertain_blocked"));',
+    to: "    if (!abstainReview) return;",
+  },
+  {
+    name: "the Abstain button ignores the uncertain-submit lock",
+    file: STAKING,
+    from: "          disabled={locked}\n          onClick={onAbstain}",
+    to: "          disabled={false}\n          onClick={onAbstain}",
+  },
+  {
+    name: "Delegate is pressable while the account is still loading (phantom 2 ADA registration)",
+    file: STAKING,
+    from: "disabled={busy || uncertainHash !== null || accountState === null}",
+    to: "disabled={busy || uncertainHash !== null || loadError}",
+  },
+  {
+    name: "the vote-delegation waiting line hides behind a failed account read",
+    file: STAKING,
+    from: '        {voteInFlight && voteWatch.kind === "pending" && (',
+    to: '        {voteInFlight && voteWatch.kind === "pending" && !loadError && (',
+  },
+  {
+    name: "a vote delegation never turns 'not seen' after ten minutes",
+    file: FEEDBACK,
+    from: '  if (age > DELEGATION_UNSEEN_MS) return { kind: "unseen" };\n',
+    to: "",
+  },
+  {
+    name: "the vote-delegation watch outlives the transaction's TTL by the pool margin",
+    file: FEEDBACK,
+    from: "export const VOTE_DELEGATION_WATCH_LIMIT_MS = VOTE_DELEGATION_TTL_SLOTS * 1000;",
+    to: "export const VOTE_DELEGATION_WATCH_LIMIT_MS = DELEGATION_WATCH_LIMIT_MS;",
+  },
+  {
+    name: "the Governance tab is not handed the shared in-flight vote delegation",
+    file: TABS,
+    from: "          {...moneyProps}\n          sentVoteDelegation={sentVoteDelegation}",
+    to: "          {...moneyProps}\n          sentVoteDelegation={undefined}",
+  },
+  {
+    name: "the Governance tab ignores the parent's record and keeps a flag of its own",
+    file: GOV,
+    from: "  const sentVote = sentVoteDelegation !== undefined ? sentVoteDelegation : ownSentVote;",
+    to: "  const sentVote = ownSentVote;",
+  },
+  // ── Round eight: "landed" read from the transaction itself, and an account
+  // read that does not outlive a network switch ──
+  {
+    name: "the sent vote-delegation transaction is never taken as found (X → X stays 'unseen')",
+    file: FEEDBACK,
+    from: "    .then((seen) => (alive && seen ? confirmOnChain(sent) : false))",
+    to: "    .then((seen) => (alive && false ? confirmOnChain(sent) : false))",
+  },
+  {
+    name: "a transaction the indexer does not have in a block reads as found",
+    file: HISTORY,
+    from: "  if (n === null) return false;",
+    to: "  if (n === null) return true;",
+  },
+  {
+    name: "the old network's account read survives a network switch (Delegate on the wrong chain)",
+    file: STAKING,
+    from: "      setAccountState(null);\n      setLoadError(false);",
+    to: "      setLoadError(false);",
+  },
+  // ── Round nine (MUT56R3-*): a hash hit must be confirmed by the account
+  // read, a late read must not cross a network switch, and the in-flight
+  // record must come back after a lock ──
+  {
+    name: "MUT56R3-SEEN: a hash found in a block clears the record without the account re-read",
+    file: FEEDBACK,
+    from: "    .then((seen) => (alive && seen ? confirmOnChain(sent) : false))",
+    to: "    .then((seen) => (alive && seen ? true /* MUT56R3-SEEN */ : false))",
+  },
+  {
+    name: "MUT56R3-NET: the post-signature account read lands on the network it was not read on",
+    file: STAKING,
+    from: "      if (networkRef.current !== readOn) return; // switched while reading: not this screen's answer\n",
+    to: "      /* MUT56R3-NET */\n",
+  },
+  {
+    name: "MUT56R3-LOAD: the stored in-flight vote delegation is not loaded on mount",
+    file: TABS,
+    from: "  const [voteSlot, setVoteSlot] = useState<VoteSlot>(() =>\n    voteSlotFrom(readSentVote(store, network, accountKey, Date.now())),\n  );",
+    to: "  const [voteSlot, setVoteSlot] = useState<VoteSlot>(() => ({ live: null, expired: null }) /* MUT56R3-LOAD */);",
+  },
+  // ── Round ten (MUT56R4-*): the account must show the TARGET sent; a read
+  // without the DRep field is a failure; a hash in capitals is still the
+  // same transaction; a reopened tab looks the hash up at once ──
+  {
+    name: "MUT56R4-TARGET: a found hash is confirmed by any vote delegation, not the one sent",
+    file: FEEDBACK,
+    from: "  if (sent.target !== undefined) return sameVoteTarget(onChain, sent.target);\n",
+    to: "  if (sent.target !== undefined) return true; /* MUT56R4-TARGET */\n",
+  },
+  {
+    name: "MUT56R4-ABSENT: a vote-delegation row without delegated_drep is padded to 'no DRep'",
+    file: GOV_LIB,
+    from:
+      "  if (row.delegated_drep === undefined) {\n" +
+      '    throw new Error("Indexer response has no delegated_drep field");\n' +
+      "  }\n",
+    to:
+      "  if (row.delegated_drep === undefined) {\n" +
+      '    return { found: true, status: row.status, delegatedDRep: null }; /* MUT56R4-ABSENT */\n' +
+      "  }\n",
+  },
+  {
+    name: "MUT56R4-CASE: the tx look-up compares the hash case-sensitively",
+    file: HISTORY,
+    from: "answered.toLowerCase() !== asked)",
+    to: "answered !== txHash /* MUT56R4-CASE */)",
+  },
+  {
+    name: "MUT56R4-FIRST: the Governance tab waits a full interval before its first hash look-up",
+    file: GOV,
+    from: "    // was closed is found as the tab opens.\n    lookUpNow();\n",
+    to: "    // was closed is found as the tab opens.\n    /* MUT56R4-FIRST */\n",
+  },
 ];
 
 /**
@@ -1181,7 +1357,26 @@ const MUTANTS = [
  * Pinning these would need a gate naming one function in one file, which then
  * goes red on any honest rename — the kind of watcher that gets deleted rather
  * than fixed.
+ *
+ *   - `StakingPanel.reviewWithdraw()`'s `delegatedDRep === null` refusal
+ *
+ * A second door the other way round: the screen never draws the withdraw
+ * button for such an account, and dropping THAT is caught above ("the DRep
+ * rule is not read"). With no button there is no way to reach the function
+ * from the screen, so no screen test can tell whether its own check is there.
  */
+
+/**
+ * `node scripts/mutants.mjs <text>` runs only the mutants whose name contains
+ * `<text>` (e.g. `MUT56R3-`), after the same baseline. A filter that matches
+ * nothing is an error, not an empty green run.
+ */
+const FILTER = process.argv[2];
+const SELECTED = FILTER ? MUTANTS.filter((m) => m.name.includes(FILTER)) : MUTANTS;
+if (SELECTED.length === 0) {
+  console.error(`No mutant name contains "${FILTER}".`);
+  process.exit(2);
+}
 
 const read = (rel) => readFileSync(join(REPO, rel), "utf8");
 const write = (rel, text) => writeFileSync(join(REPO, rel), text);
@@ -1191,7 +1386,7 @@ const runTests = () =>
 
 const editsOf = (m) => m.edits ?? [m];
 const originals = new Map();
-for (const m of MUTANTS) for (const e of editsOf(m)) if (!originals.has(e.file)) originals.set(e.file, read(e.file));
+for (const m of SELECTED) for (const e of editsOf(m)) if (!originals.has(e.file)) originals.set(e.file, read(e.file));
 const restoreAll = () => {
   for (const [rel, text] of originals) write(rel, text);
 };
@@ -1214,7 +1409,7 @@ try {
     process.exit(1);
   }
 
-  for (const m of MUTANTS) {
+  for (const m of SELECTED) {
     // Edits apply in order, each to the file as the previous ones left it.
     const next = new Map();
     let miss;
@@ -1244,7 +1439,7 @@ try {
 
 const bad = survived + unanchored;
 console.log(
-  `\n${MUTANTS.length - bad}/${MUTANTS.length} guards pinned` +
+  `\n${SELECTED.length - bad}/${SELECTED.length} guards pinned` +
     (survived ? ` · ${survived} removable with every test still green` : "") +
     (unanchored ? ` · ${unanchored} anchor(s) no longer match the source` : ""),
 );

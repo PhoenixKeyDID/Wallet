@@ -636,17 +636,19 @@ export async function listGovActions(network: PhoenixNetwork): Promise<GovAction
   });
 }
 
-export type VoteDelegationState = {
-  found: boolean;
-  status?: string;
-  /** the dRep id currently delegated to, or a special label, or null. */
-  delegatedDRep?: string | null;
-};
+export type VoteDelegationState =
+  | { found: false }
+  | {
+      found: true;
+      status: string;
+      /** the dRep id currently delegated to, or a special label, or null. */
+      delegatedDRep: string | null;
+    };
 
 type KoiosAccountInfoRow = {
   stake_address: string;
   status: string;
-  delegated_drep: string | null;
+  delegated_drep?: unknown;
 };
 
 /** Current vote-delegation for a reward (stake) address, via `/account_info`. */
@@ -659,7 +661,58 @@ export async function getVoteDelegationState(
   });
   const row = rows[0];
   if (!row) return { found: false };
+  // Absent is not the same as null (the rule `getStakeAccountState` keeps). A
+  // row without the field read as "no DRep" would show "None" for an account
+  // that has one and invite a second, paid vote delegation; it is an answer
+  // this wallet cannot read, so it fails like any other failed read.
+  if (row.delegated_drep === undefined) {
+    throw new Error("Indexer response has no delegated_drep field");
+  }
+  if (row.delegated_drep !== null && typeof row.delegated_drep !== "string") {
+    throw new Error("Indexer delegated_drep is neither a string nor null");
+  }
   return { found: true, status: row.status, delegatedDRep: row.delegated_drep };
+}
+
+/**
+ * The two pseudo-DReps as the account endpoint (`/account_info`
+ * `delegated_drep`) names them. A real DRep is named by its `drep1…` id.
+ */
+export const DREP_ALWAYS_ABSTAIN = "drep_always_abstain";
+export const DREP_ALWAYS_NO_CONFIDENCE = "drep_always_no_confidence";
+
+/**
+ * A delegation target in the form the account endpoint reports it back, so a
+ * sent choice can be compared with what the chain later shows.
+ */
+export function voteTargetId(target: DelegationTarget): string {
+  switch (target.kind) {
+    case "abstain":
+      return DREP_ALWAYS_ABSTAIN;
+    case "noConfidence":
+      return DREP_ALWAYS_NO_CONFIDENCE;
+    case "drep":
+      return target.drepId.trim();
+  }
+}
+
+/**
+ * Whether two vote-delegation answers name the same choice. A real DRep can be
+ * written two ways (CIP-105 and CIP-129 bech32, or bare hex), so ids that
+ * differ as text are compared by credential; an id that does not parse is
+ * only equal to itself.
+ */
+export function sameVoteTarget(a: string, b: string): boolean {
+  if (a === b) return true;
+  const special = (s: string) => s === DREP_ALWAYS_ABSTAIN || s === DREP_ALWAYS_NO_CONFIDENCE;
+  if (special(a) || special(b)) return false;
+  try {
+    const x = parseDRepId(a);
+    const y = parseDRepId(b);
+    return x.isScript === y.isScript && x.hash.equals(y.hash);
+  } catch {
+    return false;
+  }
 }
 
 /**
