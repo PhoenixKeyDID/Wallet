@@ -173,10 +173,24 @@ export async function getStakeAccountState(
   if (r.delegated_drep === undefined) {
     throw new Error("Indexer response has no delegated_drep field");
   }
+  // null means "no vote delegation"; a string is a DRep id or label. Anything
+  // else (a number, an object) is a shape the type did not promise — reading it
+  // as "has a DRep" would hide a malformed row and offer a doomed withdrawal.
+  if (r.delegated_drep !== null && typeof r.delegated_drep !== "string") {
+    throw new Error("Indexer delegated_drep is neither a string nor null");
+  }
+  // A missing rewards field must not pad to 0. The withdraw gate reads this
+  // value directly, so a padded 0 would show "no rewards to withdraw yet" as if
+  // the chain said so — hiding a balance the user could claim. Surface it, the
+  // same way the DRep field above does. Koios always reports "0" when there are
+  // none, so an absent field is a broken answer, not an empty wallet.
+  if (r.rewards_available == null) {
+    throw new Error("Indexer response has no rewards_available field");
+  }
   return {
     registered: r.status === "registered",
     delegatedPoolId: r.delegated_pool ?? null,
-    rewardsAvailable: BigInt(r.rewards_available ?? "0"),
+    rewardsAvailable: BigInt(r.rewards_available),
     delegatedDRep: r.delegated_drep,
   };
 }

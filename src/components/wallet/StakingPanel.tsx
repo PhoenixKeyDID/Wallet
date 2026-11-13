@@ -36,7 +36,9 @@ import { buildVoteDelegation } from "@/lib/cardano/governance";
 import {
   DELEGATION_WATCH_LIMIT_MS,
   delegationWatch,
+  voteDelegationPending,
   type SentDelegation,
+  type SentVoteDelegation,
 } from "@/components/wallet/delegationFeedback";
 
 /**
@@ -47,6 +49,14 @@ export type DelegationSentProps = {
   sentDelegation: SentDelegation | null;
   onDelegationSent: (sent: SentDelegation) => void;
   onDelegationSettled: () => void;
+  /**
+   * A vote (DRep) delegation just sent — from here, or from the Governance tab.
+   * Held by the parent, above the tab switch, so this panel offering "Choose
+   * Abstain" cannot forget that one is already in flight (which would charge a
+   * second fee) or overwrite a DRep choice the Governance tab just made.
+   */
+  sentVoteDelegation: SentVoteDelegation | null;
+  onVoteDelegationSent: (sent: SentVoteDelegation) => void;
 };
 
 /** How often the account is re-read while a delegation waits to be recorded. */
@@ -77,6 +87,8 @@ export function StakingPanel({
   sentDelegation,
   onDelegationSent,
   onDelegationSettled,
+  sentVoteDelegation,
+  onVoteDelegationSent,
 }: {
   port: WalletPort;
   network: PhoenixNetwork;
@@ -104,9 +116,6 @@ export function StakingPanel({
   const [poolReview, setPoolReview] = useState<PoolReview | null>(null);
   const [withdrawReview, setWithdrawReview] = useState<WithdrawReview | null>(null);
   const [abstainReview, setAbstainReview] = useState<AbstainReview | null>(null);
-  // When the one-step Abstain was sent. Until the chain shows a vote delegation
-  // the withdraw button stays locked and the account is re-read on a timer.
-  const [abstainSentAt, setAbstainSentAt] = useState<number | null>(null);
   const [checked, setChecked] = useState(false);
   const [busy, setBusy] = useState(false);
   // A sent delegation is kept until the chain shows it, so the screen says
@@ -199,12 +208,14 @@ export function StakingPanel({
     };
   }, [waiting, network, rewardAddressBech32]);
 
-  // Re-read the account after the Abstain was sent, until the chain shows a
-  // vote delegation or the transaction's validity window has surely closed.
+  // A vote delegation (Abstain here, or any DRep choice on the Governance tab)
+  // is in flight and the chain has not shown it yet. Held by the parent, so it
+  // survives this panel unmounting on a tab switch. While it holds, the Abstain
+  // offer is suppressed and the account is re-read on a timer, until the chain
+  // shows a vote delegation or the transaction's validity window has closed.
   const abstainWaiting =
-    abstainSentAt !== null &&
-    accountState?.delegatedDRep == null &&
-    now - abstainSentAt < DELEGATION_WATCH_LIMIT_MS;
+    voteDelegationPending(sentVoteDelegation, rewardAddressBech32, network, now) &&
+    accountState?.delegatedDRep == null;
   useEffect(() => {
     if (!abstainWaiting || !rewardAddressBech32) return;
     let cancelled = false;
@@ -388,7 +399,9 @@ export function StakingPanel({
       toastSuccess("withdraw_abstain_submitted", { hash: hash.slice(0, 12) });
       const sentAt = Date.now();
       setNow(sentAt);
-      setAbstainSentAt(sentAt);
+      if (rewardAddressBech32) {
+        onVoteDelegationSent({ account: rewardAddressBech32, network, sentAt });
+      }
       setAbstainReview(null);
       setChecked(false);
     } catch (err) {
@@ -733,7 +746,13 @@ export function StakingPanel({
                   ) : (
                     <button
                       type="button"
-                      disabled={busy || uncertainHash !== null}
+                      // Also disabled on a read failure: with `accountState`
+                      // null, `reviewDelegate` cannot tell a registered key
+                      // from an unregistered one, defaults to "needs
+                      // registration", and would attach a STAKE_KEY_REGISTRATION
+                      // cert the node rejects for an already-registered key,
+                      // killing the whole tx and showing a phantom 2 ADA deposit.
+                      disabled={busy || uncertainHash !== null || loadError}
                       onClick={() => reviewDelegate(pool)}
                       className="px-3 py-1.5 rounded-brand-sm border border-border-amber bg-amber-brand/10 hover:bg-amber-brand/20 text-xs text-amber-brand disabled:opacity-50"
                     >
@@ -799,18 +818,24 @@ function WithdrawDoor({
   if (needsDRep) {
     return (
       <div className="rounded-brand-sm border border-border-amber bg-amber-brand/10 p-3 text-sm space-y-2">
-        <p className="text-amber-brand">{t("withdraw_needs_drep")}</p>
         {abstainWaiting ? (
+          // A vote delegation is already in flight (this tab's Abstain, or a
+          // DRep chosen on the Governance tab). Say only that it is waiting —
+          // showing "this account has not made one yet" and offering Abstain
+          // again would invite a second, paid tx that replaces the choice made.
           <p className="text-xs text-amber-brand">{t("withdraw_abstain_waiting")}</p>
         ) : (
-          <button
-            type="button"
-            disabled={locked}
-            onClick={onAbstain}
-            className="w-full p-3 rounded-brand border border-border-amber bg-amber-brand/10 hover:bg-amber-brand/20 text-sm text-amber-brand disabled:opacity-50"
-          >
-            {busy ? t("building") : t("withdraw_abstain_button")}
-          </button>
+          <>
+            <p className="text-amber-brand">{t("withdraw_needs_drep")}</p>
+            <button
+              type="button"
+              disabled={locked}
+              onClick={onAbstain}
+              className="w-full p-3 rounded-brand border border-border-amber bg-amber-brand/10 hover:bg-amber-brand/20 text-sm text-amber-brand disabled:opacity-50"
+            >
+              {busy ? t("building") : t("withdraw_abstain_button")}
+            </button>
+          </>
         )}
       </div>
     );

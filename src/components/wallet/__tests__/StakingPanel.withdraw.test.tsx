@@ -13,9 +13,10 @@ import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, cleanup, fireEvent, screen, waitFor, act } from "@testing-library/react";
 import i18next, { type i18n as I18n } from "i18next";
 import { I18nextProvider, initReactI18next } from "react-i18next";
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import en from "../../../../locales/en/wallet.json";
 import type { WalletPort } from "@/lib/cardano";
+import type { SentVoteDelegation } from "../delegationFeedback";
 
 const ACCOUNT = "stake_test1uqtestaccount";
 const NETWORK = 0 as const;
@@ -103,21 +104,32 @@ function makePort() {
 
 const wrap = (ui: ReactNode) => <I18nextProvider i18n={i18n}>{ui}</I18nextProvider>;
 
-function renderPanel(port = makePort(), uncertainHash: string | null = null) {
-  render(
-    wrap(
-      <StakingPanel
-        port={port}
-        network={NETWORK}
-        changeAddress={CHANGE_HEX}
-        uncertainHash={uncertainHash}
-        onUncertain={() => {}}
-        sentDelegation={null}
-        onDelegationSent={() => {}}
-        onDelegationSettled={() => {}}
-      />,
-    ),
+/**
+ * Holds the vote-delegation "just sent" state the way `WalletTabs` does, above
+ * the panel. The Abstain flow sets it through `onVoteDelegationSent`, and it is
+ * what keeps the waiting line up — the state no longer lives inside the panel,
+ * so a harness that does not keep it would drop the line the moment it is sent.
+ */
+function Harness({ port, uncertainHash }: { port: WalletPort; uncertainHash: string | null }) {
+  const [sv, setSv] = useState<SentVoteDelegation | null>(null);
+  return (
+    <StakingPanel
+      port={port}
+      network={NETWORK}
+      changeAddress={CHANGE_HEX}
+      uncertainHash={uncertainHash}
+      onUncertain={() => {}}
+      sentDelegation={null}
+      onDelegationSent={() => {}}
+      onDelegationSettled={() => {}}
+      sentVoteDelegation={sv}
+      onVoteDelegationSent={setSv}
+    />
   );
+}
+
+function renderPanel(port = makePort(), uncertainHash: string | null = null) {
+  render(wrap(<Harness port={port} uncertainHash={uncertainHash} />));
   return port;
 }
 
@@ -206,24 +218,12 @@ describe("StakingPanel withdraw door: rewards, no vote delegation", () => {
   it("a lock that arrives while the Abstain review is open still stops the signature", async () => {
     m.getStakeAccountState.mockResolvedValue(account(REWARDS, null));
     const port = makePort();
-    const props = (uncertainHash: string | null) => (
-      <StakingPanel
-        port={port}
-        network={NETWORK}
-        changeAddress={CHANGE_HEX}
-        uncertainHash={uncertainHash}
-        onUncertain={() => {}}
-        sentDelegation={null}
-        onDelegationSent={() => {}}
-        onDelegationSettled={() => {}}
-      />
-    );
-    const view = render(wrap(props(null)));
+    const view = render(wrap(<Harness port={port} uncertainHash={null} />));
     fireEvent.click(await screen.findByRole("button", { name: en.withdraw_abstain_button }));
     await screen.findByText(en.withdraw_abstain_review_title);
     fireEvent.click(screen.getByRole("checkbox"));
     // Another tab's send turned uncertain while this review sat open.
-    view.rerender(wrap(props("deadbeef".repeat(8))));
+    view.rerender(wrap(<Harness port={port} uncertainHash={"deadbeef".repeat(8)} />));
     fireEvent.click(screen.getByRole("button", { name: en.withdraw_abstain_confirm }));
     await waitFor(() => expect(m.toastError).toHaveBeenCalledWith(en.uncertain_blocked));
     expect(port.signAndSubmit).not.toHaveBeenCalled();

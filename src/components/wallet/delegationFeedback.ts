@@ -40,6 +40,42 @@ export const DELEGATION_UNSEEN_MS = 10 * 60_000;
  */
 export const DELEGATION_WATCH_LIMIT_MS = 3 * 60 * 60_000;
 
+/**
+ * A vote (DRep) delegation this wallet just sent and the chain has not shown
+ * yet. Held above the tab switch, the same reason {@link SentDelegation} is:
+ * the Staking tab unmounts when another tab is opened, and the fact that an
+ * Abstain is already in flight must still be there on return. It is also set
+ * when a DRep choice is signed on the Governance tab, so the Staking tab does
+ * not then offer "Choose Abstain" and replace a choice already made. No
+ * `poolId`/target — the Staking tab only needs to know one is in flight, not
+ * which, and the chain is the authority on what it becomes.
+ */
+export type SentVoteDelegation = {
+  /** Reward address (bech32) that signed the vote-delegation certificate. */
+  account: string;
+  network: PhoenixNetwork;
+  /** `Date.now()` at submit. */
+  sentAt: number;
+};
+
+/**
+ * Whether a just-sent vote delegation is still inside the window where the
+ * chain may not have recorded it. While true the Staking tab must not offer
+ * Abstain again, and must not claim the account has no DRep. Reuses
+ * {@link DELEGATION_WATCH_LIMIT_MS}: once it elapses, or the chain shows a
+ * DRep, behaviour returns to reading the chain directly. Tied to the account
+ * and network it was sent from, so it never suppresses the offer under another.
+ */
+export function voteDelegationPending(
+  sent: SentVoteDelegation | null,
+  account: string | null,
+  network: PhoenixNetwork,
+  now: number,
+): boolean {
+  if (sent === null || sent.account !== account || sent.network !== network) return false;
+  return now - sent.sentAt < DELEGATION_WATCH_LIMIT_MS;
+}
+
 export type DelegationWatch =
   | { kind: "none" }
   | { kind: "settled" }

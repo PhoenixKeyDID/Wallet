@@ -6,7 +6,7 @@ import type { PhoenixNetwork, WalletPort } from "@/lib/cardano";
 import { SendPanel } from "./SendPanel";
 import { ReceivePanel } from "./ReceivePanel";
 import { StakingPanel } from "./StakingPanel";
-import type { SentDelegation } from "./delegationFeedback";
+import type { SentDelegation, SentVoteDelegation } from "./delegationFeedback";
 import { GovernancePanel } from "./GovernancePanel";
 import { ConnectPanel } from "./ConnectPanel";
 import { HistoryPanel } from "./HistoryPanel";
@@ -221,6 +221,16 @@ export function WalletTabs({
   const [sentDelegation, setSentDelegation] = useState<SentDelegation | null>(null);
   const clearSentDelegation = useCallback(() => setSentDelegation(null), []);
 
+  /**
+   * A vote (DRep) delegation just sent and not yet on chain. Here, not in a
+   * panel, because the Staking and Governance tabs are each mounted only while
+   * active: an Abstain sent on Staking, or a DRep chosen on Governance, must
+   * still be known to the Staking tab after a tab switch — otherwise it brings
+   * back "this account has no DRep", offers Abstain again, and signs a second
+   * vote delegation that costs a fee and overwrites the choice already made.
+   */
+  const [sentVoteDelegation, setSentVoteDelegation] = useState<SentVoteDelegation | null>(null);
+
   const panelProps = { port, network, changeAddress };
   const moneyProps = { ...panelProps, uncertainHash, onUncertain: rememberUncertain };
 
@@ -291,9 +301,13 @@ export function WalletTabs({
           sentDelegation={sentDelegation}
           onDelegationSent={setSentDelegation}
           onDelegationSettled={clearSentDelegation}
+          sentVoteDelegation={sentVoteDelegation}
+          onVoteDelegationSent={setSentVoteDelegation}
         />
       )}
-      {activeTab === "governance" && <GovernancePanel {...moneyProps} />}
+      {activeTab === "governance" && (
+        <GovernancePanel {...moneyProps} onVoteDelegationSent={setSentVoteDelegation} />
+      )}
       {activeTab === "connect" && <ConnectPanel network={network} changeAddress={changeAddress} />}
     </div>
   );

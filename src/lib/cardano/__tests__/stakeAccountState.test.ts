@@ -50,6 +50,34 @@ describe("getStakeAccountState: delegatedDRep", () => {
     await expect(getStakeAccountState(0, ADDR)).rejects.toThrow(/delegated_drep/);
   });
 
+  it("throws on a non-string, non-null delegated_drep instead of treating it as a DRep", async () => {
+    // A number or object the type did not promise must not pass as "has a DRep":
+    // that would offer a withdrawal the node rejects.
+    koios.mockResolvedValue([row({ delegated_drep: 42 })]);
+    await expect(getStakeAccountState(0, ADDR)).rejects.toThrow(/delegated_drep/);
+    koios.mockResolvedValue([row({ delegated_drep: { id: "drep1xyz" } })]);
+    await expect(getStakeAccountState(0, ADDR)).rejects.toThrow(/delegated_drep/);
+  });
+});
+
+describe("getStakeAccountState: rewards_available", () => {
+  it("throws when the field is missing, instead of padding it to 0", async () => {
+    // A padded 0 shows "no rewards to withdraw yet" as if the chain said so,
+    // hiding a balance the user could claim.
+    koios.mockResolvedValue([row({ rewards_available: undefined, delegated_drep: null })]);
+    await expect(getStakeAccountState(0, ADDR)).rejects.toThrow(/rewards_available/);
+  });
+
+  it("throws when the field is null, instead of padding it to 0", async () => {
+    koios.mockResolvedValue([row({ rewards_available: null, delegated_drep: null })]);
+    await expect(getStakeAccountState(0, ADDR)).rejects.toThrow(/rewards_available/);
+  });
+
+  it("carries a present balance through, including the honest zero", async () => {
+    koios.mockResolvedValue([row({ rewards_available: "0", delegated_drep: null })]);
+    expect((await getStakeAccountState(0, ADDR)).rewardsAvailable).toBe(BigInt(0));
+  });
+
   it("an unseen account is not registered and has no DRep", async () => {
     koios.mockResolvedValue([]);
     expect(await getStakeAccountState(0, ADDR)).toEqual({

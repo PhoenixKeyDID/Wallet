@@ -63,6 +63,7 @@ import {
   infoAction,
   treasuryWithdrawalAction,
 } from "@/lib/cardano/governance";
+import type { SentVoteDelegation } from "@/components/wallet/delegationFeedback";
 
 type Section = "delegate" | "actions" | "become" | "submit";
 /**
@@ -118,10 +119,18 @@ export function GovernancePanel({
   changeAddress,
   uncertainHash,
   onUncertain,
+  onVoteDelegationSent,
 }: {
   port: WalletPort;
   network: PhoenixNetwork;
   changeAddress: string;
+  /**
+   * Called when a vote delegation (any DRep, or Abstain / No-Confidence) is
+   * signed here, so the Staking tab knows one is in flight and does not then
+   * offer "Choose Abstain" and overwrite it. Optional: the panel also works
+   * standalone, where no sibling tab needs to be told.
+   */
+  onVoteDelegationSent?: (sent: SentVoteDelegation) => void;
 } & UncertainLock) {
   const { t } = useTranslation("wallet");
   const [section, setSection] = useState<Section>("delegate");
@@ -328,6 +337,7 @@ export function GovernancePanel({
           onReview={review}
           loadCtx={loadCtx}
           feeRow={feeRow}
+          onVoteDelegationSent={onVoteDelegationSent}
         />
       )}
       {section === "actions" && (
@@ -386,7 +396,12 @@ function DelegateSection({
   onReview,
   loadCtx,
   feeRow,
-}: SectionProps & { network: PhoenixNetwork; rewardBech32: string }) {
+  onVoteDelegationSent,
+}: SectionProps & {
+  network: PhoenixNetwork;
+  rewardBech32: string;
+  onVoteDelegationSent?: (sent: SentVoteDelegation) => void;
+}) {
   const { t } = useTranslation("wallet");
   const [query, setQuery] = useState("");
   const [dreps, setDreps] = useState<DRepSummary[]>([]);
@@ -454,6 +469,11 @@ function DelegateSection({
         onDone: () => {
           setJustDelegated(true);
           reloadCurrent();
+          // Tell the parent a vote delegation is in flight, so the Staking tab
+          // stops offering Abstain — which would overwrite the choice just made.
+          if (rewardBech32) {
+            onVoteDelegationSent?.({ account: rewardBech32, network, sentAt: Date.now() });
+          }
         },
       };
     });

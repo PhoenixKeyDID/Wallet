@@ -140,6 +140,8 @@ function renderPanel(props: {
         sentDelegation={props.sentDelegation}
         onDelegationSent={props.onDelegationSent ?? (() => {})}
         onDelegationSettled={props.onDelegationSettled ?? (() => {})}
+        sentVoteDelegation={null}
+        onVoteDelegationSent={() => {}}
       />,
     ),
   );
