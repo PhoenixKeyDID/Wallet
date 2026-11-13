@@ -433,6 +433,27 @@ describe("submitTx is described, then sent — or refused with TxSendError.Refus
     expect((await view.findByRole("alert")).textContent).toContain(id);
   });
 
+  it("the same bytes sent again after an unknown result: a 4xx is not a rejection, and the notice stays", async () => {
+    mocks.fetchUtxos.mockResolvedValue(ourInputs());
+    // The first send lands but the answer is lost; the node then refuses the
+    // copy because its inputs are already spent.
+    mocks.submitTx
+      .mockRejectedValueOnce(new SubmitRejectedError(503, "upstream timeout", "Koios /submittx"))
+      .mockRejectedValueOnce(new SubmitRejectedError(400, "BadInputsUTxO", "Koios /submittx"));
+    const id = txIdOf(SIGNED_TX);
+    const unknownInfo = en.cip30_submit_unknown_site.replace("{{hash}}", id);
+    const { port, view } = await unlocked();
+    for (const rid of ["r1", "r2"]) {
+      act(() => port.deliver({ type: "request", id: rid, origin: ORIGIN, method: "submitTx", params: [SIGNED_TX] }));
+      const send = await view.findByText(en.cip30_submit_cta);
+      await waitFor(() => expect((send as HTMLButtonElement).disabled).toBe(false));
+      fireEvent.click(send);
+      await waitFor(() => expect(port.sent.find((m) => m.id === rid)).toBeDefined());
+      expect(port.sent.find((m) => m.id === rid)!.result).toMatchObject({ ok: false, error: { code: 2, info: unknownInfo } });
+    }
+    expect((await view.findByRole("alert")).textContent).toBe(en.cip30_submit_unknown.replace("{{hash}}", id));
+  });
+
   it("the idle lock waits while a send is out, so the site is not told 'refused' for bytes that may have landed", async () => {
     mocks.fetchUtxos.mockResolvedValue(ourInputs());
     let settle!: (hash: string) => void;

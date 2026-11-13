@@ -435,7 +435,7 @@
   "cip30_submit_intro": "Trang web nhờ ví gửi một giao dịch đã được ký sẵn. Ở đây không ký thêm gì — hãy đọc giao dịch làm gì trước khi gửi.",
   "cip30_submit_cta": "Gửi",
   "cip30_submitting": "Đang gửi lên mạng… đừng đóng cửa sổ",
-  "cip30_submit_unknown": "Đã gửi lên mạng nhưng không nhận được trả lời. Giao dịch {{hash}} có thể đã lên chuỗi. Tra mã này trên trình khám phá trước khi gửi lại — gửi lại có thể trả tiền hai lần.",
+  "cip30_submit_unknown": "Lần gửi trước: chưa rõ giao dịch đã tới mạng hay chưa. Giao dịch {{hash}} có thể đã lên chuỗi. Tra mã này trên trang tra cứu giao dịch (explorer, vd Cardanoscan) trước khi gửi lại — gửi lại có thể trả tiền hai lần.",
   "cip30_submit_unknown_site": "Chưa rõ kết quả gửi: giao dịch {{hash}} có thể đã lên chuỗi. Tra mã này trước khi dựng lại giao dịch.",
   "cip30_address_count": "Số địa chỉ trong tài khoản này: {{n}}",
   "cip30_output_datum": "Đầu ra này còn mang dữ liệu cho hợp đồng (datum).",

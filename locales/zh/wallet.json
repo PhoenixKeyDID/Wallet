@@ -435,7 +435,7 @@
   "cip30_submit_intro": "网站请钱包发送一笔已经签好的交易。这里不会再签任何东西——发送前请先看清这笔交易做什么。",
   "cip30_submit_cta": "发送",
   "cip30_submitting": "正在发送到网络… 请不要关闭此窗口",
-  "cip30_submit_unknown": "已发送到网络，但没有收到回复。交易 {{hash}} 可能已经上链。再次发送前请先在区块浏览器上查询——再次发送可能会付两次款。",
+  "cip30_submit_unknown": "上次发送：不确定是否已到达网络。交易 {{hash}} 可能已经上链。再次发送前请先在区块浏览器（如 Cardanoscan）上查询——再次发送可能会付两次款。",
   "cip30_submit_unknown_site": "发送结果未知：交易 {{hash}} 可能已经上链。重新构建前请先查询。",
   "cip30_address_count": "此账户中的地址数：{{n}}",
   "cip30_output_datum": "此输出还附带合约数据（datum）。",

@@ -435,7 +435,7 @@
   "cip30_submit_intro": "The site is asking this wallet to send a transaction that is already signed. Nothing new is signed here — read what it does before you send it.",
   "cip30_submit_cta": "Send",
   "cip30_submitting": "Sending to the network… keep this window open",
-  "cip30_submit_unknown": "Sent to the network, but no answer came back. Transaction {{hash}} may already be on chain. Look it up on an explorer before sending again — sending again can pay twice.",
+  "cip30_submit_unknown": "Last send: not sure it reached the network. Transaction {{hash}} may already be on chain. Look it up on an explorer (e.g. Cardanoscan) before sending again — sending again can pay twice.",
   "cip30_submit_unknown_site": "Submission result unknown: transaction {{hash}} may already be on chain. Look it up before building it again.",
   "cip30_address_count": "Addresses in this account: {{n}}",
   "cip30_output_datum": "This output also carries data for a contract (a datum).",

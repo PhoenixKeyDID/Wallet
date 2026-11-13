@@ -256,6 +256,12 @@ export function Approve() {
    * request most likely to follow is the same site building the payment again.
    */
   const [sendUnknown, setSendUnknown] = useState<string | null>(null);
+  /**
+   * Ids of every send in this window that ended "result unknown". The same
+   * bytes sent again come back 4xx `BadInputsUTxO` when the first send landed,
+   * so a 4xx for one of these ids is not a rejection.
+   */
+  const unknownIds = useRef<Set<string>>(new Set());
   const [err, setErr] = useState<string | null>(null);
   const [account, setAccount] = useState<Account | null>(null);
   const [port, setPort] = useState<Port | null>(null);
@@ -624,25 +630,33 @@ export function Approve() {
       return;
     }
     const req = phase.req;
-    setBusy(true);
-    setSendUnknown(null);
+    let id = "";
     try {
-      answer({ ok: true, value: await submitTx(account.network, cbor) }, req);
+      id = txIdOf(cbor);
+    } catch {
+      // Bytes with no readable body: a notice still stands without an id.
+    }
+    // The same bytes again after an unknown result: a 4xx most likely means
+    // the first send landed, so it must not read as "nothing went out".
+    const resend = id !== "" && unknownIds.current.has(id);
+    setBusy(true);
+    try {
+      const hash = await submitTx(account.network, cbor);
+      unknownIds.current.delete(id);
+      // A send that went through was made with the notice on screen.
+      setSendUnknown(null);
+      answer({ ok: true, value: hash }, req);
     } catch (e) {
-      if (isDefiniteRejection(e)) {
+      if (isDefiniteRejection(e) && !resend) {
         // The node read it and said no: nothing is on chain, and its reason is
         // what the site's developer can act on.
         answer({ ok: false, error: sendFailed(e.message) }, req);
       } else {
-        // No answer, a 5xx, a dropped connection: the bytes may have arrived.
-        // "Failed" here is what gets the same payment sent twice, so the site
-        // and the screen both get the id to look up instead (`submitError.ts`).
-        let id = "";
-        try {
-          id = txIdOf(cbor);
-        } catch {
-          // Bytes with no readable body: the notice still stands without an id.
-        }
+        // No answer, a 5xx, a dropped connection — or a 4xx for bytes whose
+        // earlier send ended that way: the bytes may be on chain. "Failed"
+        // here is what gets the same payment sent twice, so the site and the
+        // screen both get the id to look up instead (`submitError.ts`).
+        if (id !== "") unknownIds.current.add(id);
         answer({ ok: false, error: sendFailed(t("cip30_submit_unknown_site", { hash: id || "?" })) }, req);
         setSendUnknown(id);
       }
