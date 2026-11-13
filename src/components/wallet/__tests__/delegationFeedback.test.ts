@@ -1,9 +1,20 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi as vitest } from "vitest";
 import {
   DELEGATION_UNSEEN_MS,
+  DELEGATION_WATCH_LIMIT_MS,
+  VOTE_DELEGATION_TTL_SLOTS,
+  VOTE_DELEGATION_WATCH_LIMIT_MS,
+  clockTime,
   delegationWatch,
+  lookUpVoteTx,
   nextAccountIndex,
+  voteDelegationConfirmed,
+  voteDelegationLanded,
+  voteDelegationExpiresAt,
+  voteDelegationPending,
+  voteDelegationWatch,
   type SentDelegation,
+  type SentVoteDelegation,
 } from "../delegationFeedback";
 import en from "../../../../locales/en/wallet.json";
 import vi from "../../../../locales/vi/wallet.json";
@@ -46,6 +57,33 @@ describe("delegationWatch", () => {
   });
 });
 
+describe("voteDelegationWatch", () => {
+  const vote: SentVoteDelegation = { account: ACCOUNT, network: 2, sentAt: T0, txHash: "aa".repeat(32) };
+
+  it("is none when nothing was sent, or under another account or network", () => {
+    expect(voteDelegationWatch(null, ACCOUNT, 2, T0)).toEqual({ kind: "none" });
+    expect(voteDelegationWatch(vote, OTHER, 2, T0)).toEqual({ kind: "none" });
+    expect(voteDelegationWatch(vote, null, 2, T0)).toEqual({ kind: "none" });
+    expect(voteDelegationWatch(vote, ACCOUNT, 0, T0)).toEqual({ kind: "none" });
+  });
+
+  it("is pending up to the unseen limit, then unseen", () => {
+    expect(voteDelegationWatch(vote, ACCOUNT, 2, T0 + DELEGATION_UNSEEN_MS)).toEqual({ kind: "pending" });
+    expect(voteDelegationWatch(vote, ACCOUNT, 2, T0 + DELEGATION_UNSEEN_MS + 1)).toEqual({ kind: "unseen" });
+  });
+
+  it("lets go when the transaction's validity window closes, not an hour later", () => {
+    // `ttl = tip + VOTE_DELEGATION_TTL_SLOTS`, one slot per second.
+    expect(VOTE_DELEGATION_WATCH_LIMIT_MS).toBe(VOTE_DELEGATION_TTL_SLOTS * 1000);
+    expect(VOTE_DELEGATION_TTL_SLOTS).toBe(7200);
+    expect(VOTE_DELEGATION_WATCH_LIMIT_MS).toBeLessThan(DELEGATION_WATCH_LIMIT_MS);
+    expect(voteDelegationWatch(vote, ACCOUNT, 2, T0 + VOTE_DELEGATION_WATCH_LIMIT_MS - 1)).toEqual({ kind: "unseen" });
+    expect(voteDelegationWatch(vote, ACCOUNT, 2, T0 + VOTE_DELEGATION_WATCH_LIMIT_MS)).toEqual({ kind: "none" });
+    expect(voteDelegationPending(vote, ACCOUNT, 2, T0 + VOTE_DELEGATION_WATCH_LIMIT_MS)).toBe(false);
+    expect(voteDelegationPending(vote, ACCOUNT, 2, T0 + DELEGATION_UNSEEN_MS + 1)).toBe(true);
+  });
+});
+
 describe("nextAccountIndex", () => {
   it("opens the form on the account after the one in use", () => {
     expect(nextAccountIndex(0)).toBe(1);
@@ -76,10 +114,167 @@ describe("wording", () => {
     }
   });
 
+  it("vote delegation has a pending line and an unseen line that name no choice", () => {
+    for (const [lng, l] of Object.entries(locales)) {
+      expect(l.vote_delegation_pending, lng).toBeTruthy();
+      expect(l.vote_delegation_unseen, lng).toBeTruthy();
+      expect(l.vote_delegation_unseen, lng).not.toBe(l.vote_delegation_pending);
+      // The same line follows an Abstain, a DRep and No Confidence alike.
+      expect(l.vote_delegation_pending, lng).not.toContain(l.gov_abstain);
+      expect(l.vote_delegation_unseen, lng).not.toContain(l.gov_abstain);
+    }
+  });
+
+  it("the vote-delegation lines carry the clock time they name", () => {
+    for (const [lng, l] of Object.entries(locales)) {
+      expect(l.vote_delegation_unseen, lng).toContain("{{time}}");
+      expect(l.vote_delegation_expired, lng).toContain("{{time}}");
+      expect(l.gov_delegate_inflight_warn, lng).toContain("{{time}}");
+      // The plain waiting line promises nothing about the Withdraw button.
+      expect(l.vote_delegation_pending, lng).toContain(l.withdraw_rewards);
+      expect(l.vote_delegation_pending_plain, lng).not.toContain(l.withdraw_rewards);
+    }
+  });
+
+  it("user-facing text writes DRep, never dRep", () => {
+    for (const [lng, l] of Object.entries(locales)) {
+      for (const [k, v] of Object.entries(l)) expect(v, `${lng}.${k}`).not.toContain("dRep");
+    }
+  });
+
   it("the switch-account help no longer opens by denying a fault", () => {
     expect(en.local_account_switch_help).not.toMatch(/fault/i);
     expect(vi.local_account_switch_help).not.toMatch(/trục trặc/);
     expect(ja.local_account_switch_help).not.toMatch(/異常/);
     expect(zh.local_account_switch_help).not.toMatch(/故障/);
+  });
+});
+
+describe("lookUpVoteTx — the transaction itself, found in a block", () => {
+  const TX = "ab".repeat(32);
+  const vote: SentVoteDelegation = { account: ACCOUNT, network: 2, sentAt: T0, txHash: TX };
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+
+  const onChain = async () => true;
+
+  it("reports the hash once the look-up says it is in a block and the re-read shows a vote delegation", async () => {
+    const lookUp = vitest.fn(async () => true);
+    const confirm = vitest.fn(async () => true);
+    const onLanded = vitest.fn();
+    lookUpVoteTx(vote, lookUp, confirm, onLanded);
+    await flush();
+    expect(lookUp).toHaveBeenCalledWith(2, TX);
+    expect(confirm).toHaveBeenCalledWith(vote);
+    expect(onLanded).toHaveBeenCalledWith(TX);
+  });
+
+  it("does nothing on 'not yet', on a failed look-up, or after release", async () => {
+    const onLanded = vitest.fn();
+    lookUpVoteTx(vote, async () => false, onChain, onLanded);
+    lookUpVoteTx(vote, async () => Promise.reject(new Error("koios down")), onChain, onLanded);
+    const release = lookUpVoteTx(vote, async () => true, onChain, onLanded);
+    release();
+    lookUpVoteTx(null, async () => true, onChain, onLanded);
+    await flush();
+    expect(onLanded).not.toHaveBeenCalled();
+  });
+
+  it("in a block but the account re-read still shows none, or fails: keeps waiting", async () => {
+    const onLanded = vitest.fn();
+    lookUpVoteTx(vote, async () => true, async () => false, onLanded);
+    lookUpVoteTx(vote, async () => true, async () => Promise.reject(new Error("koios down")), onLanded);
+    await flush();
+    expect(onLanded).not.toHaveBeenCalled();
+  });
+
+  it("does not re-read the account when the transaction is not in a block", async () => {
+    const confirm = vitest.fn(async () => true);
+    lookUpVoteTx(vote, async () => false, confirm, vitest.fn());
+    await flush();
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it("the DRep-change signal stays secondary: equal or unread says nothing", () => {
+    expect(voteDelegationLanded({ ...vote, drepBefore: "drep1x" }, "drep1x")).toBe(false);
+    expect(voteDelegationLanded({ ...vote }, "drep1x")).toBe(false);
+    expect(voteDelegationLanded({ ...vote, drepBefore: null }, "drep1x")).toBe(true);
+  });
+});
+
+/**
+ * Round 4: the chain must show the TARGET that was sent, not just any vote
+ * delegation. `/tx_status` and `/account_info` can be answered by Koios
+ * instances that lag each other, so right after the transaction is seen the
+ * account can still read the DRep held before — non-null, and wrong.
+ */
+describe("voteDelegationConfirmed — the sent target, not any vote delegation", () => {
+  const OLD = "drep1old";
+  const NEW = "drep1new";
+  const base: SentVoteDelegation = { account: ACCOUNT, network: 2, sentAt: T0, txHash: "ab".repeat(32) };
+
+  it("X → Y: the old DRep X does not confirm; Y does", () => {
+    const sent = { ...base, drepBefore: OLD, target: NEW };
+    expect(voteDelegationConfirmed(sent, OLD)).toBe(false);
+    expect(voteDelegationConfirmed(sent, NEW)).toBe(true);
+    expect(voteDelegationConfirmed(sent, null)).toBe(false);
+    expect(voteDelegationConfirmed(sent, undefined)).toBe(false);
+  });
+
+  it("X → X: the target read back confirms (the hash look-up said it is in a block)", () => {
+    expect(voteDelegationConfirmed({ ...base, drepBefore: OLD, target: OLD }, OLD)).toBe(true);
+  });
+
+  it("Abstain: only drep_always_abstain confirms, not No Confidence or a DRep", () => {
+    const sent = { ...base, drepBefore: null, target: "drep_always_abstain" };
+    expect(voteDelegationConfirmed(sent, "drep_always_abstain")).toBe(true);
+    expect(voteDelegationConfirmed(sent, "drep_always_no_confidence")).toBe(false);
+    expect(voteDelegationConfirmed(sent, OLD)).toBe(false);
+  });
+
+  it("one DRep written as hex in two cases is the same DRep", () => {
+    const hex = "ab".repeat(28);
+    expect(voteDelegationConfirmed({ ...base, target: hex }, hex.toUpperCase())).toBe(true);
+  });
+
+  it("a record from before `target` existed: differs from the DRep before, or never", () => {
+    expect(voteDelegationConfirmed({ ...base, drepBefore: OLD }, OLD)).toBe(false);
+    expect(voteDelegationConfirmed({ ...base, drepBefore: OLD }, NEW)).toBe(true);
+    expect(voteDelegationConfirmed({ ...base, drepBefore: null }, NEW)).toBe(true);
+    // DRep before never read: no read can tell old from new; the record waits
+    // out its watch limit instead of ending on a stale answer.
+    expect(voteDelegationConfirmed({ ...base }, NEW)).toBe(false);
+  });
+
+  it("the DRep-change signal on the Governance tab needs the target, and a change", () => {
+    expect(voteDelegationLanded({ ...base, drepBefore: OLD, target: NEW }, NEW)).toBe(true);
+    expect(voteDelegationLanded({ ...base, drepBefore: OLD, target: NEW }, "drep1third")).toBe(false);
+    expect(voteDelegationLanded({ ...base, drepBefore: OLD, target: OLD }, OLD)).toBe(false);
+    expect(voteDelegationLanded({ ...base, target: NEW }, NEW)).toBe(false);
+    expect(voteDelegationLanded({ ...base, drepBefore: null, target: NEW }, NEW)).toBe(true);
+  });
+
+  it("lookUpVoteTx tells the tab once the look-up has answered, whatever the answer", async () => {
+    const flush = () => new Promise((r) => setTimeout(r, 0));
+    const settled = vitest.fn();
+    lookUpVoteTx(base, async () => false, async () => true, vitest.fn(), settled);
+    lookUpVoteTx(base, async () => Promise.reject(new Error("down")), async () => true, vitest.fn(), settled);
+    const landed = vitest.fn();
+    lookUpVoteTx(base, async () => true, async () => true, landed, settled);
+    lookUpVoteTx(base, async () => true, async () => true, vitest.fn(), settled)();
+    await flush();
+    expect(settled).toHaveBeenCalledTimes(3);
+    expect(landed).toHaveBeenCalledWith(base.txHash);
+  });
+});
+
+describe("clock time of a vote delegation", () => {
+  it("formats local HH:MM, zero-padded", () => {
+    expect(clockTime(new Date(2026, 10, 13, 7, 5).getTime())).toBe("07:05");
+    expect(clockTime(new Date(2026, 10, 13, 23, 59).getTime())).toBe("23:59");
+  });
+
+  it("expires at sentAt plus the watch limit", () => {
+    const sent: SentVoteDelegation = { account: ACCOUNT, network: 0, sentAt: T0, txHash: "ab".repeat(32) };
+    expect(voteDelegationExpiresAt(sent)).toBe(T0 + VOTE_DELEGATION_WATCH_LIMIT_MS);
   });
 });

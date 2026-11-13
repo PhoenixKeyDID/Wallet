@@ -488,6 +488,38 @@ export async function fetchTxDetails(
 }
 
 /**
+ * Whether the chain already holds this transaction in a block.
+ *
+ * `true`: in a block. `false`: the indexer answered and does not have it in a
+ * block (yet). Throws on any other answer — a failed read is "not known", and
+ * the caller must not turn it into either of the two.
+ *
+ * Asks `/tx_status`, not `/tx_info`: one row per hash, and a hash the indexer
+ * does not know still gets its row with `num_confirmations: null`, so "not
+ * there" is an answer rather than a short list. Measured on preprod
+ * 2026-11-13: an unknown hash answers `[{tx_hash, num_confirmations: null}]`,
+ * a transaction in the tip block answers `num_confirmations: 0`.
+ */
+export async function fetchTxSeen(network: PhoenixNetwork, txHash: string): Promise<boolean> {
+  // Hex is case-free: a hash held in capitals (as some CIP-30 wallets return
+  // it) is the same transaction as the indexer's lower-case answer.
+  const asked = txHash.toLowerCase();
+  const rows = await koios<Array<{ tx_hash?: unknown; num_confirmations?: unknown }>>(
+    network,
+    "/tx_status",
+    { _tx_hashes: [asked] },
+  );
+  const answered = rows?.[0]?.tx_hash;
+  if (!Array.isArray(rows) || rows.length !== 1 || typeof answered !== "string" || answered.toLowerCase() !== asked) {
+    bad("the indexer did not answer for the transaction it was asked about");
+  }
+  const n = rows[0]!.num_confirmations;
+  if (n === null) return false;
+  if (typeof n === "number" && Number.isInteger(n) && n >= 0) return true;
+  bad("the indexer gave a confirmation count that is not a count");
+}
+
+/**
  * A page of history, plus the chain height it was read against.
  *
  * The height travels with the entries because a confirmation count is not a
