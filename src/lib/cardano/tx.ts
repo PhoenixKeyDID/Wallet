@@ -17,6 +17,7 @@ import BigNumber from "bignumber.js";
 import { CborTag, Decoder } from "@stricahq/cbors";
 import { Transaction, utils as tyUtils, types as tyTypes } from "@stricahq/typhonjs";
 import { assertSameNetwork, type Cip30Api } from "./cip30";
+import { walletOwnsOutput, walletOwnsRefScriptOutput } from "./ownUtxo";
 
 type ProtocolParams = tyTypes.ProtocolParams;
 type Input = tyTypes.Input;
@@ -69,18 +70,37 @@ function decodeValue(value: unknown): { ada: BigNumber; tokens: Token[] } {
  * Decode a CIP-30 `getUtxos()` array (hex TransactionUnspentOutput) into typhon
  * `Input`s. Handles both legacy-array and Babbage-map output forms.
  *
- * UTxOs that carry an inline datum (Babbage output key 2) or a reference script
- * (key 3) are SKIPPED: they are special-purpose (a deployed reference script, a
- * script-locked output) and casually spending them in a plain payment would
- * destroy the deployed script or drop the datum. A normal payment wallet's
- * spendable UTxOs have neither, so this only filters what should never be spent
- * here — never silently swallows ordinary funds.
+ * Which UTxOs are kept is `walletOwnsOutput` (`ownUtxo.ts`), the rule the
+ * indexer paths and the approval screen share: a reference script (Babbage key
+ * 3) is skipped — spending it destroys code others may read by reference; a
+ * datum (Babbage key 2, or the legacy third element, a datum hash) is kept when
+ * the payment credential is a key — the ledger ignores the datum on a
+ * key-locked input, and the LAMP drip-pot pays to key addresses under an inline
+ * datum — and skipped when it is a script, which this wallet cannot witness.
  *
  * Duplicates are dropped by `txId#index`: a UTxO listed twice would be spent
  * twice in the same transaction, which the ledger rejects outright — better to
  * de-duplicate here than to hand the user an unexplainable submit failure.
  */
 export function decodeUtxosToInputs(utxosHex: string[]): Input[] {
+  return decodeOwnUtxosWhere(utxosHex, (f) => walletOwnsOutput(f));
+}
+
+/**
+ * The wallet's reference-script UTxOs — the ones `decodeUtxosToInputs` drops
+ * (`walletOwnsOutput` returns false), decoded here so the foreign-tx screen can
+ * refuse a website that spends one. Never fed to the builder: these are kept
+ * out of what can be spent on purpose, and spending one destroys published code.
+ */
+export function decodeOwnedRefScriptInputs(utxosHex: string[]): Input[] {
+  return decodeOwnUtxosWhere(utxosHex, (f) => walletOwnsRefScriptOutput(f));
+}
+
+/** Decode a CIP-30 UTxO list, keeping the ones `keep` accepts. */
+function decodeOwnUtxosWhere(
+  utxosHex: string[],
+  keep: (facts: { addressHex: string; datum: boolean; referenceScript: boolean }) => boolean,
+): Input[] {
   const inputs: Input[] = [];
   const seen = new Set<string>();
   for (const hex of utxosHex) {
@@ -93,18 +113,24 @@ export function decodeUtxosToInputs(utxosHex: string[]): Input[] {
 
     let addrBuf: Buffer;
     let amountValue: unknown;
+    let datum: boolean;
+    let referenceScript: boolean;
     if (Array.isArray(output)) {
-      // legacy: [address, value, ?datum_hash] — a bare datum-hash is spendable.
+      // legacy: [address, value, ?datum_hash]
       addrBuf = Buffer.from(output[0] as Buffer);
       amountValue = output[1];
+      datum = output.length >= 3;
+      referenceScript = false;
     } else if (output instanceof Map) {
-      // Babbage: {0: address, 1: value, 2: ?inline-datum, 3: ?reference-script}
-      if (output.has(2) || output.has(3)) continue; // skip datum/script-ref UTxOs
+      // Babbage: {0: address, 1: value, 2: ?datum_option, 3: ?reference-script}
       addrBuf = Buffer.from(output.get(0) as Buffer);
       amountValue = output.get(1);
+      datum = output.has(2);
+      referenceScript = output.has(3);
     } else {
       throw new Error("unrecognised UTxO output format");
     }
+    if (!keep({ addressHex: addrBuf.toString("hex"), datum, referenceScript })) continue;
 
     const { ada, tokens } = decodeValue(amountValue);
     const address = tyUtils.getAddressFromHex(addrBuf) as ShelleyAddress;

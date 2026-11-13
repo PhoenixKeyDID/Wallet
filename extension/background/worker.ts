@@ -42,11 +42,14 @@ import {
   WALLET_PORT,
   type Response as RpcResponse,
 } from "../src/rpc/protocol";
+import { createRegistry, type WindowPort } from "./pending";
 
 // Only what is used, structurally typed — this repo does not carry
 // `@types/chrome`, and a hand-written surface is one a reviewer can check.
 type Port = {
   name: string;
+  /** Set by the browser, not by the other end: which page opened this port. */
+  sender?: { url?: string };
   postMessage(m: unknown): void;
   onMessage: { addListener(cb: (m: unknown) => void): void };
   onDisconnect: { addListener(cb: () => void): void };
@@ -74,6 +77,10 @@ type Chrome = {
   windows: {
     create(o: Record<string, unknown>): Promise<{ id?: number }>;
     update(id: number, o: Record<string, unknown>): Promise<unknown>;
+    onRemoved: {
+      addListener(cb: (id: number) => void): void;
+      removeListener(cb: (id: number) => void): void;
+    };
   };
 };
 
@@ -96,43 +103,61 @@ async function grant(origin: string): Promise<void> {
 
 // ─── The open wallet windows, by origin ──────────────────────────────────────
 
-type Wallet = { port: Port; nextId: number; waiting: Map<number, (r: unknown) => void> };
-const wallets = new Map<string, Wallet>();
+/**
+ * Which window serves which site, and which window owes which answer. The
+ * rules — unguessable ids, an answer only counts on the port the request went
+ * down — live in `pending.ts`, where they are tested.
+ */
+const registry = createRegistry(() => ({
+  ok: false,
+  error: refused("The wallet window was closed."),
+}));
 /** Requests to open a window that have not been answered yet. */
-const opening = new Map<string, Promise<Wallet | null>>();
+const opening = new Map<string, Promise<WindowPort | null>>();
+
+/**
+ * Whether this port was opened by the wallet window, `approve.html` of this
+ * extension, judged from the URL the browser recorded for the sender.
+ *
+ * The port's name is chosen by whoever calls `connect`, so it says nothing.
+ * Any page of this extension can open a port by that name — the toolbar
+ * popup, an options page, a future one — and its `hello` would then name an
+ * origin and be served that origin's requests, with no unlocked screen behind
+ * it showing anyone what is being asked. Only the approval window is allowed
+ * to answer for a site. The comparison is the exact page plus its query or
+ * fragment: a bare prefix test would also accept `approve.html.evil`.
+ */
+function fromWalletWindow(port: Port): boolean {
+  const url = port.sender?.url;
+  if (typeof url !== "string") return false;
+  const page = chrome.runtime.getURL("approve.html");
+  return url === page || url.startsWith(`${page}?`) || url.startsWith(`${page}#`);
+}
 
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== WALLET_PORT) return;
+  if (!fromWalletWindow(port)) return;
   let origin: string | null = null;
   port.onMessage.addListener((raw) => {
-    const m = raw as { type?: string; origin?: string; id?: number; result?: unknown };
-    if (m?.type === "hello" && typeof m.origin === "string") {
+    const m = raw as { type?: string; origin?: string; id?: unknown; result?: unknown };
+    if (m?.type === "hello" && typeof m.origin === "string" && origin === null) {
       // The window tells us which origin it is serving. This is safe to trust
-      // in a way the page's own claim is not: the port comes from inside the
-      // extension, and the origin it names was handed to it by us when we
-      // opened it.
+      // in a way the page's own claim is not: the port was opened by this
+      // extension's `approve.html` (`fromWalletWindow`, from the URL the
+      // browser recorded), and the origin it names was handed to it by us when
+      // we opened it. Once, per port: a window serves the one site it was opened
+      // for, and a second hello naming another is not something to honour.
       origin = m.origin;
-      wallets.set(origin, { port, nextId: 1, waiting: new Map() });
+      registry.attach(origin, port);
       return;
     }
-    if (m?.type === "result" && typeof m.id === "number" && origin) {
-      const w = wallets.get(origin);
-      const settle = w?.waiting.get(m.id);
-      if (settle) {
-        w!.waiting.delete(m.id);
-        settle(m.result);
-      }
-    }
+    if (m?.type === "result") registry.answer(port, m.id, m.result);
   });
   port.onDisconnect.addListener(() => {
-    if (!origin) return;
-    const w = wallets.get(origin);
-    // Every request still in flight has just lost its only possible answer.
-    // Say so rather than leaving the page's promise hanging forever.
-    for (const settle of w?.waiting.values() ?? []) {
-      settle({ ok: false, error: refused("The wallet window was closed.") });
-    }
-    wallets.delete(origin);
+    // Every request this window still owed has just lost its only possible
+    // answer. Say so rather than leaving the page's promise hanging forever —
+    // and touch nothing that belongs to another window for the same site.
+    registry.detach(port, origin);
   });
 });
 
@@ -145,42 +170,52 @@ chrome.runtime.onConnect.addListener((port) => {
  * at the exact instant the user looked at anything else, including the dialog
  * they were reading. A real window survives being looked away from.
  */
-function walletWindow(origin: string): Promise<Wallet | null> {
-  const live = wallets.get(origin);
+function walletWindow(origin: string): Promise<WindowPort | null> {
+  const live = registry.windowFor(origin);
   if (live) return Promise.resolve(live);
   const already = opening.get(origin);
   if (already) return already;
 
   const p = (async () => {
     const url = `${chrome.runtime.getURL("approve.html")}?origin=${encodeURIComponent(origin)}`;
+    const waiter = registry.whenAttached(origin);
+    let created: { id?: number } | undefined;
     try {
-      await chrome.windows.create({ url, type: "popup", width: 420, height: 680, focused: true });
+      created = await chrome.windows.create({ url, type: "popup", width: 420, height: 680, focused: true });
     } catch {
+      waiter.cancel();
+      return null;
+    }
+    // Without an id there is no `onRemoved` that can match this window, so
+    // closing it would never end the wait and the page's call would hang for
+    // good. Refuse now instead.
+    if (typeof created?.id !== "number") {
+      waiter.cancel();
       return null;
     }
     // Wait for the window to unlock and say hello. There is a person reading a
-    // screen at the other end of this, so it does not time out — see the same
-    // reasoning in the inpage provider.
-    for (let i = 0; i < 600; i++) {
-      const w = wallets.get(origin);
-      if (w) return w;
-      await new Promise((r) => setTimeout(r, 500));
-    }
-    return null;
+    // screen at the other end of this, so there is no clock on it — see the
+    // same reasoning in the inpage provider. What does end the wait is the
+    // window going away: closing it before unlocking is a "no", and the page
+    // hears it at once instead of after a timer nobody chose.
+    return new Promise<WindowPort | null>((resolve) => {
+      const onRemoved = (id: number) => {
+        if (id !== created.id) return;
+        chrome.windows.onRemoved.removeListener(onRemoved);
+        waiter.cancel();
+        resolve(registry.windowFor(origin) ?? null);
+      };
+      chrome.windows.onRemoved.addListener(onRemoved);
+      void waiter.attached.then((port) => {
+        chrome.windows.onRemoved.removeListener(onRemoved);
+        resolve(port);
+      });
+    });
   })();
 
   opening.set(origin, p);
   p.finally(() => opening.delete(origin)).catch(() => {});
   return p;
-}
-
-/** Ask the wallet window to carry out one request, and wait for its answer. */
-function ask(w: Wallet, origin: string, method: string, params: unknown[]): Promise<unknown> {
-  const id = w.nextId++;
-  return new Promise((resolve) => {
-    w.waiting.set(id, resolve);
-    w.port.postMessage({ type: "request", id, origin, method, params });
-  });
 }
 
 // ─── The one entry point ─────────────────────────────────────────────────────
@@ -202,7 +237,7 @@ async function handle(req: Request, sender: { origin?: string; frameId?: number 
     // `isEnabled` must not open a window or ask anything: it is the call a page
     // makes on load to decide whether to show a "connect" button, and a wallet
     // that pops a window for it is a wallet nobody keeps installed.
-    return { channel: CHANNEL, kind: "res", id: req.id, ok: true, value: granted && wallets.has(origin) };
+    return { channel: CHANNEL, kind: "res", id: req.id, ok: true, value: granted && registry.windowFor(origin) !== undefined };
   }
 
   if (need !== "enable" && !granted) {
@@ -212,7 +247,7 @@ async function handle(req: Request, sender: { origin?: string; frameId?: number 
   const w = await walletWindow(origin);
   if (!w) return fail(refused("The wallet window could not be opened."));
 
-  const raw = (await ask(w, origin, req.method, req.params)) as
+  const raw = (await registry.ask(w, origin, req.method, req.params)) as
     | { ok: true; value: unknown }
     | { ok: false; error: ApiError }
     | undefined;

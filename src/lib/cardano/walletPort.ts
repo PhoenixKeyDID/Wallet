@@ -29,7 +29,7 @@ import type { types as tyTypes } from "@stricahq/typhonjs";
 import type { AssetAmount, Cip30Api } from "./cip30";
 import { cip30NetworkId, type PhoenixNetwork } from "./address";
 import { blake2b224, fromHex, toHex } from "./hash";
-import { decodeUtxosToInputs, signAndSubmitCip30, type BuiltTx } from "./tx";
+import { decodeOwnedRefScriptInputs, decodeUtxosToInputs, signAndSubmitCip30, type BuiltTx } from "./tx";
 
 export type WalletPort = {
   /**
@@ -40,6 +40,15 @@ export type WalletPort = {
   kind: "cip30" | "local";
   /** Spendable inputs, already decoded — never a half-open CBOR string. */
   getInputs(): Promise<tyTypes.Input[]>;
+  /**
+   * The wallet's own UTxOs that carry a reference script — kept OUT of
+   * `getInputs` because the builder must never spend them, but surfaced here so
+   * the foreign-tx approval screen can refuse a website that tries to. Optional:
+   * a port that cannot tell these apart returns none, and the screen simply
+   * loses that one refusal (the same state as today). Never used to build a
+   * transaction.
+   */
+  getRefScriptInputs?(): Promise<tyTypes.Input[]>;
   /** Hex reward (stake) address. Hex because that is what CIP-30 returns. */
   getRewardAddressHex(): Promise<string>;
   /**
@@ -105,8 +114,9 @@ export type WalletPort = {
  * The send form used to read this from CIP-30 `getBalance()`, which no local
  * account has. Deriving it from the same inputs the transaction will be built
  * from is not just the portable answer, it is the more truthful one: a balance
- * call reports everything the wallet owns, including value locked in UTxOs that
- * carry a datum or a reference script — which the builder skips. Offering those
+ * call reports everything the wallet owns, including value in UTxOs the readers
+ * skip (`walletOwnsOutput`: a reference script, or a datum at a script address)
+ * — which the builder therefore never sees. Offering those
  * in a send form is offering to spend something the next step will not touch.
  */
 export function sumAssets(inputs: tyTypes.Input[]): AssetAmount[] {
@@ -152,6 +162,11 @@ export function cip30Port(api: Cip30Api): WalletPort {
       const hex = await api.getUtxos();
       if (!hex || hex.length === 0) return [];
       return decodeUtxosToInputs(hex);
+    },
+    async getRefScriptInputs() {
+      const hex = await api.getUtxos();
+      if (!hex || hex.length === 0) return [];
+      return decodeOwnedRefScriptInputs(hex);
     },
     async getRewardAddressHex() {
       const addrs = await api.getRewardAddresses();

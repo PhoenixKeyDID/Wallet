@@ -48,6 +48,15 @@ export function TxSummaryView({ summary }: { summary: TxSummary }) {
           })}
         </p>
       )}
+      {/* The transaction spends inputs that are not this wallet's: a script
+          (Plutus or native, possibly supplied by a reference input) may be
+          what this signature unlocks, and their value is not in the amount
+          above. Shown, not refused — a drip-pot claim is this shape. */}
+      {summary.foreignInputs > 0 && (
+        <p className="approve-error" data-testid="foreign-inputs">
+          {t("cip30_foreign_inputs", { n: summary.foreignInputs })}
+        </p>
+      )}
       {summary.toOthers.length > 0 && (
         <>
           <p className="approve-heading">{t("cip30_paying")}</p>
@@ -57,15 +66,60 @@ export function TxSummaryView({ summary }: { summary: TxSummary }) {
                 {/* Amount first: an address with no number beside it is a
                     line people skim past, and the number is the decision. */}
                 <b>{formatAda(r.lovelace)} ADA</b>
+                {r.assets.map((a) => (
+                  <b key={a.unit}>{` + ${a.amount.toString()} ${assetLabel(a)}`}</b>
+                ))}
                 <span className="mono approve-addr">{r.address}</span>
+                {r.datum && <span className="approve-note">{t("cip30_output_datum")}</span>}
               </li>
             ))}
           </ul>
         </>
       )}
-      {(summary.certificates > 0 || summary.withdrawals > 0 || summary.mints > 0) && (
+      {/* Change under a datum: counted as coming back above, because the
+          wallet sees and can spend it, and still listed here so the datum on
+          it is not hidden. */}
+      {summary.toSelfWithDatum.length > 0 && (
+        <>
+          <p className="approve-heading">{t("cip30_to_self_with_datum")}</p>
+          <ul>
+            {summary.toSelfWithDatum.map((r, i) => (
+              <li key={i} className="approve-payout">
+                <b>{formatAda(r.lovelace)} ADA</b>
+                {r.assets.map((a) => (
+                  <b key={a.unit}>{` + ${a.amount.toString()} ${assetLabel(a)}`}</b>
+                ))}
+                <span className="mono approve-addr">{r.address}</span>
+                <span className="approve-note">{t("cip30_output_datum")}</span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      {summary.burns.length > 0 && (
+        <>
+          <p className="approve-heading">{t("cip30_burns")}</p>
+          <ul>
+            {summary.burns.map((b) => (
+              <li key={b.unit}>{`${b.amount.toString()} ${assetLabel(b)}`}</li>
+            ))}
+          </ul>
+        </>
+      )}
+      {summary.collateral && (
+        <>
+          <p className="approve-error">
+            {t("cip30_collateral_risk", { ada: formatAda(summary.collateral.riskLovelace) })}
+          </p>
+          <p className="approve-note">{t("cip30_collateral_explain")}</p>
+        </>
+      )}
+      {/* "Your staking rewards" only for this wallet's own reward account; a
+          withdrawal from another account is someone else's money and says so. */}
+      {summary.withdrawals - summary.foreignWithdrawals > 0 && (
         <p className="approve-error">{t("cip30_extra_actions")}</p>
       )}
+      {summary.foreignWithdrawals > 0 && <p className="approve-error">{t("cip30_foreign_withdrawal")}</p>}
     </div>
   );
 }

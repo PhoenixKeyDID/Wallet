@@ -19,6 +19,7 @@
  * Run it when touching one of these guards:
  *
  *     node scripts/mutants.mjs
+ *     node scripts/mutants.mjs "signer:"   # only mutants whose name contains this
  *
  * A mutation that stays GREEN is the finding. It means the guard on that line
  * can be removed without a single test objecting.
@@ -27,6 +28,8 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { classifyRun } from "./lib/classify-run.mjs";
+import { createTypechecker } from "./lib/typecheck-mutant.mjs";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HISTORY = "src/lib/cardano/history.ts";
@@ -66,11 +69,33 @@ const WALLET_HUB = "src/components/wallet/WalletHub.tsx";
 const COPY_GUARD_TEST = "src/components/wallet/__tests__/SeedPhraseStep.test.tsx";
 const COPYABLE_ANCHOR = '    "src/components/wallet/WatchOnlyPanel.tsx#WatchOnlyPanel: watched",';
 const FORWARDS_ANCHOR = '    "src/components/wallet/WalletTabs.tsx#WalletTabs: port",\n  ];';
+const PENDING = "extension/background/pending.ts";
+const SIGN_FOREIGN = "src/lib/keystore/signForeign.ts";
+// The raw-byte CBOR walker whose key identity must match what the decoder
+// collapses: revert any branch to raw bytes and a non-canonical duplicate the
+// decoder folds slips past, which the dup-key suite must catch.
+const CBOR_DUP = "src/lib/cardano/cborDupKeys.ts";
+const UTXO_CBOR = "src/lib/cardano/utxoCbor.ts";
+const APPROVE = "extension/src/approve.tsx";
+const UTXO_SELECT = "src/lib/cardano/utxoSelect.ts";
+const SIGN_DATA = "src/lib/keystore/signData.ts";
+const WORKER = "extension/background/worker.ts";
+const DATA_SIGN_VIEW = "extension/src/DataSignView.tsx";
+// The one rule for which outputs at the wallet's addresses are its own money,
+// and the CIP-30 path that reads UTxOs back from another wallet.
+const OWN_UTXO = "src/lib/cardano/ownUtxo.ts";
+const TX = "src/lib/cardano/tx.ts";
 // A gate is worth mutating too. "Is this guard pinned" and "is the thing that
 // checks the guard pinned" are different questions, and the second one has gone
 // unanswered here before: two table rows named after a detector were going red
 // because a *count* elsewhere fell, not because the detector did its job.
 const NOTICE_TEST = "src/components/wallet/__tests__/moneyNotice.test.ts";
+const CLASSIFY_RUN = "scripts/lib/classify-run.mjs";
+// The packaging gate and the build step for the two scripts that run inside a
+// website. Both went wrong together once: the build emitted ES modules, the
+// gate allowed exactly that import, and Chrome refused the file.
+const PKG_GATE = "scripts/check-extension-package.mjs";
+const EXT_VITE = "extension/vite.config.ts";
 const TESTS = [
   "src/lib/cardano/__tests__/history.test.ts",
   "src/lib/cardano/__tests__/price.test.ts",
@@ -85,6 +110,23 @@ const TESTS = [
   "src/components/wallet/__tests__/LocalWalletPanel.context.test.tsx",
   "scripts/__tests__/checkPopupCss.test.ts",
   "scripts/__tests__/checkLocales.test.ts",
+  "extension/background/__tests__/pending.test.ts",
+  "src/lib/keystore/__tests__/foreignTxAttack.test.ts",
+  "src/lib/cardano/__tests__/cborDupKeys.test.ts",
+  "src/lib/cardano/__tests__/utxoCbor.test.ts",
+  "src/lib/keystore/__tests__/extensionApprove.test.tsx",
+  "src/lib/keystore/__tests__/dripPotClaim.test.ts",
+  "src/lib/keystore/__tests__/signData.test.ts",
+  "src/lib/cardano/__tests__/utxoSelect.test.ts",
+  "src/lib/cardano/__tests__/ownUtxo.test.ts",
+  "src/lib/cardano/__tests__/blockfrost.test.ts",
+  "src/lib/cardano/__tests__/e2e-journey.test.ts",
+  "src/lib/keystore/__tests__/signForeign.test.ts",
+  "extension/background/__tests__/worker.test.ts",
+  "extension/src/__tests__/DataSignView.test.tsx",
+  "scripts/__tests__/classifyRun.test.ts",
+  "scripts/__tests__/checkExtensionPackage.test.ts",
+  "extension/pageWorldBuild.test.ts",
   "src/components/wallet/__tests__/StakingPanel.withdraw.test.tsx",
   "src/lib/cardano/__tests__/stakeAccountState.test.ts",
   // The Delegate-while-loading refusal, and the in-flight vote delegation as
@@ -108,6 +150,81 @@ const TESTS = [
  * measuring nothing, which is the failure mode it was written to prevent.
  */
 const MUTANTS = [
+  {
+    name: "txSummary counts a withdrawal as the wallet's whatever its reward account header says",
+    file: TX_SUMMARY,
+    from: "  return raw.length === 29 && raw[0] >> 4 === 0xe && (raw[0] & 0x0f) === networkId;",
+    to: "  return raw.length === 29 || networkId < 0; /* MUT_TXSUMMARY_REWARD_HEADER */",
+    marker: "MUT_TXSUMMARY_REWARD_HEADER",
+  },
+  {
+    name: "txSummary reads a reward account's network but not its credential type",
+    file: TX_SUMMARY,
+    from: "  return raw.length === 29 && raw[0] >> 4 === 0xe && (raw[0] & 0x0f) === networkId;",
+    to: "  return raw.length === 29 && (raw[0] & 0x0f) === networkId; /* MUT_TXSUMMARY_REWARD_CRED */",
+    marker: "MUT_TXSUMMARY_REWARD_CRED",
+  },
+  {
+    name: "txSummary reads a reward account's credential type but not its network",
+    file: TX_SUMMARY,
+    from: "  return raw.length === 29 && raw[0] >> 4 === 0xe && (raw[0] & 0x0f) === networkId;",
+    to: "  return raw.length === 29 && raw[0] >> 4 === 0xe && networkId >= 0; /* MUT_TXSUMMARY_REWARD_NET */",
+    marker: "MUT_TXSUMMARY_REWARD_NET",
+  },
+  {
+    name: "txSummary withdrawal ownership skips the reward account header check",
+    file: TX_SUMMARY,
+    from: "      if (!isKeyRewardAccountOn(raw, networkId) || !ownStakeHashes.has(stakeHash)) {",
+    to: "      if (!ownStakeHashes.has(stakeHash)) { /* MUT_TXSUMMARY_WITHDRAWAL_NO_HEADER */",
+    marker: "MUT_TXSUMMARY_WITHDRAWAL_NO_HEADER",
+  },
+  {
+    name: "signForeign adds the stake key for a withdrawal whatever its header says",
+    file: SIGN_FOREIGN,
+    from: "      const accountKey = isKeyRewardAccountOn(raw, ledgerNetworkId) && stakeHash === account.stakeKeyHashHex;",
+    to: "      const accountKey = stakeHash === account.stakeKeyHashHex; /* MUT_SIGNFOREIGN_WITHDRAWAL_NO_HEADER */",
+    marker: "MUT_SIGNFOREIGN_WITHDRAWAL_NO_HEADER",
+  },
+  // ── The page-world scripts must load in a real browser: a content script and
+  // a `<script src>` are classic scripts, so neither may import anything ──
+  {
+    name: "page-world: the package gate no longer compiles content.js/inpage.js as classic scripts",
+    file: PKG_GATE,
+    from: "    new vm.Script(src, { filename: f });",
+    to: "    void vm; /* MUT_PKG_NO_CLASSIC_COMPILE */",
+    marker: "MUT_PKG_NO_CLASSIC_COMPILE",
+  },
+  {
+    name: "page-world: the package gate no longer refuses a module outside the relay and the rules",
+    file: PKG_GATE,
+    from: "        if (!PAGE_WORLD_MAY_BUNDLE.has(m)) {",
+    to: "        if (false /* MUT_PKG_BUNDLE_ANY */) {",
+    marker: "MUT_PKG_BUNDLE_ANY",
+  },
+  {
+    name: "page-world: the package gate reads a missing module receipt as nothing extra",
+    file: PKG_GATE,
+    from: "if (!existsSync(join(DIST, PAGE_WORLD_RECEIPT))) {",
+    to: "if (false /* MUT_PKG_NO_RECEIPT_OK */) {",
+    marker: "MUT_PKG_NO_RECEIPT_OK",
+  },
+  {
+    name: "page-world: the package gate lets a dynamic import() through",
+    file: PKG_GATE,
+    from: "  if (parses && /(?<![\\w$.])import\\s*\\(/.test(src)) {",
+    to: "  if (false /* MUT_PKG_DYNAMIC_IMPORT */) {",
+    marker: "MUT_PKG_DYNAMIC_IMPORT",
+  },
+  {
+    name: "page-world: the build emits ES modules importing a shared protocol chunk again",
+    file: EXT_VITE,
+    from: '            format: "iife",\n            inlineDynamicImports: true,',
+    to:
+      '            format: "es", // MUT_EXT_VITE_ES_CHUNKS\n' +
+      '            manualChunks: (id: string) => (id.includes("rpc/protocol") ? "protocol" : undefined),\n' +
+      '            chunkFileNames: "[name].js",',
+    marker: "MUT_EXT_VITE_ES_CHUNKS",
+  },
   // ── Round six: a recovery phrase must not reach the clipboard; the popup must
   // not say the web page's sentences; the stylesheet gate must actually gate ──
   {
@@ -192,8 +309,29 @@ const MUTANTS = [
   {
     name: "css gate: a class list kept in a constant is no longer read",
     file: CSS_GATE,
-    from: "          pieces.push(...via);",
-    to: "          void via;",
+    from: "        pieces.push(...via);",
+    to: "        void via;",
+  },
+  {
+    name: "css gate: el.className = … outside JSX is no longer read",
+    file: CSS_GATE,
+    from: '      n.left.name.text === "className"\n',
+    to: '      n.left.name.text === "className /* MUT_CSS_GATE_NO_DOM_ASSIGN */"\n',
+    marker: "MUT_CSS_GATE_NO_DOM_ASSIGN",
+  },
+  {
+    name: "css gate: / no longer separates HTML attributes, so <body/class> is missed",
+    file: CSS_GATE,
+    from: '      if (WS.test(html[j]) || html[j] === "/") {',
+    to: '      if (WS.test(html[j]) /* MUT_CSS_GATE_HTML_SPLIT */) {',
+    marker: "MUT_CSS_GATE_HTML_SPLIT",
+  },
+  {
+    name: "css gate: a > inside a quoted HTML value ends the tag again",
+    file: CSS_GATE,
+    from: "          const close = html.indexOf(q, j + 1);",
+    to: "          const close = html.indexOf(q, j + 1);\n          if (html.slice(j + 1, close).includes(\">\")) break; // MUT_CSS_GATE_HTML_GT",
+    marker: "MUT_CSS_GATE_HTML_GT",
   },
   // ── Round five: the remaining text checks, and the half of the pair that
   // was never held to the same standard as the other half ──
@@ -346,7 +484,9 @@ const MUTANTS = [
     name: "withdrawal ownership filter removed (a stranger's reward counts as ours)",
     file: HISTORY,
     from: "    if (ownStakeAddresses.has(stake)) withdrawn += amount;",
-    to: "    withdrawn += amount;",
+    // Kept as an `if` so the `else if` after it still parses.
+    to: "    if (true /* MUT_WITHDRAWAL_OWNER */) withdrawn += amount;",
+    marker: "MUT_WITHDRAWAL_OWNER",
   },
   {
     name: "an unattributable row shows an amount anyway",
@@ -498,24 +638,6 @@ const MUTANTS = [
     file: "src/lib/cardano/submitError.ts",
     from: "  return err instanceof SubmitRejectedError && err.status >= 400 && err.status < 500;",
     to: "  return err instanceof SubmitRejectedError;",
-  },
-  {
-    name: "collateral inputs (field 13) allowed again — a second spend path the approval screen cannot show",
-    file: TX_SUMMARY,
-    from: "  11, // script_data_hash\n",
-    to: "  11, // script_data_hash\n  13,\n",
-  },
-  {
-    name: "collateral return (field 16) allowed again — a second spend path the approval screen cannot show",
-    file: TX_SUMMARY,
-    from: "  11, // script_data_hash\n",
-    to: "  11, // script_data_hash\n  16,\n",
-  },
-  {
-    name: "collateral total (field 17) allowed again — a second spend path the approval screen cannot show",
-    file: TX_SUMMARY,
-    from: "  11, // script_data_hash\n",
-    to: "  11, // script_data_hash\n  17,\n",
   },
   {
     name: "Send review prints the bare token name again (policy id dropped on the last screen)",
@@ -941,6 +1063,10 @@ const MUTANTS = [
       },
       { file: COPY_GUARD_TEST, from: COPYABLE_ANCHOR, to: `${COPYABLE_ANCHOR}\n    "${BALANCE}#Shown: ${value}",` },
     ],
+    // `Echo` is left undeclared on purpose: the guard reads this source and
+    // cannot see what another element does with the setter, and `Shown` is
+    // never rendered, so the missing name never runs.
+    ...(body.includes("<Echo ") ? { undeclared: ["Echo"] } : {}),
   })),
   // A parameter the component defaults or writes holds its own functions, not
   // the caller's: picking one by the phrase rebuilds the phrase.
@@ -987,8 +1113,9 @@ const MUTANTS = [
       "kept in sessionStorage reached through a module helper",
       "const ss = () => sessionStorage;",
       "Shown",
-      '  ss().setItem("k", secret);\n  return <CopyBtn value={ss().getItem("k")} />;',
-      'ss().getItem("k")',
+      // Single quotes: the value is pasted into a double-quoted string in the test.
+      "  ss().setItem('k', secret);\n  return <CopyBtn value={ss().getItem('k')} />;",
+      "ss().getItem('k')",
     ],
     [
       "handed on through a context",
@@ -1171,14 +1298,18 @@ const MUTANTS = [
         to:
           'import type { PhoenixNetwork } from "@/lib/cardano";\n\n' +
           "type Mods = Record<string, Record<string, (p: { value: string }) => JSX.Element>>;\n" +
-          "const meta = import.meta as unknown as { env?: unknown };\n" +
-          'const mods = (meta as unknown as { glob: (p: string, o: { eager: true }) => Mods }).glob("../C*.tsx", { eager: true });\n' +
-          "const Btn = Object.values(Object.values(mods)[0])[0];\n\n" +
+          "const meta = import.meta as unknown as { env?: unknown };\n\n" +
+          "// MUT_COPY_GLOB_VIA_META: called inside the component, not at module load —\n" +
+          "// vite rewrites only a literal `import.meta.glob`, so this call has no glob to\n" +
+          "// run and would throw at load in every test that imports the badge.\n" +
           "export function Shown({ secret }: { secret: string }) {\n" +
+          '  const mods = (meta as unknown as { glob: (p: string, o: { eager: true }) => Mods }).glob("../C*.tsx", { eager: true });\n' +
+          "  const Btn = Object.values(Object.values(mods)[0])[0];\n" +
           "  return <Btn value={secret} />;\n" +
           "}",
       },
     ],
+    marker: "MUT_COPY_GLOB_VIA_META",
   },
   {
     name: "a locale file that parses to null passes as a namespace with no keys",
@@ -1186,6 +1317,863 @@ const MUTANTS = [
     from: 'if (json === null || typeof json !== "object" || Array.isArray(json)) {',
     to: "if (false) {",
   },
+  // ── The extension talking to real dApps: who answers which request, what a
+  // read returns, and which error code a refusal carries. Every one of these
+  // was a dead end for a site before it was fixed. ──
+  {
+    name: "an answer from another window settles the request (port check gone)",
+    file: PENDING,
+    from: "if (!w || w.port !== port) return false;",
+    to: "if (!w) return false;",
+  },
+  {
+    name: "request ids are a counter again, guessable and restarting per worker",
+    file: PENDING,
+    from: "newId: () => string = randomId",
+    to: "newId: () => string = ((n) => () => String(++n))(0)",
+  },
+  {
+    name: "a colliding id is not re-drawn, two requests share one",
+    file: PENDING,
+    from: "      while (waiting.has(id)) id = newId();\n",
+    to: "",
+  },
+  {
+    name: "closing a window settles every window's requests",
+    file: PENDING,
+    from: "        if (w.port !== port) continue;\n",
+    to: "",
+  },
+  {
+    name: "closing the old window unregisters the new one",
+    file: PENDING,
+    from: "windows.get(origin) === port",
+    to: "windows.has(origin)",
+  },
+  {
+    name: "own reward withdrawal: stake key justified but never signed",
+    file: SIGN_FOREIGN,
+    from: "\n        add(account.stakeKeyHashHex);",
+    to: "",
+  },
+  {
+    name: "a zero-ADA UTxO from the indexer is encoded instead of refused",
+    file: UTXO_CBOR,
+    from: "(!allowZero && n === BigInt(0))",
+    to: "false",
+  },
+  {
+    name: "getUtxos answers an empty list instead of the inputs signing reads",
+    file: APPROVE,
+    from: "return { ok: true, value: encodeInputsAsUtxosHex(list) };",
+    to: "return { ok: true, value: [] as string[] }; /* MUT_GETUTXOS_EMPTY */",
+    marker: "MUT_GETUTXOS_EMPTY",
+  },
+  {
+    name: "getUtxos answers the full list when `amount` cannot be covered, instead of null",
+    file: APPROVE,
+    from: "if (!picked) return { ok: true, value: null };",
+    to: "if (!picked) return { ok: true, value: encodeInputsAsUtxosHex(list) }; /* MUT_GETUTXOS_AMOUNT */",
+    marker: "MUT_GETUTXOS_AMOUNT",
+  },
+  {
+    name: "getUtxos `paginate` past the end answers an empty page, not PaginateError",
+    file: APPROVE,
+    from: 'if ("maxSize" in paged) return { ok: false, error: paginateError(paged.maxSize) };',
+    to: 'if ("maxSize" in paged) return { ok: true, value: [] as string[] }; /* MUT_PAGINATE */',
+    marker: "MUT_PAGINATE",
+  },
+  {
+    name: "getBalance answers zero instead of the summed inputs",
+    file: APPROVE,
+    from: "value: encodeBalanceHex(await wp.getInputs())",
+    to: 'value: "00"',
+  },
+  {
+    name: "the window opens account 0 whatever account the person last used",
+    file: APPROVE,
+    from: "w.accountIndex ?? 0",
+    to: "0",
+  },
+  {
+    name: "signData parked on a screen whose approve button never enables",
+    file: APPROVE,
+    from: 'if (req.method === "signData") {',
+    to: "if (false) {",
+  },
+  {
+    name: "Reject on submitTx answers 2, which TxSendError reads as Failure",
+    file: APPROVE,
+    from: '? sendRefused(t("cip30_declined"))',
+    to: '? /* MUT_SUBMIT_REJECT */ declined(t("cip30_declined"))',
+    marker: "MUT_SUBMIT_REJECT",
+  },
+  {
+    name: "Send on submitTx signs instead of broadcasting",
+    file: APPROVE,
+    from: 'req.method === "submitTx" ? broadcast() : sign()',
+    to: "sign()",
+  },
+  {
+    name: "the address count is a hard-coded English word again",
+    file: APPROVE,
+    from: '{t("cip30_address_count", { n: allAddresses(account).length })}',
+    to: "{allAddresses(account).length} addresses",
+  },
+  {
+    name: "Reject on the connect screen answers UserDeclined (2) instead of APIError.Refused (-3)",
+    file: APPROVE,
+    from: '<button onClick={() => answer({ ok: false, error: refused(t("cip30_declined")) })}>',
+    to: '<button onClick={() => answer({ ok: false, error: declined(t("cip30_declined")) })}>',
+  },
+  {
+    name: "a signing step that fails answers UserDeclined instead of ProofGeneration",
+    file: APPROVE,
+    from: "error: proofFailed(key ? t(key, { defaultValue: key }) : e instanceof Error ? e.message : String(e)),",
+    to: "error: declined(key ? t(key, { defaultValue: key }) : e instanceof Error ? e.message : String(e)),",
+  },
+  {
+    name: "a request arriving after the idle lock is served by whatever account the ref holds",
+    file: APPROVE,
+    from: "      if (acct !== account) {",
+    to: "      if (false) {",
+  },
+  {
+    name: "the idle lock leaves the port open",
+    file: APPROVE,
+    from: "      p.disconnect();",
+    to: "      void p;",
+  },
+  {
+    name: "the idle lock leaves the account in the ref that requests read",
+    file: APPROVE,
+    from: "      accountRef.current = null;",
+    to: "      void 0; /* MUT_APPROVE_LOCK_REF */",
+    marker: "MUT_APPROVE_LOCK_REF",
+  },
+  // ── signTx, both layers: each rule the screen applies, and the same rule
+  // again in the function that holds the key. Each mutant plants its own
+  // marker, and the runner reads the result only once the marker is in the
+  // file. The drip-pot claim tests put back exactly one of these on a claim
+  // that otherwise signs, and match the gate's own code or sentence. ──
+  {
+    name: "signer: a tx declaring its own script fails (is_valid = false) is signed",
+    file: SIGN_FOREIGN,
+    from: "if (Array.isArray(whole) && whole.length >= 3 && whole[2] === false) {",
+    to: "if (false /* MUT_SF_INVALID */) {",
+    marker: "MUT_SF_INVALID",
+  },
+  {
+    name: "signer: a certificate from a website is signed",
+    file: SIGN_FOREIGN,
+    from: "if (countOf(b.get(4)) > 0) throw",
+    to: "if (false /* MUT_SF_CERT */) throw",
+    marker: "MUT_SF_CERT",
+  },
+  {
+    name: "signer: a mint that creates tokens is signed",
+    file: SIGN_FOREIGN,
+    from: "if (!isNegativeInteger(qty)) throw",
+    to: "if (false /* MUT_SF_MINT */) throw",
+    marker: "MUT_SF_MINT",
+  },
+  {
+    name: "signer: a body for another network is signed",
+    file: SIGN_FOREIGN,
+    from: "if (declaredNetwork !== undefined && Number(declaredNetwork) !== ledgerNetworkId) {",
+    to: "if (false /* MUT_SF_NET */) {",
+    marker: "MUT_SF_NET",
+  },
+  {
+    name: "signer: collateral this wallet does not hold is passed over instead of refused",
+    file: SIGN_FOREIGN,
+    from: 'if (what === "collateral") throw',
+    to: 'if (false /* MUT_SF_COLL */) throw',
+    marker: "MUT_SF_COLL",
+  },
+  // ── The CBOR dup-key walker's identity, reverted to raw bytes per branch.
+  // Each revert reopens a class of hidden-field attack the decoder would
+  // collapse (integer re-encoding, text definite/indefinite, integer-valued
+  // float). The dup-key suite pins each one. ──
+  {
+    name: "cbor-dup: an integer key's identity is its raw bytes again (0x04 != 0x1804)",
+    file: CBOR_DUP,
+    from: "    return arg === null ? rawHex(bytes, start, end) : `${major}:${arg}`;",
+    to: "    return (void arg, rawHex(bytes, start, end)); /* MUT_CBOR_DUP_INT_RAW */",
+    marker: "MUT_CBOR_DUP_INT_RAW",
+  },
+  {
+    name: "cbor-dup: a text key's identity is its raw bytes again (definite != indefinite)",
+    file: CBOR_DUP,
+    from: "    return `3:${textContentHex(bytes, start)}`;",
+    to: "    return (void textContentHex(bytes, start), rawHex(bytes, start, end)); /* MUT_CBOR_DUP_TEXT_RAW */",
+    marker: "MUT_CBOR_DUP_TEXT_RAW",
+  },
+  {
+    name: "cbor-dup: a float key's identity is its raw bytes again (float 4.0 != int 4)",
+    file: CBOR_DUP,
+    from: "    return Number.isFinite(v) && Number.isInteger(v) ? intIdentityFromValue(v) : `7f:${v}`;",
+    to: "    return (void intIdentityFromValue(v), rawHex(bytes, start, end)); /* MUT_CBOR_DUP_FLOAT_RAW */",
+    marker: "MUT_CBOR_DUP_FLOAT_RAW",
+  },
+  {
+    name: "screen: a tx declaring its own script fails is described",
+    file: TX_SUMMARY,
+    from: "if (decoded.length >= 3 && decoded[2] === false) {",
+    to: "if (false /* MUT_TS_INVALID */) {",
+    marker: "MUT_TS_INVALID",
+  },
+  {
+    name: "screen: a certificate is described as if nothing were handed over",
+    file: TX_SUMMARY,
+    from: 'if (n !== 0) bad("this transaction carries a certificate',
+    to: 'if (false /* MUT_TS_CERT */) bad("this transaction carries a certificate',
+    marker: "MUT_TS_CERT",
+  },
+  {
+    name: "screen: a mint that creates tokens is described",
+    file: TX_SUMMARY,
+    from: "if (qty >= BigInt(0)) bad(",
+    to: "if (false /* MUT_TS_MINT */) bad(",
+    marker: "MUT_TS_MINT",
+  },
+  {
+    name: "screen: a body for another network is described",
+    file: TX_SUMMARY,
+    from: "if (declaredNetwork !== undefined && Number(declaredNetwork) !== networkId) {",
+    to: "if (false /* MUT_TS_NET */) {",
+    marker: "MUT_TS_NET",
+  },
+  {
+    name: "screen: collateral this wallet cannot value is skipped instead of refused",
+    file: TX_SUMMARY,
+    from: "    if (!held) {\n      bad(\"this transaction puts up collateral",
+    to: "    if (!held) continue; /* MUT_TS_COLL */\n    if (false) {\n      bad(\"this transaction puts up collateral",
+    marker: "MUT_TS_COLL",
+  },
+  {
+    name: "screen: the collateral at risk is computed but never shown",
+    file: TX_SUMMARY_VIEW,
+    from: "{summary.collateral && (",
+    to: "{/* MUT_VIEW_COLL */ false && summary.collateral && (",
+    marker: "MUT_VIEW_COLL",
+  },
+  {
+    name: "screen: the burn is computed but never shown",
+    file: TX_SUMMARY_VIEW,
+    from: "{summary.burns.length > 0 && (",
+    to: "{/* MUT_VIEW_BURN */ false && summary.burns.length > 0 && (",
+    marker: "MUT_VIEW_BURN",
+  },
+  {
+    name: "getCollateral puts up more than the 5 ADA cap when a site asks",
+    file: APPROVE,
+    from: "if (want.lovelace > COLLATERAL_CAP_LOVELACE) return",
+    to: "if (false /* MUT_COLL_CAP */) return",
+    marker: "MUT_COLL_CAP",
+  },
+  {
+    name: "signTx ignores partialSign = false and returns a partial witness set",
+    file: APPROVE,
+    from: "const partial = phase.req.params[1] === true;",
+    to: "const partial = true; /* MUT_PARTIAL */",
+    marker: "MUT_PARTIAL",
+  },
+  // ── Review round on the CIP-30 claim: what counts as change, what a coin
+  // offered as collateral may hold, and what the screen claims about money. ──
+  {
+    // The screen grows its own copy of the rule — the old one, "a datum means
+    // it left" — and drifts from the readers, which keep a datum at a key
+    // address. The parity cases in ownUtxo.test.ts exist to catch exactly this.
+    name: "screen: change is decided by a second copy of the rule that skips every datum",
+    file: TX_SUMMARY,
+    from: "const mine = ownAddress && walletOwnsOutput({ addressHex, datum, referenceScript: false });",
+    to: "const mine = ownAddress && !datum; /* MUT_TS_OWN_DATUM */",
+    marker: "MUT_TS_OWN_DATUM",
+  },
+  {
+    name: "screen: change under a datum is counted but no longer listed with its datum flag",
+    file: TX_SUMMARY,
+    from: "      if (datum) {\n        toSelfWithDatum.push({",
+    to: "      if (false /* MUT_TS_SELF_DATUM_LIST */) {\n        toSelfWithDatum.push({",
+    marker: "MUT_TS_SELF_DATUM_LIST",
+  },
+  {
+    name: "approval window: the change-under-a-datum section is not rendered",
+    file: TX_SUMMARY_VIEW,
+    from: "{summary.toSelfWithDatum.length > 0 && (",
+    to: "{false /* MUT_VIEW_SELF_DATUM */ && (",
+    marker: "MUT_VIEW_SELF_DATUM",
+  },
+  // ── The one rule for own UTxOs, and every reader that must use it ──
+  {
+    name: "own-utxo rule: a UTxO carrying a reference script is the wallet's to spend",
+    file: OWN_UTXO,
+    from: "  if (o.referenceScript) return false;",
+    to: "  if (false /* MUT_OWN_REFSCRIPT */) return false;",
+    marker: "MUT_OWN_REFSCRIPT",
+  },
+  {
+    name: "own-utxo rule: a datum at a script address is the wallet's to spend",
+    file: OWN_UTXO,
+    from: "  if (o.datum && !paymentCredentialIsKey(o.addressHex)) return false;",
+    to: "  if (false /* MUT_OWN_SCRIPT_DATUM */) return false;",
+    marker: "MUT_OWN_SCRIPT_DATUM",
+  },
+  {
+    name: "own-utxo rule: an inline datum that is not hex is read as a datum",
+    file: OWN_UTXO,
+    from: '    if (typeof inline !== "string" || !HEX_RE.test(inline)) {',
+    to: "    if (false /* MUT_READ_DATUM_SHAPE */) {",
+    marker: "MUT_READ_DATUM_SHAPE",
+  },
+  {
+    name: "own-utxo rule: a datum hash that is not 32 bytes of hex is read as a datum",
+    file: OWN_UTXO,
+    from: '    if (typeof hash !== "string" || !/^[0-9a-f]{64}$/i.test(hash)) {',
+    to: "    if (false /* MUT_READ_HASH_SHAPE */) {",
+    marker: "MUT_READ_HASH_SHAPE",
+  },
+  {
+    name: "Koios reader: drifts back to skipping every inline datum",
+    file: PROVIDER,
+    from: "    const chainDatum = readChainDatum(inlineHex, r.datum_hash, where);",
+    to:
+      "    if (r.inline_datum != null) continue; /* MUT_KOIOS_OLD_SKIP */\n" +
+      "    const chainDatum = readChainDatum(inlineHex, r.datum_hash, where);",
+    marker: "MUT_KOIOS_OLD_SKIP",
+  },
+  {
+    name: "Koios reader: an inline datum not shaped { bytes } is read as no datum",
+    file: PROVIDER,
+    from: '      if (typeof d !== "object" || typeof d.bytes !== "string") {',
+    to: "      if (false /* MUT_KOIOS_DATUM_SHAPE */) {",
+    marker: "MUT_KOIOS_DATUM_SHAPE",
+  },
+  {
+    name: "Blockfrost reader: drifts back to skipping every datum",
+    file: BLOCKFROST,
+    from: "      const chainDatum = readChainDatum(r.inline_datum, r.data_hash, `${r.tx_hash}#${r.output_index}`);",
+    to:
+      "      if (r.inline_datum != null || r.data_hash != null) continue; /* MUT_BF_OLD_SKIP */\n" +
+      "      const chainDatum = readChainDatum(r.inline_datum, r.data_hash, `${r.tx_hash}#${r.output_index}`);",
+    marker: "MUT_BF_OLD_SKIP",
+  },
+  {
+    name: "CIP-30 reader: drifts back to skipping every datum",
+    file: TX,
+    from: "  return decodeOwnUtxosWhere(utxosHex, (f) => walletOwnsOutput(f));",
+    to: "  return decodeOwnUtxosWhere(utxosHex, (f) => !f.datum /* MUT_CIP30_OLD_SKIP */ && walletOwnsOutput(f));",
+    marker: "MUT_CIP30_OLD_SKIP",
+  },
+  {
+    name: "getUtxos: an input under a datum is described to the dApp without it",
+    file: UTXO_CBOR,
+    from: '    if (d === undefined) return Encoder.encode([ref, [addr, value]]).toString("hex");',
+    to: '    if (true /* MUT_CBOR_DATUM */) return Encoder.encode([ref, [addr, value]]).toString("hex");',
+    marker: "MUT_CBOR_DATUM",
+  },
+  {
+    name: "getUtxos: an inline datum that is not hex is encoded anyway",
+    file: UTXO_CBOR,
+    from: '    if (d.kind === "inline" && HEX_RE.test(d.cborHex) && d.cborHex.length > 0) {',
+    to: '    if (d.kind === "inline" /* MUT_CBOR_INLINE_SHAPE */) {',
+    marker: "MUT_CBOR_INLINE_SHAPE",
+  },
+  {
+    name: "getUtxos: a datum hash that is not 32 bytes is encoded anyway",
+    file: UTXO_CBOR,
+    from: '    } else if (d.kind === "hash" && /^[0-9a-f]{64}$/i.test(d.hashHex)) {',
+    to: '    } else if (d.kind === "hash" /* MUT_CBOR_HASH_SHAPE */) {',
+    marker: "MUT_CBOR_HASH_SHAPE",
+  },
+  {
+    name: "screen: a collateral return carrying a datum is described",
+    file: TX_SUMMARY,
+    from: "if (r.datum) bad(\"this transaction's collateral return carries a datum",
+    to: "if (false /* MUT_TS_COLL_RET_DATUM */) bad(\"this transaction's collateral return carries a datum",
+    marker: "MUT_TS_COLL_RET_DATUM",
+  },
+  {
+    // The coin filter alone is redundant now (`consider` checks the total), so
+    // the mutant removes both: what it measures is "a single coin over the cap
+    // is offered", not "one of two equal checks was dropped".
+    name: "getCollateral offers a single coin larger than the 5 ADA cap",
+    edits: [
+      {
+        file: UTXO_SELECT,
+        from: ".filter((i) => (i.tokens ?? []).length === 0 && lovelaceOf(i) <= COLLATERAL_CAP_LOVELACE)",
+        to: ".filter((i) => (i.tokens ?? []).length === 0)",
+      },
+      {
+        file: UTXO_SELECT,
+        from: "if (sum < target || sum > COLLATERAL_CAP_LOVELACE) return;",
+        to: "if (sum < target || (coins.length > 1 && sum > COLLATERAL_CAP_LOVELACE /* MUT_COLL_COIN_CAP */)) return;",
+      },
+    ],
+    marker: "MUT_COLL_COIN_CAP",
+  },
+  {
+    name: "getCollateral combines coins whose sum is over the 5 ADA cap",
+    file: UTXO_SELECT,
+    from: "if (sum < target || sum > COLLATERAL_CAP_LOVELACE) return;",
+    to: "if (sum < target || (coins.length === 1 && sum > COLLATERAL_CAP_LOVELACE /* MUT_COLL_SUM_CAP */)) return;",
+    marker: "MUT_COLL_SUM_CAP",
+  },
+  {
+    name: "getCollateral never tries two coins (the greedy miss: 4 / 2.5 / 2.5 for 4.5 ADA)",
+    file: UTXO_SELECT,
+    from: "      consider([pool[a]!, pool[b]!]);",
+    to: "      void 0; /* MUT_COLL_PAIRS */",
+    marker: "MUT_COLL_PAIRS",
+  },
+  {
+    name: "getCollateral takes a single coin over a set with a smaller total",
+    file: UTXO_SELECT,
+    from: "if (single) consider([single]);",
+    to: "if (single) return [single]; /* MUT_COLL_SINGLE_FIRST */",
+    marker: "MUT_COLL_SINGLE_FIRST",
+  },
+  {
+    name: "getCollateral searches the smallest sub-target coins, which dust can fill",
+    file: UTXO_SELECT,
+    from: "below.slice(below.length - COLLATERAL_SEARCH_POOL)",
+    to: "below.slice(0, COLLATERAL_SEARCH_POOL) /* MUT_COLL_POOL_SMALLEST */",
+    marker: "MUT_COLL_POOL_SMALLEST",
+  },
+  {
+    name: "screen: a withdrawal from someone else's reward account reads as 'your staking rewards'",
+    file: TX_SUMMARY_VIEW,
+    from: "{summary.withdrawals - summary.foreignWithdrawals > 0 && (",
+    to: "{summary.withdrawals /* MUT_VIEW_OWN_WD */ > 0 && (",
+    marker: "MUT_VIEW_OWN_WD",
+  },
+  {
+    name: "signData shows right-to-left text as text",
+    file: SIGN_DATA,
+    from: "if (RIGHT_TO_LEFT.test(text)) return null;",
+    to: "if (false /* MUT_SD_RTL */) return null;",
+    marker: "MUT_SD_RTL",
+  },
+  {
+    name: "signData's right-to-left check goes back to the seven scripts the old list named",
+    file: SIGN_DATA,
+    from: "const RIGHT_TO_LEFT = /[\\u0590-\\u08ff\\ufb1d-\\ufdff\\ufe70-\\ufeff\\u{10800}-\\u{10fff}\\u{1e800}-\\u{1efff}]/u;",
+    to: "const RIGHT_TO_LEFT = /* MUT_SD_RTL_SEVEN */ /[\\p{Script=Hebrew}\\p{Script=Arabic}\\p{Script=Syriac}\\p{Script=Thaana}\\p{Script=Nko}\\p{Script=Samaritan}\\p{Script=Mandaic}]/u;",
+    marker: "MUT_SD_RTL_SEVEN",
+  },
+  {
+    name: "signData shows format characters (Cf) as text",
+    file: SIGN_DATA,
+    from: "const NOT_DRAWN_AS_ITSELF = /[\\p{Cf}\\p{Zl}",
+    to: "const NOT_DRAWN_AS_ITSELF = /* MUT_SD_CF */ /[\\p{Zl}",
+    marker: "MUT_SD_CF",
+  },
+  {
+    name: "signData shows the line and paragraph separators (Zl, Zp) as text",
+    file: SIGN_DATA,
+    // The marker sits outside the regex: inside a character class, `/* … */`
+    // is a list of characters, and the class would refuse every letter.
+    from: "const NOT_DRAWN_AS_ITSELF = /[\\p{Cf}\\p{Zl}\\p{Zp}\\p{Co}",
+    to: "const NOT_DRAWN_AS_ITSELF = /* MUT_SD_ZLZP */ /[\\p{Cf}\\p{Co}",
+    marker: "MUT_SD_ZLZP",
+  },
+  {
+    name: "signData shows private-use code points (Co) as text",
+    file: SIGN_DATA,
+    from: "\\p{Co}\\p{Cn}]/u;",
+    to: "\\p{Cn}]/u; /* MUT_SD_CO */",
+    marker: "MUT_SD_CO",
+  },
+  {
+    name: "signData shows unassigned code points (Cn) as text",
+    file: SIGN_DATA,
+    from: "\\p{Co}\\p{Cn}]/u;",
+    to: "\\p{Co}]/u; /* MUT_SD_CN */",
+    marker: "MUT_SD_CN",
+  },
+  {
+    name: "Sign reads the wallet again instead of signing from the view the summary used",
+    file: APPROVE,
+    from: "const witnessSetHex = signForeignTx(cbor, account, phase.view, partial);",
+    to: "const witnessSetHex = signForeignTx(cbor, account, walletViewFrom(await localPort(account).getInputs(), await localPort(account).getOwnedAddressesHex()) /* MUT_SIGN_REREAD */, partial);",
+    marker: "MUT_SIGN_REREAD",
+  },
+  {
+    name: "the signer no longer applies the screen's refusals (field 22, foreign collateral return, …)",
+    file: SIGN_FOREIGN,
+    // An empty summary, so the withdrawal rule below it still has a list to read.
+    from: "    summary = summariseTx(txCborHex, view.ownAddressesHex, view.held, ledgerNetworkId, view.heldWithScript);",
+    to: "    summary = { ownRewardKeyHashes: [] } as unknown as TxSummary; /* MUT_SIGN_SHARED_RULES */",
+    marker: "MUT_SIGN_SHARED_RULES",
+  },
+  {
+    name: "a body naming the same input twice is counted twice",
+    file: TX_SUMMARY,
+    from: 'if (seenInputs.has(ref)) bad("this transaction names the same input twice");',
+    to: 'if (false /* MUT_TS_DUP_INPUT */) bad("this transaction names the same input twice");',
+    marker: "MUT_TS_DUP_INPUT",
+  },
+  {
+    name: "the worker lets any extension page's port attach as a site's wallet window",
+    file: WORKER,
+    from: "  if (!fromWalletWindow(port)) return;",
+    to: "  if (false /* MUT_WORKER_SENDER */) return;",
+    marker: "MUT_WORKER_SENDER",
+  },
+  {
+    name: "the worker accepts any sender URL that merely starts with approve.html",
+    file: WORKER,
+    from: "return url === page || url.startsWith(`${page}?`) || url.startsWith(`${page}#`);",
+    to: "return url.startsWith(page) /* MUT_WORKER_PREFIX */;",
+    marker: "MUT_WORKER_PREFIX",
+  },
+  // ── Review round three: the collateral cap on the signing path, the stake
+  // witness agreement, the script-beside-foreign-inputs warning, a late summary,
+  // a window without an id, signData text rules and screen, the no-amount
+  // collateral rule, and each recipient's tokens and datum flag. ──
+  {
+    name: "approval window: a summary read for a request the person has left still lands (no cancel flag)",
+    file: APPROVE,
+    from: "        if (!cancelled) setPhase((cur) => (stillOnScreen(cur) ? { ...cur, summary, view } : cur));",
+    to: "        /* MUT_APPROVE_CANCELLED */ setPhase((cur) => (stillOnScreen(cur) ? { ...cur, summary, view } : cur));",
+    marker: "MUT_APPROVE_CANCELLED",
+  },
+  {
+    name: "approval window: decidingFor accepts any decide screen, not only the one for this request",
+    file: APPROVE,
+    from: "  return cur.at === \"decide\" && cur.req === req;",
+    to: "  return cur.at === \"decide\" /* MUT_APPROVE_REQ_GUARD */;",
+    marker: "MUT_APPROVE_REQ_GUARD",
+  },
+  {
+    name: "worker: a window opened without an id is waited on forever",
+    file: WORKER,
+    from: "    if (typeof created?.id !== \"number\") {",
+    to: "    if (false /* MUT_WORKER_WINDOW_ID */) {",
+    marker: "MUT_WORKER_WINDOW_ID",
+  },
+  {
+    name: "signData shows DEL and the C1 controls (U+007F-U+009F) as text",
+    file: SIGN_DATA,
+    from: "  if (/[\\u0000-\\u0008\\u000b-\\u001f\\u007f-\\u009f]/.test(text)) return null;",
+    to: "  if (/[\\u0000-\\u0008\\u000b-\\u001f]/.test(text) /* MUT_SIGNDATA_C1 */) return null;",
+    marker: "MUT_SIGNDATA_C1",
+  },
+  {
+    name: "signData shows default-ignorable code points as text",
+    file: SIGN_DATA,
+    from: "  if (DRAWN_AS_NOTHING.test(text.replace(EMOJI_PRESENTATION, \"$1\"))) return null;",
+    to: "  /* MUT_SIGNDATA_IGNORABLE */",
+    marker: "MUT_SIGNDATA_IGNORABLE",
+  },
+  {
+    name: "signData refuses a heart with its emoji presentation selector",
+    file: SIGN_DATA,
+    from: "  if (DRAWN_AS_NOTHING.test(text.replace(EMOJI_PRESENTATION, \"$1\"))) return null;",
+    to: "  if (DRAWN_AS_NOTHING.test(text) /* MUT_SIGNDATA_EMOJI_VS */) return null;",
+    marker: "MUT_SIGNDATA_EMOJI_VS",
+  },
+  {
+    name: "signData shows text with three or more blank lines in a row",
+    file: SIGN_DATA,
+    from: "  if (BLANK_LINES.test(shape)) return null;",
+    to: "  /* MUT_SIGNDATA_BLANK_LINES */",
+    marker: "MUT_SIGNDATA_BLANK_LINES",
+  },
+  {
+    name: "signData shows text that ends after several line breaks",
+    file: SIGN_DATA,
+    from: "  if (edges.some((w) => w.length > MAX_EDGE_WHITESPACE || w.split(\"\\n\").length > 2)) return null;",
+    to: "  if (edges.some((w) => w.length > MAX_EDGE_WHITESPACE) /* MUT_SIGNDATA_EDGE_WS */) return null;",
+    marker: "MUT_SIGNDATA_EDGE_WS",
+  },
+  {
+    name: "signData counts only spaces and tabs as blank between line breaks",
+    file: SIGN_DATA,
+    from: "const BLANK_LINES = new RegExp(String.raw`\\n${INKLESS}*\\n${INKLESS}*\\n${INKLESS}*\\n`, \"u\");",
+    to: "const BLANK_LINES = /* MUT_SIGNDATA_BLANK_SPACE_TAB */ /\\n[ \\t]*\\n[ \\t]*\\n[ \\t]*\\n/;",
+    marker: "MUT_SIGNDATA_BLANK_SPACE_TAB",
+  },
+  {
+    name: "signData's edge rule goes back to \\s, which has no Braille blank",
+    edits: [
+      {
+        file: SIGN_DATA,
+        from: "const LEADING_BLANK = new RegExp(String.raw`^(?:${INKLESS}|\\n)+`, \"u\");",
+        to: "const LEADING_BLANK = /* MUT_SIGNDATA_EDGE_BACKSLASH_S */ /^\\s+/;",
+      },
+      {
+        file: SIGN_DATA,
+        from: "const TRAILING_BLANK = new RegExp(String.raw`(?:${INKLESS}|\\n)+$`, \"u\");",
+        to: "const TRAILING_BLANK = /\\s+$/;",
+      },
+    ],
+    marker: "MUT_SIGNDATA_EDGE_BACKSLASH_S",
+  },
+  {
+    name: "signData's blank set drops the Braille blank U+2800",
+    file: SIGN_DATA,
+    from: "const INKLESS = String.raw`(?:(?!\\n)[\\p{White_Space}\\u2800\\u115f\\u1160\\u3164\\uffa0])`;",
+    to: "const INKLESS = String.raw`(?:(?!\\n)[\\p{White_Space}\\u115f\\u1160\\u3164\\uffa0])` /* MUT_SIGNDATA_NO_BRAILLE */;",
+    marker: "MUT_SIGNDATA_NO_BRAILLE",
+  },
+  {
+    name: "signData's blank set is only space and tab again",
+    file: SIGN_DATA,
+    from: "const INKLESS = String.raw`(?:(?!\\n)[\\p{White_Space}\\u2800\\u115f\\u1160\\u3164\\uffa0])`;",
+    to: "const INKLESS = String.raw`(?:[ \\t])` /* MUT_SIGNDATA_INKLESS_SPACE_TAB */;",
+    marker: "MUT_SIGNDATA_INKLESS_SPACE_TAB",
+  },
+  {
+    name: "signData counts a combining mark on blank space as ink again",
+    file: SIGN_DATA,
+    from: '      out += onBlank ? " " : c;',
+    to: "      out += c; /* MUT_SIGNDATA_STRAY_MARK_INK */",
+    marker: "MUT_SIGNDATA_STRAY_MARK_INK",
+  },
+  {
+    name: "signData no longer measures how blank a long line is",
+    file: SIGN_DATA,
+    from: "  if (mostlyBlank(shape)) return null;",
+    to: "  /* MUT_SIGNDATA_NO_DENSITY */",
+    marker: "MUT_SIGNDATA_NO_DENSITY",
+  },
+  {
+    name: "signData's density limit lets a line through at 49 blanks in 64",
+    file: SIGN_DATA,
+    from: "    if (cols >= window && blank * 4 > cols * 3) return true;",
+    to: "    if (cols >= window && blank * 4 > cols * 3 + 4) return true; /* MUT_SIGNDATA_DENSITY_OFF_BY_ONE */",
+    marker: "MUT_SIGNDATA_DENSITY_OFF_BY_ONE",
+  },
+  {
+    name: "signData no longer measures density on one line",
+    file: SIGN_DATA,
+    from: "  if (lines.some((line) => blankWindow(line, DENSITY_WINDOW))) return true;",
+    to: "  /* MUT_SIGNDATA_NO_LINE_WINDOW */",
+    marker: "MUT_SIGNDATA_NO_LINE_WINDOW",
+  },
+  {
+    name: "signData no longer measures density across lines",
+    file: SIGN_DATA,
+    from: '  return blankWindow(lines.join(""), TEXT_DENSITY_WINDOW);',
+    to: '  return false && blankWindow(lines.join(""), TEXT_DENSITY_WINDOW); /* MUT_SIGNDATA_NO_TEXT_WINDOW */',
+    marker: "MUT_SIGNDATA_NO_TEXT_WINDOW",
+  },
+  {
+    name: "signData counts the ideographic space as one column of blank",
+    file: SIGN_DATA,
+    from: '    out += WIDE_INKLESS.test(c) ? "  " : c;',
+    to: '    out += WIDE_INKLESS.test(c) ? c : c; /* MUT_SIGNDATA_WIDE_BLANK_ONE */',
+    marker: "MUT_SIGNDATA_WIDE_BLANK_ONE",
+  },
+  {
+    name: "signData counts a wide inked character as one column",
+    file: SIGN_DATA,
+    from: "const columns = (c: string): number => (WIDE_INK.test(c) ? 2 : 1);",
+    to: "const columns = (c: string): number => (WIDE_INK.test(c) ? 1 : 1); /* MUT_SIGNDATA_WIDE_INK_ONE */",
+    marker: "MUT_SIGNDATA_WIDE_INK_ONE",
+  },
+  {
+    name: "signData shows a long blank run in the middle of a line as text",
+    file: SIGN_DATA,
+    from: "  if (LONG_INKLESS_RUN.test(shape)) return null;",
+    to: "  /* MUT_SIGNDATA_MID_RUN */",
+    marker: "MUT_SIGNDATA_MID_RUN",
+  },
+  {
+    name: "signData lets 17 blank characters in a row through",
+    file: SIGN_DATA,
+    from: "const LONG_INKLESS_RUN = new RegExp(String.raw`${INKLESS}{${MAX_EDGE_WHITESPACE + 1}}`, \"u\");",
+    to: "const LONG_INKLESS_RUN = new RegExp(String.raw`${INKLESS}{${MAX_EDGE_WHITESPACE + 2}}`, \"u\") /* MUT_SIGNDATA_MID_RUN_BOUND */;",
+    marker: "MUT_SIGNDATA_MID_RUN_BOUND",
+  },
+  {
+    name: "signData shows stacked combining marks as text",
+    file: SIGN_DATA,
+    from: "  if (STACKED_MARKS.test(text)) return null;",
+    to: "  /* MUT_SIGNDATA_STACKED_MARKS */",
+    marker: "MUT_SIGNDATA_STACKED_MARKS",
+  },
+  {
+    name: "signData lets four combining marks in a row through",
+    file: SIGN_DATA,
+    from: "const STACKED_MARKS = /\\p{M}{4}/u;",
+    to: "const STACKED_MARKS = /\\p{M}{5}/u /* MUT_SIGNDATA_MARKS_BOUND */;",
+    marker: "MUT_SIGNDATA_MARKS_BOUND",
+  },
+  {
+    name: "signData shows a grapheme cluster of any length as text",
+    file: SIGN_DATA,
+    from: "    if ([...segment].length > MAX_CLUSTER_CODE_POINTS) return null;",
+    to: "    if ([...segment].length > MAX_CLUSTER_CODE_POINTS) continue /* MUT_SIGNDATA_CLUSTER */;",
+    marker: "MUT_SIGNDATA_CLUSTER",
+  },
+  {
+    name: "signData lets a 17-code-point grapheme cluster through",
+    file: SIGN_DATA,
+    from: "const MAX_CLUSTER_CODE_POINTS = 16;",
+    to: "const MAX_CLUSTER_CODE_POINTS = 17 /* MUT_SIGNDATA_CLUSTER_BOUND */;",
+    marker: "MUT_SIGNDATA_CLUSTER_BOUND",
+  },
+  {
+    name: "signData shows text unchecked when the engine has no Intl.Segmenter",
+    file: SIGN_DATA,
+    from: "  if (typeof Intl === \"undefined\" || typeof Intl.Segmenter !== \"function\") return null;",
+    to: "  if (typeof Intl === \"undefined\" || typeof Intl.Segmenter !== \"function\") return text /* MUT_SIGNDATA_NO_SEGMENTER */;",
+    marker: "MUT_SIGNDATA_NO_SEGMENTER",
+  },
+  {
+    name: "signData screen calls every key the stake key",
+    file: DATA_SIGN_VIEW,
+    from: "        {plan.kind === \"stake\" ? t(\"cip30_sign_data_key_stake\") : t(\"cip30_sign_data_key_payment\")}",
+    to: "        {/* MUT_DATASIGN_KIND */ t(\"cip30_sign_data_key_stake\")}",
+    marker: "MUT_DATASIGN_KIND",
+  },
+  {
+    name: "signData screen labels a hex-only message as a text message",
+    file: DATA_SIGN_VIEW,
+    from: "        <p className=\"approve-note\">{t(\"cip30_sign_data_message_hex\")}</p>",
+    to: "        <p className=\"approve-note\">{t(\"cip30_sign_data_message\") /* MUT_DATASIGN_HEX_LABEL */}</p>",
+    marker: "MUT_DATASIGN_HEX_LABEL",
+  },
+  {
+    name: "signData screen prints a wrong line count",
+    file: DATA_SIGN_VIEW,
+    from: "        {t(\"cip30_sign_data_size\", { bytes: size.bytes, lines: size.lines })}",
+    to: "        {t(\"cip30_sign_data_size\", { bytes: size.bytes, lines: 1 /* MUT_DATASIGN_SIZE */ })}",
+    marker: "MUT_DATASIGN_SIZE",
+  },
+  {
+    name: "signData screen puts the message text in the scrolling box",
+    file: DATA_SIGN_VIEW,
+    from: "          <pre className=\"mono approve-sign-data\" data-testid=\"sign-data-text\">",
+    to: "          <pre className=\"mono approve-sign-data approve-sign-data-scroll /* MUT_DATASIGN_TEXT_CUT */\" data-testid=\"sign-data-text\">",
+    marker: "MUT_DATASIGN_TEXT_CUT",
+  },
+  {
+    name: "signData message text box is cut to a height again in popup.css",
+    file: POPUP_CSS,
+    from: ".approve-sign-data { white-space: pre-wrap; word-break: break-all; overflow-wrap: anywhere; margin: 0; }",
+    to: ".approve-sign-data { white-space: pre-wrap; word-break: break-all; overflow-wrap: anywhere; margin: 0; max-height: 160px; overflow-y: auto; /* MUT_POPUP_SIGN_DATA_CUT */ }",
+    marker: "MUT_POPUP_SIGN_DATA_CUT",
+  },
+  {
+    name: "signData text box lets a no-break-space run push the letters out of the box again",
+    file: POPUP_CSS,
+    from: ".approve-sign-data { white-space: pre-wrap; word-break: break-all; overflow-wrap: anywhere; margin: 0; }",
+    to: ".approve-sign-data { white-space: pre-wrap; word-break: break-all; margin: 0; /* MUT_POPUP_SIGN_DATA_NO_WRAP_ANYWHERE */ }",
+    marker: "MUT_POPUP_SIGN_DATA_NO_WRAP_ANYWHERE",
+  },
+  {
+    name: "collateral that can lose more than 5 ADA is described and signed",
+    file: TX_SUMMARY,
+    from: "  if (risk > COLLATERAL_CAP_LOVELACE) {",
+    to: "  if (false /* MUT_TS_COLL_OVER_CAP */) {",
+    marker: "MUT_TS_COLL_OVER_CAP",
+  },
+  {
+    name: "collateral holding tokens the return does not give back is described and signed",
+    file: TX_SUMMARY,
+    from: "    if ((retAssets.get(unit) ?? BigInt(0)) < qty) {",
+    to: "    if (false /* MUT_TS_COLL_TOKENS */) {",
+    marker: "MUT_TS_COLL_TOKENS",
+  },
+  {
+    name: "the signer refuses the collateral cap under a generic key, not the screen's",
+    file: SIGN_FOREIGN,
+    from: "throw new LocalSignError(e.key ?? \"sign_foreign_undescribable\", e.message);",
+    to: "throw new LocalSignError(\"sign_foreign_undescribable\" /* MUT_SIGN_KEEP_KEY */, e.message);",
+    marker: "MUT_SIGN_KEEP_KEY",
+  },
+  {
+    name: "the signer adds the stake witness when the account key and the summary disagree",
+    file: SIGN_FOREIGN,
+    from: "      if (accountKey !== counted.has(stakeHash)) {",
+    to: "      if (false /* MUT_SIGN_STAKE_MISMATCH */) {",
+    marker: "MUT_SIGN_STAKE_MISMATCH",
+  },
+  {
+    name: "summary does not count inputs that are not this wallet's",
+    file: TX_SUMMARY,
+    from: "  const foreignInputs = inputList.length - mineCount;",
+    to: "  const foreignInputs = 0 * (inputList.length - mineCount); /* MUT_TS_FOREIGN_INPUTS */",
+    marker: "MUT_TS_FOREIGN_INPUTS",
+  },
+  {
+    name: "summary counts inputs that are not this wallet's only when a Plutus script visibly runs",
+    file: TX_SUMMARY,
+    from: "  const foreignInputs = inputList.length - mineCount;",
+    to: "  const foreignInputs = (b.has(11) || b.has(13) || (decoded[1] instanceof Map && (decoded[1] as Map<unknown, unknown>).has(5))) ? inputList.length - mineCount : 0; /* MUT_TS_FOREIGN_PLUTUS_ONLY */",
+    marker: "MUT_TS_FOREIGN_PLUTUS_ONLY",
+  },
+  {
+    name: "screen: the foreign-inputs warning is never shown",
+    file: TX_SUMMARY_VIEW,
+    from: "      {summary.foreignInputs > 0 && (",
+    to: "      {false /* MUT_VIEW_FOREIGN_INPUTS */ && (",
+    marker: "MUT_VIEW_FOREIGN_INPUTS",
+  },
+  {
+    name: "getCollateral() with no amount asks for exactly 5 ADA again",
+    file: APPROVE,
+    from: "        let target: bigint | undefined;\n",
+    to: "        let target: bigint | undefined = COLLATERAL_CAP_LOVELACE; /* MUT_COLL_NOAMOUNT */\n",
+    marker: "MUT_COLL_NOAMOUNT",
+  },
+  {
+    name: "getCollateral() with no amount offers less than 1 ADA",
+    file: UTXO_SELECT,
+    from: "found.sum >= COLLATERAL_FLOOR_LOVELACE ?",
+    to: "true /* MUT_COLL_FLOOR */ ?",
+    marker: "MUT_COLL_FLOOR",
+  },
+  {
+    name: "getCollateral() with no amount takes the smallest set, not the largest",
+    file: UTXO_SELECT,
+    from: "      if (sum < best.sum) return;",
+    to: "      if (sum > best.sum) return; /* MUT_COLL_LARGEST */",
+    marker: "MUT_COLL_LARGEST",
+  },
+  {
+    name: "screen: a recipient's tokens are not printed on its line",
+    file: TX_SUMMARY_VIEW,
+    from: "the number is the decision. */}\n                <b>{formatAda(r.lovelace)} ADA</b>\n                {r.assets.map((a) => (",
+    to: "the number is the decision. */}\n                <b>{formatAda(r.lovelace)} ADA</b>\n                {r.assets.filter(() => false /* MUT_VIEW_RECIPIENT_ASSETS */).map((a) => (",
+    marker: "MUT_VIEW_RECIPIENT_ASSETS",
+  },
+  {
+    name: "screen: a recipient's datum flag is not printed",
+    file: TX_SUMMARY_VIEW,
+    from: "{r.datum && <span className=\"approve-note\">{t(\"cip30_output_datum\")}</span>}",
+    to: "{false /* MUT_VIEW_RECIPIENT_DATUM */ && <span className=\"approve-note\">{t(\"cip30_output_datum\")}</span>}",
+    marker: "MUT_VIEW_RECIPIENT_DATUM",
+  },
+  // ── The grader of this file. Each rule in classifyRun deleted on its own:
+  // a rule no test needs is a rule a refactor drops without a sound. The
+  // runner has already imported the unmutated grader, so these runs are
+  // graded by the real one. ──
+  ...[
+    ["a failed suite", '["Failed Suites \\\\d+", "Unhandled Errors?"]', '["MUT_CLASSIFY_SUITES", "Unhandled Errors?"]'],
+    ["an unhandled error", '["Failed Suites \\\\d+", "Unhandled Errors?"]', '["Failed Suites \\\\d+", "MUT_CLASSIFY_UNHANDLED"]'],
+    ["the header anchor of the section rule of", 'new RegExp("^[ \\\\t]*⎯+ (?:"', 'new RegExp("(?:" /* MUT_CLASSIFY_SECTION_ANYWHERE */'],
+    ["a transform failure", "SECTION_HEADER.test(text) || TRANSFORM_FAILED.test(text)", "SECTION_HEADER.test(text) || /MUT_CLASSIFY_TRANSFORM/.test(text)"],
+    ["the FAIL-header anchor of the transform rule of", 'const TRANSFORM_FAILED = new RegExp(AFTER_FAIL + "Error: Transform failed)", "m");', 'const TRANSFORM_FAILED = /Transform failed/; /* MUT_CLASSIFY_TRANSFORM_ANYWHERE */'],
+    ["the FAIL-header anchor of", 'const AFTER_FAIL = "^[ \\\\t]*FAIL[ \\\\t][^\\\\n]*\\\\n[ \\\\t]*(?:";', 'const AFTER_FAIL = "^\\\\s*(?:" /* MUT_CLASSIFY_ANCHOR */;'],
+    ["the type-checked switch of", "  if ((compiled ? COMPILER_MISSES : TYPO_CLASS).test(text)) return \"broken\";", "  if (TYPO_CLASS.test(text) /* MUT_CLASSIFY_IGNORE_COMPILED */) return \"broken\";"],
+    ["`is not defined` after a type-check among", 'const COMPILER_MISSES = new RegExp(AFTER_FAIL + ["ReferenceError: .* is not defined", "SyntaxError: "]', 'const COMPILER_MISSES = new RegExp(AFTER_FAIL + ["MUT_CLASSIFY_COMPILED_REF", "SyntaxError: "]'],
+    ["a SyntaxError among", '      "SyntaxError: ",', '      "MUT_CLASSIFY_SYNTAX",'],
+    ["`is not a function` among", '      "TypeError: .* is not a function",', '      "MUT_CLASSIFY_NOT_FUNCTION",'],
+    ["`before initialization` among", "      \"ReferenceError: Cannot access '.*' before initialization\",", '      "MUT_CLASSIFY_BEFORE_INIT",'],
+    ["`is not a constructor` among", '      "TypeError: .* is not a constructor",', '      "MUT_CLASSIFY_NOT_CONSTRUCTOR",'],
+    ["`is not iterable` among", '      "TypeError: .* is not iterable",', '      "MUT_CLASSIFY_NOT_ITERABLE",'],
+  ].map(([what, from, to]) => ({
+    name: `classify-run: ${what} the broken rules is no longer read`,
+    file: CLASSIFY_RUN,
+    from,
+    to,
+    marker: /MUT_CLASSIFY_[A-Z_]+/.exec(to)[0],
+  })),
   // ── The withdraw door: since Conway the node refuses a reward withdrawal from
   // an account with no vote delegation, and a button that only appears with
   // rewards in hand left new users looking for a feature that seemed missing ──
@@ -1366,27 +2354,51 @@ const MUTANTS = [
  * from the screen, so no screen test can tell whether its own check is there.
  */
 
-/**
- * `node scripts/mutants.mjs <text>` runs only the mutants whose name contains
- * `<text>` (e.g. `MUT56R3-`), after the same baseline. A filter that matches
- * nothing is an error, not an empty green run.
- */
-const FILTER = process.argv[2];
-const SELECTED = FILTER ? MUTANTS.filter((m) => m.name.includes(FILTER)) : MUTANTS;
-if (SELECTED.length === 0) {
-  console.error(`No mutant name contains "${FILTER}".`);
-  process.exit(2);
-}
-
 const read = (rel) => readFileSync(join(REPO, rel), "utf8");
 const write = (rel, text) => writeFileSync(join(REPO, rel), text);
 
-const runTests = () =>
-  spawnSync("npx", ["vitest", "run", ...TESTS], { cwd: REPO, encoding: "utf8" }).status ?? 1;
+const VITEST = [
+  "vitest",
+  "run",
+  "--pool=forks",
+  "--poolOptions.forks.maxForks=3",
+  "--poolOptions.forks.minForks=1",
+  ...TESTS,
+];
+
+// "pass", "caught" or "broken" for one run; the rules and why are in
+// scripts/lib/classify-run.mjs, kept apart so a test can import them.
+
+// `compiled`: every file the mutant edits passed the type-check, so the
+// grader can leave the run-time errors a fair mutant raises to the tests.
+const runTests = (compiled = false) => {
+  const r = spawnSync("npx", VITEST, {
+    cwd: REPO,
+    encoding: "utf8",
+    env: { ...process.env, NO_COLOR: "1", FORCE_COLOR: "0" },
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  return classifyRun(r.status ?? 1, `${r.stdout ?? ""}\n${r.stderr ?? ""}\n${r.error ? String(r.error) : ""}`, { compiled });
+};
 
 const editsOf = (m) => m.edits ?? [m];
+// A name filter, for re-measuring the guards one change touched. The summary
+// line says how many ran out of how many, so a filtered run cannot be read
+// as the whole list.
+//
+// `--typecheck-only` runs the compile step below for every selected mutant and
+// no test at all: it lists the mutants that would be graded broken before a
+// test starts, in seconds rather than the hours a full run takes.
+const args = process.argv.slice(2);
+const typecheckOnly = args.includes("--typecheck-only");
+const only = args.find((a) => !a.startsWith("--"));
+const RUN = only ? MUTANTS.filter((m) => m.name.includes(only)) : MUTANTS;
+if (RUN.length === 0) {
+  console.error(`No mutant name contains ${JSON.stringify(only)}.`);
+  process.exit(1);
+}
 const originals = new Map();
-for (const m of SELECTED) for (const e of editsOf(m)) if (!originals.has(e.file)) originals.set(e.file, read(e.file));
+for (const m of RUN) for (const e of editsOf(m)) if (!originals.has(e.file)) originals.set(e.file, read(e.file));
 const restoreAll = () => {
   for (const [rel, text] of originals) write(rel, text);
 };
@@ -1399,17 +2411,34 @@ process.on("SIGINT", () => {
 
 let survived = 0;
 let unanchored = 0;
+let broken = 0;
+let uncompiled = 0;
+let staleUndeclared = 0;
+
+// The compile step, before any test: a misspelt name in a mutant's `to` is a
+// broken mutant even when the code under test catches the error it raises at
+// run time, which `classifyRun` — reading only vitest's output — cannot see.
+// Why and how: scripts/lib/typecheck-mutant.mjs. Measured 2026-11-12: built
+// once in ~1.4 s, then ~150 ms per mutant; a whole `tsc --noEmit` is ~3 s.
+const typechecker = createTypechecker(REPO);
+const typecheckBaseline = typechecker.baseline([...originals.keys()]);
+if (typecheckBaseline.typo.length || typecheckBaseline.other.length) {
+  console.error("The unmutated tree does not type-check — fix that first:\n  " +
+    [...typecheckBaseline.typo, ...typecheckBaseline.other].map((d) => d.text).join("\n  "));
+  process.exit(1);
+}
 
 try {
   // Refuse to grade anything if the tree is already red: every mutation would
   // read as "caught" for a reason that has nothing to do with the mutation.
-  if (runTests() !== 0) {
+  const baseline = typecheckOnly ? "pass" : runTests();
+  if (baseline !== "pass") {
     console.error("Baseline is already failing — fix that first; mutation results\n" +
-      "measured against a red baseline mean nothing.");
+      `measured against a red baseline mean nothing (baseline: ${baseline}).`);
     process.exit(1);
   }
 
-  for (const m of SELECTED) {
+  for (const m of RUN) {
     // Edits apply in order, each to the file as the previous ones left it.
     const next = new Map();
     let miss;
@@ -1427,9 +2456,54 @@ try {
       unanchored += 1;
       continue;
     }
+    // Checked in memory, before anything is written: a mutant that does not
+    // compile never touches the tree.
+    const compiled = typechecker.check(next);
+    // `undeclared`: names a mutant uses on purpose without declaring them, for
+    // a gate that reads source and never runs it (see the copy-guard entries).
+    const typo = compiled.typo.filter((d) => !(m.undeclared ?? []).includes(d.name));
+    // A name listed there that no diagnostic names is stale: the mutant no
+    // longer does what the entry says, or the name now resolves. Either way
+    // the list is no longer what it claims, so it is reported, not ignored.
+    const named = new Set(compiled.typo.map((d) => d.name));
+    const stale = (m.undeclared ?? []).filter((n) => !named.has(n));
+    if (stale.length) {
+      console.error(`  UNDECLARED STALE  ← ${m.name}\n          (\`undeclared\` lists ${stale.map((n) => JSON.stringify(n)).join(", ")}, which no compile diagnostic names` +
+        (compiled.unchecked.length ? `; ${compiled.unchecked.join(", ")} is outside tsconfig.json, so nothing can name it` : "") + ")");
+      staleUndeclared += 1;
+      continue;
+    }
+    if (compiled.unchecked.length) {
+      if (typecheckOnly) console.log(`  UNCHECKED ← ${m.name}\n          (outside tsconfig.json: ${compiled.unchecked.join(", ")})`);
+      uncompiled += 1;
+    }
+    if (compiled.other.length && typecheckOnly) {
+      // A type change can be the point of a mutant, so it is shown, not graded.
+      console.log(`  TYPE    ← ${m.name}\n          ${compiled.other.map((d) => d.text).join("\n          ")}`);
+    }
+    if (typo.length) {
+      console.error(`  MUTANT BROKEN  ← ${m.name}\n          (does not compile: ${typo.map((d) => d.text).join("; ")})`);
+      broken += 1;
+      continue;
+    }
+    if (typecheckOnly) continue;
     for (const [rel, text] of next) write(rel, text);
-    const caught = runTests() !== 0;
+    // The marker is read back from disk, not from `next`: a write that went
+    // somewhere else would otherwise grade the unmutated file.
+    if (m.marker && ![...next.keys()].some((rel) => read(rel).includes(m.marker))) {
+      for (const rel of next.keys()) write(rel, originals.get(rel));
+      console.error(`  ANCHOR  ← ${m.name}\n          (marker ${m.marker} not found on disk)`);
+      unanchored += 1;
+      continue;
+    }
+    const result = runTests(compiled.unchecked.length === 0);
     for (const rel of next.keys()) write(rel, originals.get(rel));
+    if (result === "broken") {
+      console.error(`  MUTANT BROKEN  ← ${m.name}\n          (no test failed on behaviour: a syntax, compile or load error, an unhandled error, or a typo-class error such as "x is not defined")`);
+      broken += 1;
+      continue;
+    }
+    const caught = result === "caught";
     console.log(`  ${caught ? "RED   " : "GREEN "}  ← ${m.name}`);
     if (!caught) survived += 1;
   }
@@ -1437,10 +2511,25 @@ try {
   restoreAll();
 }
 
-const bad = survived + unanchored;
+const bad = survived + unanchored + broken + staleUndeclared;
+if (typecheckOnly) {
+  // Nothing was graded: the line must not read as a pinned count.
+  console.log(
+    `\ntype-check only, no test ran: ${RUN.length - broken - unanchored - staleUndeclared}/${RUN.length} compile` +
+      (only ? ` (filter ${JSON.stringify(only)}: ${RUN.length} of ${MUTANTS.length} mutants)` : "") +
+      (broken ? ` · ${broken} MUTANT BROKEN (misspelt name)` : "") +
+      (unanchored ? ` · ${unanchored} anchor(s) no longer match the source` : "") +
+      (staleUndeclared ? ` · ${staleUndeclared} UNDECLARED STALE (an \`undeclared\` name no diagnostic names)` : "") +
+      (uncompiled ? ` · ${uncompiled} edit a file outside tsconfig.json (not type-checked)` : ""),
+  );
+  process.exit(broken + unanchored + staleUndeclared === 0 ? 0 : 1);
+}
 console.log(
-  `\n${SELECTED.length - bad}/${SELECTED.length} guards pinned` +
+  `\n${RUN.length - bad}/${RUN.length} guards pinned` +
+    (only ? ` (filter ${JSON.stringify(only)}: ${RUN.length} of ${MUTANTS.length} mutants)` : "") +
     (survived ? ` · ${survived} removable with every test still green` : "") +
-    (unanchored ? ` · ${unanchored} anchor(s) no longer match the source` : ""),
+    (unanchored ? ` · ${unanchored} anchor(s) no longer match the source` : "") +
+    (broken ? ` · ${broken} MUTANT BROKEN (did not run as a test failure)` : "") +
+    (staleUndeclared ? ` · ${staleUndeclared} UNDECLARED STALE (an \`undeclared\` name no diagnostic names)` : ""),
 );
 process.exit(bad === 0 ? 0 : 1);

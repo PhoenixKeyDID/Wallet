@@ -45,12 +45,16 @@ function shown(overrides: Partial<TxSummary> = {}) {
   const summary: TxSummary = {
     net: [],
     toOthers: [],
+    toSelfWithDatum: [],
     fee: BigInt(170_000),
     ownInputs: 1,
     totalInputs: 1,
-    certificates: 0,
+    foreignInputs: 0,
+    burns: [],
+    collateral: null,
     withdrawals: 0,
-    mints: 0,
+    foreignWithdrawals: 0,
+    ownRewardKeyHashes: [],
     withdrawalLovelace: BigInt(0),
     ...overrides,
   };
@@ -78,12 +82,77 @@ describe("TxSummaryView — what the approval window shows", () => {
   });
 
   it("prints every recipient that is not this wallet in full", () => {
-    const text = shown({ toOthers: [{ address: PAYEE, lovelace: BigInt(2_000_000), mine: false }] });
+    const text = shown({ toOthers: [{ address: PAYEE, lovelace: BigInt(2_000_000), assets: [], mine: false, datum: false }] });
     expect(text).toContain(PAYEE);
+  });
+
+  // The tokens each recipient gets, and whether a datum rides on that output,
+  // are printed on that recipient's line: a script address receiving LAMP
+  // under a datum is where a contract keeps someone's money.
+  it("prints each recipient's tokens and its datum flag on its own line", () => {
+    const text = shown({
+      toOthers: [{ address: PAYEE, lovelace: BigInt(2_000_000), assets: [token(REAL, BigInt(9))], mine: false, datum: true }],
+    });
+    expect(text).toContain(en.cip30_paying);
+    expect(text).toContain(`9 LAMP · ${policyIdShort(REAL)}`);
+    expect(text).toContain(en.cip30_output_datum);
+
+    const plain = shown({ toOthers: [{ address: PAYEE, lovelace: BigInt(2_000_000), assets: [], mine: false, datum: false }] });
+    expect(plain).not.toContain(en.cip30_output_datum);
+    expect(plain).not.toContain("LAMP");
+  });
+
+  // A drip-pot claim pays LAMP to this wallet's own address under a datum. It
+  // is change — the wallet sees and spends it — but the datum on it must still
+  // be on the screen, with the amount, the token and the address.
+  it("lists change that carries a datum, with the datum note, and nothing for plain change", () => {
+    const text = shown({
+      toSelfWithDatum: [
+        { address: PAYEE, lovelace: BigInt(1_300_000), assets: [token(REAL, BigInt(7))], mine: true, datum: true },
+      ],
+    });
+    expect(text).toContain(en.cip30_to_self_with_datum);
+    expect(text).toContain(PAYEE);
+    expect(text).toContain(en.cip30_output_datum);
+    expect(text).toContain(`7 LAMP · ${policyIdShort(REAL)}`);
+    expect(text).not.toContain(en.cip30_paying);
+
+    const plain = shown();
+    expect(plain).not.toContain(en.cip30_to_self_with_datum);
+    expect(plain).not.toContain(en.cip30_output_datum);
+  });
+
+  // An input that is not this wallet's can be unlocked by this wallet's
+  // signature (a Plutus or a native script), and its value is not in the
+  // amount on screen.
+  it("warns, with the count, when the transaction spends inputs that are not this wallet's", () => {
+    const text = shown({ ownInputs: 1, totalInputs: 3, foreignInputs: 2 });
+    expect(text).toContain(en.cip30_foreign_inputs.replace("{{n}}", "2"));
+    expect(shown({ ownInputs: 1, totalInputs: 1 })).not.toContain(en.cip30_foreign_inputs.split("{{n}}")[0]!);
   });
 
   it("says when it recognised only some of the inputs", () => {
     const text = shown({ ownInputs: 1, totalInputs: 3 });
     expect(text).toContain("1 of 3");
+  });
+
+  // "Your staking rewards" is a claim about whose money it is. It holds only
+  // for this wallet's own reward account.
+  it("says 'your staking rewards' only for this wallet's own reward account", () => {
+    const own = shown({ withdrawals: 1, foreignWithdrawals: 0, withdrawalLovelace: BigInt(5_000_000) });
+    expect(own).toContain(en.cip30_extra_actions);
+    expect(own).not.toContain(en.cip30_foreign_withdrawal);
+
+    const foreign = shown({ withdrawals: 1, foreignWithdrawals: 1 });
+    expect(foreign).not.toContain(en.cip30_extra_actions);
+    expect(foreign).toContain(en.cip30_foreign_withdrawal);
+
+    const both = shown({ withdrawals: 2, foreignWithdrawals: 1, withdrawalLovelace: BigInt(5_000_000) });
+    expect(both).toContain(en.cip30_extra_actions);
+    expect(both).toContain(en.cip30_foreign_withdrawal);
+
+    const none = shown();
+    expect(none).not.toContain(en.cip30_extra_actions);
+    expect(none).not.toContain(en.cip30_foreign_withdrawal);
   });
 });

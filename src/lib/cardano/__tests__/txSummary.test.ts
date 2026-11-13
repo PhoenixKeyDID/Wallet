@@ -14,7 +14,7 @@
 import { describe, it, expect } from "vitest";
 import { Buffer } from "buffer";
 import BigNumber from "bignumber.js";
-import { Encoder } from "@stricahq/cbors";
+import { CborTag, Encoder } from "@stricahq/cbors";
 import { utils as tyUtils, types as tyTypes } from "@stricahq/typhonjs";
 import { summariseTx, UndescribableTxError } from "../txSummary";
 import { buildMultiSend, buildSendOutputs } from "../send";
@@ -94,7 +94,7 @@ describe("summariseTx — what it costs this wallet", () => {
     // the mistake this whole module exists to avoid.
     const utxo = myUtxo("10000000");
     const built = payment("3", [], utxo);
-    const s = summariseTx(built.unsignedCbor, ownership(utxo.held).addresses, ownership(utxo.held).inputs);
+    const s = summariseTx(built.unsignedCbor, ownership(utxo.held).addresses, ownership(utxo.held).inputs, 0);
 
     const ada = s.net.find((n) => n.unit === "");
     expect(ada).toBeDefined();
@@ -106,7 +106,7 @@ describe("summariseTx — what it costs this wallet", () => {
     const utxo = myUtxo("10000000");
     const built = payment("3", [], utxo);
     const own = ownership(utxo.held);
-    const s = summariseTx(built.unsignedCbor, own.addresses, own.inputs);
+    const s = summariseTx(built.unsignedCbor, own.addresses, own.inputs, 0);
 
     expect(s.toOthers).toHaveLength(1);
     expect(s.toOthers[0]!.address).toBe(PAYEE);
@@ -120,7 +120,7 @@ describe("summariseTx — what it costs this wallet", () => {
   it("gives the address in full, never truncated", () => {
     const utxo = myUtxo("10000000");
     const own = ownership(utxo.held);
-    const s = summariseTx(payment("3", [], utxo).unsignedCbor, own.addresses, own.inputs);
+    const s = summariseTx(payment("3", [], utxo).unsignedCbor, own.addresses, own.inputs, 0);
     expect(s.toOthers[0]!.address).toHaveLength(PAYEE.length);
     expect(s.toOthers[0]!.address).not.toContain("…");
   });
@@ -128,7 +128,7 @@ describe("summariseTx — what it costs this wallet", () => {
   it("counts how many of the inputs are this wallet's", () => {
     const utxo = myUtxo("10000000");
     const own = ownership(utxo.held);
-    const s = summariseTx(payment("3", [], utxo).unsignedCbor, own.addresses, own.inputs);
+    const s = summariseTx(payment("3", [], utxo).unsignedCbor, own.addresses, own.inputs, 0);
     expect(s.ownInputs).toBe(1);
     expect(s.totalInputs).toBe(1);
   });
@@ -137,7 +137,7 @@ describe("summariseTx — what it costs this wallet", () => {
     const utxo = myUtxo("10000000");
     const own = ownership(utxo.held);
     const built = payment("3", [], utxo);
-    const s = summariseTx(built.unsignedCbor, own.addresses, own.inputs);
+    const s = summariseTx(built.unsignedCbor, own.addresses, own.inputs, 0);
     expect(s.fee.toString()).toBe(built.fee);
   });
 
@@ -150,7 +150,7 @@ describe("summariseTx — what it costs this wallet", () => {
       utxo,
     );
     const own = ownership(utxo.held);
-    const s = summariseTx(built.unsignedCbor, own.addresses, own.inputs);
+    const s = summariseTx(built.unsignedCbor, own.addresses, own.inputs, 0);
 
     const tok = s.net.find((n) => n.unit === unit);
     expect(tok).toBeDefined();
@@ -163,7 +163,7 @@ describe("summariseTx — what it costs this wallet", () => {
     const utxo = myUtxo("10000000", [[unit, BigInt(100)]]);
     const built = payment("2", [], utxo);
     const own = ownership(utxo.held);
-    const s = summariseTx(built.unsignedCbor, own.addresses, own.inputs);
+    const s = summariseTx(built.unsignedCbor, own.addresses, own.inputs, 0);
     // All 100 come back in the change output, so the token is not in `net` at
     // all. Listing it as "0" would put a line on the screen about an asset that
     // is not moving.
@@ -174,7 +174,7 @@ describe("summariseTx — what it costs this wallet", () => {
     const utxo = myUtxo("10000000");
     const built = payment("3", [], utxo);
     // Same transaction, but the wallet does not recognise the input.
-    const s = summariseTx(built.unsignedCbor, ownership(utxo.held).addresses, new Map());
+    const s = summariseTx(built.unsignedCbor, ownership(utxo.held).addresses, new Map(), 0);
     expect(s.ownInputs).toBe(0);
     // Nothing of ours went in, and the change output comes back to us, so the
     // wallet is a net *receiver* here. Negative is the correct sign.
@@ -195,11 +195,11 @@ describe("summariseTx — what it refuses", () => {
   ];
 
   it("refuses bytes that are not a transaction", () => {
-    expect(() => summariseTx("deadbeef", own.addresses, own.inputs)).toThrow(UndescribableTxError);
+    expect(() => summariseTx("deadbeef", own.addresses, own.inputs, 0)).toThrow(UndescribableTxError);
   });
 
   it("refuses an empty string rather than describing an empty transaction", () => {
-    expect(() => summariseTx("", own.addresses, own.inputs)).toThrow(UndescribableTxError);
+    expect(() => summariseTx("", own.addresses, own.inputs, 0)).toThrow(UndescribableTxError);
   });
 
   // The list of body fields is an allow-list. Conway keeps adding them, and a
@@ -212,16 +212,19 @@ describe("summariseTx — what it refuses", () => {
       [2, 170_000],
       [19, new Map()], // voting_procedures — deliberately not in the allow-list
     ]);
-    expect(() => summariseTx(cbor, own.addresses, own.inputs)).toThrow(/cannot describe/);
+    expect(() => summariseTx(cbor, own.addresses, own.inputs, 0)).toThrow(/cannot describe/);
   });
 
   // Collateral is a second spend path: if a script fails, the ledger takes the
   // collateral inputs and pays out only the collateral return, and neither
-  // appears in `net` or `toOthers`. The attack: the page puts a large UTxO of
-  // this wallet into field 13 and aims the return at itself, while the ordinary
-  // path moves a trivial amount — so the screen shows a small, true number.
-  describe("collateral — a second spend path the summary cannot show", () => {
+  // appears in `net` or `toOthers`. A dApp claim needs collateral, so it is
+  // described rather than refused — but only when every collateral input is
+  // this wallet's (otherwise the amount at risk is unknowable) and the return
+  // comes back here with every token. The screen then shows the ADA at risk.
+  describe("collateral — a second spend path, shown with the amount at risk", () => {
     const BIG_OWN = `${"44".repeat(32)}`; // another UTxO of this wallet, 1000 ADA
+    const TOKEN_POLICY = "ab".repeat(28);
+    const TOKEN_NAME = "4142";
     const ordinary: [number, unknown][] = [
       [0, [[Buffer.from(TXID, "hex"), 0]]],
       [1, [outputTo(PAYEE, 200_000), outputTo(MY_CHANGE, 9_600_000)]],
@@ -229,63 +232,150 @@ describe("summariseTx — what it refuses", () => {
     ];
     const collateralFromWallet: [number, unknown] = [13, [[Buffer.from(BIG_OWN, "hex"), 0]]];
     const returnToPage: [number, unknown] = [16, outputTo(PAYEE, 1_000_000)];
-    const totalCollateral: [number, unknown] = [17, 999_000_000];
-    const ownWithBig = new Map([
-      ...own.inputs,
-      [`${BIG_OWN}#0`, { lovelace: BigInt(1_000_000_000), assets: new Map<string, bigint>() }],
-    ]);
+    const returnToMe: [number, unknown] = [16, outputTo(MY_CHANGE, 995_000_000)];
+    const totalCollateral: [number, unknown] = [17, 5_000_000];
+    const withBig = (assets: [string, bigint][] = []) =>
+      new Map([
+        ...own.inputs,
+        [`${BIG_OWN}#0`, { lovelace: BigInt(1_000_000_000), assets: new Map<string, bigint>(assets) }],
+      ]);
+    const tokenValue = (lovelace: number, qty: number) => [
+      lovelace,
+      new Map([[Buffer.from(TOKEN_POLICY, "hex"), new Map([[Buffer.from(TOKEN_NAME, "hex"), qty]])]]),
+    ];
 
     // Control: the ordinary path alone is describable, and reports a small
-    // cost. Without this, a refusal below could be about the shape of the
-    // fixture rather than about collateral.
+    // cost and no collateral.
     it("describes the same transaction once collateral is removed", () => {
-      const s = summariseTx(encodeBody(ordinary), own.addresses, ownWithBig);
+      const s = summariseTx(encodeBody(ordinary), own.addresses, withBig(), 0);
       expect(s.net).toEqual([{ unit: "", policyId: "", assetNameHex: "", amount: BigInt(200_000 + 200_000) }]);
+      expect(s.collateral).toBeNull();
+    });
+
+    it("reports collateral minus return as the amount at risk", () => {
+      const cbor = encodeBody([...ordinary, collateralFromWallet, returnToMe]);
+      const s = summariseTx(cbor, own.addresses, withBig(), 0);
+      expect(s.collateral).toEqual({ riskLovelace: BigInt(5_000_000), inputs: 1 });
+    });
+
+    it("accepts a declared total that matches, and reports it", () => {
+      const cbor = encodeBody([...ordinary, collateralFromWallet, returnToMe, totalCollateral]);
+      expect(summariseTx(cbor, own.addresses, withBig(), 0).collateral!.riskLovelace).toBe(BigInt(5_000_000));
+    });
+
+    // With no return the whole 1000 ADA input is at risk, and the page that
+    // built the transaction decides whether its script fails. Printing the
+    // number was the old answer; the cap refuses it.
+    it("refuses the whole 1000 ADA input at risk when there is no return: above the 5 ADA cap", () => {
+      const cbor = encodeBody([...ordinary, collateralFromWallet]);
+      expect(() => summariseTx(cbor, own.addresses, withBig(), 0)).toThrow(
+        expect.objectContaining({ key: "sign_foreign_collateral_over_cap" }),
+      );
     });
 
     it("refuses the attack: this wallet's UTxO as collateral, return aimed at the page", () => {
-      const cbor = encodeBody([...ordinary, collateralFromWallet, returnToPage, totalCollateral]);
-      expect(() => summariseTx(cbor, own.addresses, ownWithBig)).toThrow(/collateral/);
+      const cbor = encodeBody([...ordinary, collateralFromWallet, returnToPage]);
+      expect(() => summariseTx(cbor, own.addresses, withBig(), 0)).toThrow(/collateral return .*not this wallet/);
     });
 
-    // Attribution is not what the refusal rests on. A UTxO the wallet holds but
-    // has not scanned looks like someone else's; the refusal must not depend on
-    // recognising it.
-    it("refuses collateral even when the wallet does not recognise the input", () => {
+    // An input the wallet does not recognise has an unknown value, so the
+    // amount at risk would be a guess.
+    it("refuses collateral the wallet does not recognise", () => {
       const cbor = encodeBody([...ordinary, collateralFromWallet]);
-      expect(() => summariseTx(cbor, own.addresses, own.inputs)).toThrow(/collateral/);
+      expect(() => summariseTx(cbor, own.addresses, own.inputs, 0)).toThrow(/collateral this wallet cannot account for/);
+    });
+
+    it("refuses tokens put up as collateral with no return giving them back", () => {
+      const cbor = encodeBody([...ordinary, collateralFromWallet]);
+      const held = withBig([[TOKEN_POLICY + TOKEN_NAME, BigInt(7)]]);
+      expect(() => summariseTx(cbor, own.addresses, held, 0)).toThrow(/tokens as collateral/);
+    });
+
+    it("refuses a return that gives back only some of the collateral tokens", () => {
+      const partial: [number, unknown] = [16, [tyUtils.getAddressFromString(MY_CHANGE).getBytes(), tokenValue(995_000_000, 6)]];
+      const cbor = encodeBody([...ordinary, collateralFromWallet, partial]);
+      const held = withBig([[TOKEN_POLICY + TOKEN_NAME, BigInt(7)]]);
+      expect(() => summariseTx(cbor, own.addresses, held, 0)).toThrow(/tokens as collateral/);
+    });
+
+    it("describes token collateral when the return gives every token back", () => {
+      const full: [number, unknown] = [16, [tyUtils.getAddressFromString(MY_CHANGE).getBytes(), tokenValue(995_000_000, 7)]];
+      const cbor = encodeBody([...ordinary, collateralFromWallet, full]);
+      const held = withBig([[TOKEN_POLICY + TOKEN_NAME, BigInt(7)]]);
+      expect(summariseTx(cbor, own.addresses, held, 0).collateral!.riskLovelace).toBe(BigInt(5_000_000));
+    });
+
+    it("refuses a declared total that does not match collateral minus return", () => {
+      const cbor = encodeBody([...ordinary, collateralFromWallet, returnToMe, [17, 4_000_000]]);
+      expect(() => summariseTx(cbor, own.addresses, withBig(), 0)).toThrow(/collateral total/);
+    });
+
+    // The return comes back to this wallet's address with the right amount;
+    // only the datum differs between these two cases. A return under a datum
+    // is refused outright: the screen does not describe what the datum is for,
+    // and a collateral return has no reason to carry one.
+    const returnMapToMe = (datum?: unknown): [number, unknown] => [
+      16,
+      new Map<number, unknown>([
+        [0, tyUtils.getAddressFromString(MY_CHANGE).getBytes()],
+        [1, 995_000_000],
+        ...(datum === undefined ? [] : ([[2, datum]] as [number, unknown][])),
+      ]),
+    ];
+    it("describes a Babbage-shaped collateral return with no datum (control)", () => {
+      const cbor = encodeBody([...ordinary, collateralFromWallet, returnMapToMe()]);
+      expect(summariseTx(cbor, own.addresses, withBig(), 0).collateral).toEqual({
+        riskLovelace: BigInt(5_000_000),
+        inputs: 1,
+      });
+    });
+    it("refuses a collateral return that carries a datum", () => {
+      const inline = encodeBody([...ordinary, collateralFromWallet, returnMapToMe([1, Buffer.from("d87980", "hex")])]);
+      expect(() => summariseTx(inline, own.addresses, withBig(), 0)).toThrow(/collateral return carries a datum/);
+      const byHash = encodeBody([...ordinary, collateralFromWallet, returnMapToMe([0, Buffer.alloc(32, 0xab)])]);
+      expect(() => summariseTx(byHash, own.addresses, withBig(), 0)).toThrow(/collateral return carries a datum/);
     });
 
     it("refuses a collateral return on its own", () => {
-      const cbor = encodeBody([...ordinary, returnToPage]);
-      expect(() => summariseTx(cbor, own.addresses, own.inputs)).toThrow(/collateral/);
+      const cbor = encodeBody([...ordinary, returnToMe]);
+      expect(() => summariseTx(cbor, own.addresses, own.inputs, 0)).toThrow(/no collateral/);
     });
 
     it("refuses a declared collateral total on its own", () => {
       const cbor = encodeBody([...ordinary, totalCollateral]);
-      expect(() => summariseTx(cbor, own.addresses, own.inputs)).toThrow(/collateral/);
+      expect(() => summariseTx(cbor, own.addresses, own.inputs, 0)).toThrow(/no collateral/);
     });
 
-    // A field that is simply unknown keeps the generic wording, so the specific
-    // message above is not a blanket rename of every refusal.
+    it("refuses the same collateral input named twice", () => {
+      const twice: [number, unknown] = [13, [[Buffer.from(BIG_OWN, "hex"), 0], [Buffer.from(BIG_OWN, "hex"), 0]]];
+      const cbor = encodeBody([...ordinary, twice]);
+      expect(() => summariseTx(cbor, own.addresses, withBig(), 0)).toThrow(/twice/);
+    });
+
     it("keeps the generic wording for fields that are not collateral", () => {
       const cbor = encodeBody([...ordinary, [19, new Map()]]);
-      expect(() => summariseTx(cbor, own.addresses, own.inputs)).toThrow(/field 19/);
+      expect(() => summariseTx(cbor, own.addresses, own.inputs, 0)).toThrow(/field 19/);
     });
   });
 
-  it("refuses an output carrying an inline datum", () => {
+  // A datum is the state a contract keeps beside the money; the money still
+  // goes where the address says. A claim pays a script output with a datum, so
+  // it is shown, not refused.
+  it("describes an output carrying an inline datum and flags it", () => {
     const withDatum = new Map<number, unknown>([
       [0, tyUtils.getAddressFromString(PAYEE).getBytes()],
       [1, 3_000_000],
-      [2, [0, Buffer.from("00", "hex")]],
+      [2, [1, Buffer.from("d87980", "hex")]],
     ]);
     const cbor = encodeBody([
       [0, [[Buffer.from(TXID, "hex"), 0]]],
       [1, [withDatum]],
       [2, 170_000],
     ]);
-    expect(() => summariseTx(cbor, own.addresses, own.inputs)).toThrow(/datum/);
+    const s = summariseTx(cbor, own.addresses, own.inputs, 0);
+    expect(s.toOthers).toEqual([
+      { address: PAYEE, lovelace: BigInt(3_000_000), assets: [], datum: true, mine: false },
+    ]);
   });
 
   it("refuses an output carrying a reference script", () => {
@@ -299,7 +389,7 @@ describe("summariseTx — what it refuses", () => {
       [1, [withScript]],
       [2, 170_000],
     ]);
-    expect(() => summariseTx(cbor, own.addresses, own.inputs)).toThrow(/script/);
+    expect(() => summariseTx(cbor, own.addresses, own.inputs, 0)).toThrow(/script/);
   });
 
   it("refuses a malformed policy id rather than folding two assets into one", () => {
@@ -309,7 +399,7 @@ describe("summariseTx — what it refuses", () => {
       [1, [[tyUtils.getAddressFromString(PAYEE).getBytes(), value]]],
       [2, 170_000],
     ]);
-    expect(() => summariseTx(cbor, own.addresses, own.inputs)).toThrow(/policy id/);
+    expect(() => summariseTx(cbor, own.addresses, own.inputs, 0)).toThrow(/policy id/);
   });
 
   it("refuses a negative amount", () => {
@@ -318,7 +408,7 @@ describe("summariseTx — what it refuses", () => {
       [1, [outputTo(PAYEE, -1)]],
       [2, 170_000],
     ]);
-    expect(() => summariseTx(cbor, own.addresses, own.inputs)).toThrow(UndescribableTxError);
+    expect(() => summariseTx(cbor, own.addresses, own.inputs, 0)).toThrow(UndescribableTxError);
   });
 
   it("refuses a transaction with no outputs field it can read", () => {
@@ -326,7 +416,7 @@ describe("summariseTx — what it refuses", () => {
       [0, [[Buffer.from(TXID, "hex"), 0]]],
       [2, 170_000],
     ]);
-    expect(() => summariseTx(cbor, own.addresses, own.inputs)).toThrow(/outputs/);
+    expect(() => summariseTx(cbor, own.addresses, own.inputs, 0)).toThrow(/outputs/);
   });
 });
 
@@ -335,15 +425,14 @@ describe("summariseTx — it notices the things it will not describe in detail",
   const encodeBody = (entries: [number, unknown][]) =>
     Encoder.encode([new Map(entries), new Map(), true, null]).toString("hex");
 
-  it("counts certificates so the screen can refuse to call it a payment", () => {
+  it("refuses a certificate outright — the screen cannot say whom it hands the stake or the vote to", () => {
     const cbor = encodeBody([
       [0, [[Buffer.from(TXID, "hex"), 0]]],
       [1, [[tyUtils.getAddressFromString(PAYEE).getBytes(), 3_000_000]]],
       [2, 170_000],
       [4, [[0, [0, Buffer.from("22".repeat(28), "hex")]]]],
     ]);
-    const s = summariseTx(cbor, own.addresses, own.inputs);
-    expect(s.certificates).toBe(1);
+    expect(() => summariseTx(cbor, own.addresses, own.inputs, 0)).toThrow(/certificate/);
   });
 
   it("counts withdrawals", () => {
@@ -353,6 +442,313 @@ describe("summariseTx — it notices the things it will not describe in detail",
       [2, 170_000],
       [5, new Map([[Buffer.from("e0" + "22".repeat(28), "hex"), 5_000_000]])],
     ]);
-    expect(summariseTx(cbor, own.addresses, own.inputs).withdrawals).toBe(1);
+    const s = summariseTx(cbor, own.addresses, own.inputs, 0);
+    expect(s.withdrawals).toBe(1);
+    expect(s.foreignWithdrawals).toBe(0);
+  });
+
+  // A reward account whose stake key hash is not this wallet's: the screen
+  // must not say "your staking rewards" for it.
+  it("counts a withdrawal from someone else's reward account as foreign, and not into net", () => {
+    const cbor = encodeBody([
+      [0, [[Buffer.from(TXID, "hex"), 0]]],
+      [1, [[tyUtils.getAddressFromString(PAYEE).getBytes(), 3_000_000]]],
+      [2, 170_000],
+      [
+        5,
+        new Map([
+          [Buffer.from("e0" + "99".repeat(28), "hex"), 7_000_000],
+          [Buffer.from("e0" + "22".repeat(28), "hex"), 5_000_000],
+        ]),
+      ],
+    ]);
+    const s = summariseTx(cbor, own.addresses, own.inputs, 0);
+    expect(s.withdrawals).toBe(2);
+    expect(s.foreignWithdrawals).toBe(1);
+    expect(s.withdrawalLovelace).toBe(BigInt(5_000_000));
+  });
+
+  // The 28 bytes after the header are this wallet's stake key hash, but the
+  // header says another network (0xe1 on a testnet wallet) or a script
+  // credential (0xf0): neither account is this wallet's.
+  it.each([
+    ["on another network", "e1"],
+    ["under a script credential", "f0"],
+  ])("counts a withdrawal from an account with this wallet's stake hash %s as foreign", (_label, header) => {
+    const ownStake = own.addresses.find((h) => h.length === 114)!.slice(58);
+    const cbor = encodeBody([
+      [0, [[Buffer.from(TXID, "hex"), 0]]],
+      [1, [[tyUtils.getAddressFromString(PAYEE).getBytes(), 3_000_000]]],
+      [2, 170_000],
+      [5, new Map([[Buffer.from(header + ownStake, "hex"), 5_000_000]])],
+    ]);
+    const s = summariseTx(cbor, own.addresses, own.inputs, 0);
+    expect(s.foreignWithdrawals).toBe(1);
+    expect(s.ownRewardKeyHashes).toEqual([]);
+    expect(s.withdrawalLovelace).toBe(BigInt(0));
+    // The same hash under the right header is this wallet's — the case above
+    // is refused for its header, not for its hash.
+    const mine = encodeBody([
+      [0, [[Buffer.from(TXID, "hex"), 0]]],
+      [1, [[tyUtils.getAddressFromString(PAYEE).getBytes(), 3_000_000]]],
+      [2, 170_000],
+      [5, new Map([[Buffer.from("e0" + ownStake, "hex"), 5_000_000]])],
+    ]);
+    expect(summariseTx(mine, own.addresses, own.inputs, 0).ownRewardKeyHashes).toEqual([ownStake]);
+  });
+});
+
+describe("summariseTx — an output to this wallet's key address under a datum is change", () => {
+  // The wallet holds 100 ADA. The page takes 4.8 ADA and sends 95 ADA back to
+  // the wallet's own key address — under a datum. The ledger ignores a datum on
+  // a key-locked input, so the wallet's UTxO reads keep that output and the
+  // wallet can spend it: the 95 ADA is change, and the cost is 5 ADA. The datum
+  // is still shown (`toSelfWithDatum`). This is the LAMP drip-pot claim's shape.
+  const held = new Map([[`${TXID}#0`, { lovelace: BigInt(100_000_000), assets: new Map<string, bigint>() }]]);
+  const addresses = [hexOf(MINE), hexOf(MY_CHANGE)];
+  const encodeBody = (entries: [number, unknown][]) =>
+    Encoder.encode([new Map(entries), new Map(), true, null]).toString("hex");
+  const mineBytes = () => tyUtils.getAddressFromString(MINE).getBytes();
+  const tx = (back: unknown) =>
+    encodeBody([
+      [0, [[Buffer.from(TXID, "hex"), 0]]],
+      [1, [[tyUtils.getAddressFromString(PAYEE).getBytes(), 4_800_000], back]],
+      [2, 200_000],
+    ]);
+  const backTo = (datum?: unknown, to: Buffer = mineBytes()) =>
+    new Map<number, unknown>([
+      [0, to],
+      [1, 95_000_000],
+      ...(datum === undefined ? [] : ([[2, datum]] as [number, unknown][])),
+    ]);
+
+  it("control: without a datum the 95 ADA is change, the cost is 5 ADA, and nothing is flagged", () => {
+    const s = summariseTx(tx(backTo()), addresses, held, 0);
+    expect(s.net).toEqual([{ unit: "", policyId: "", assetNameHex: "", amount: BigInt(5_000_000) }]);
+    expect(s.toOthers.map((r) => r.address)).toEqual([PAYEE]);
+    expect(s.toSelfWithDatum).toEqual([]);
+  });
+
+  const change = (s: ReturnType<typeof summariseTx>) => {
+    expect(s.net).toEqual([{ unit: "", policyId: "", assetNameHex: "", amount: BigInt(5_000_000) }]);
+    expect(s.toOthers.map((r) => r.address)).toEqual([PAYEE]);
+    expect(s.toSelfWithDatum).toEqual([{ address: MINE, lovelace: BigInt(95_000_000), assets: [], mine: true, datum: true }]);
+  };
+
+  it("an inline datum: the 95 ADA is change, the cost is 5 ADA, and the datum is flagged", () => {
+    change(summariseTx(tx(backTo([1, new CborTag(Buffer.from("d87980", "hex"), 24)])), addresses, held, 0));
+  });
+  it("a datum hash (Babbage shape): the same", () => {
+    change(summariseTx(tx(backTo([0, Buffer.alloc(32, 0xab)])), addresses, held, 0));
+  });
+  it("a datum hash (legacy shape): the same", () => {
+    change(summariseTx(tx([mineBytes(), 95_000_000, Buffer.alloc(32, 0xab)]), addresses, held, 0));
+  });
+
+  // The other half of the rule. A script-locked output under a datum is the
+  // script's, not the wallet's, even if the caller counts the address as its
+  // own: the wallet holds no witness for it and its readers skip it, so here
+  // it is money that leaves, listed with the datum flag.
+  it("a datum at a script address the caller calls its own: the whole 100 ADA leaves", () => {
+    const script = Buffer.from("70" + "44".repeat(28), "hex");
+    const scriptBech = tyUtils.getAddressFromHex(script).getBech32();
+    const s = summariseTx(tx(backTo([1, new CborTag(Buffer.from("d87980", "hex"), 24)], script)), [...addresses, script.toString("hex")], held, 0);
+    expect(s.net).toEqual([{ unit: "", policyId: "", assetNameHex: "", amount: BigInt(100_000_000) }]);
+    expect(s.toOthers).toContainEqual({ address: scriptBech, lovelace: BigInt(95_000_000), assets: [], mine: false, datum: true });
+    expect(s.toSelfWithDatum).toEqual([]);
+  });
+});
+
+// A CBOR map with a duplicate integer key: `@stricahq/cbors` keeps the LATER
+// value and drops the earlier one without a word, so a dangerous field placed
+// first and a harmless duplicate second reads as the harmless one. Each case
+// below shapes the body that way; without the raw-bytes duplicate-key check the
+// summary describes the harmless duplicate (no throw, or a describable tx), so
+// the `toThrow(/given twice/)` assertion FAILS before the fix and PASSES after.
+describe("summariseTx — a field given twice cannot hide behind its duplicate", () => {
+  const own = ownership(myUtxo("10000000").held);
+  const BIG_OWN = "44".repeat(32);
+  const withBig = new Map([
+    ...own.inputs,
+    [`${BIG_OWN}#0`, { lovelace: BigInt(1_000_000_000), assets: new Map<string, bigint>() }],
+  ]);
+
+  const enc = (v: unknown): Buffer => Encoder.encode(v);
+  const outBytes = (addrBech32: string, lovelace: number) =>
+    enc([tyUtils.getAddressFromString(addrBech32).getBytes(), lovelace]);
+  // A map built by hand so a key can appear twice — JS `Map` cannot hold one.
+  // The count in the header includes the duplicate, exactly as the attack would
+  // encode it.
+  const rawMap = (pairs: [number, Buffer][]): Buffer => {
+    const n = pairs.length;
+    const header = n < 24 ? Buffer.from([0xa0 | n]) : Buffer.from([0xb8, n]);
+    const parts: Buffer[] = [header];
+    for (const [k, vBuf] of pairs) {
+      parts.push(enc(k));
+      parts.push(vBuf);
+    }
+    return Buffer.concat(parts);
+  };
+  const tx = (body: Buffer): string =>
+    Buffer.concat([Buffer.from([0x84]), body, Buffer.from([0xa0, 0xf5, 0xf6])]).toString("hex");
+
+  const inputs0 = enc([[Buffer.from(TXID, "hex"), 0]]);
+  const outputs1 = enc([[tyUtils.getAddressFromString(PAYEE).getBytes(), 3_000_000]]);
+  const fee2 = enc(170_000);
+  // stake_registration-shaped certificate: [0, [0, keyhash]]
+  const cert = enc([0, [0, Buffer.from("bb".repeat(28), "hex")]]);
+  const mintMap = enc(new Map([[Buffer.from("ab".repeat(28), "hex"), new Map([[Buffer.from("4142", "hex"), 5]])]]));
+
+  it("certificate (key 4): the cert, not the empty duplicate, is seen and refused", () => {
+    const body = rawMap([
+      [0, inputs0],
+      [1, outputs1],
+      [2, fee2],
+      [4, cert], // dangerous: a real certificate
+      [4, enc([])], // harmless: an empty certificate list
+    ]);
+    expect(() => summariseTx(tx(body), own.addresses, own.inputs, 0)).toThrow(/given twice/);
+  });
+
+  it("mint (key 9): the mint, not the empty duplicate, is seen and refused", () => {
+    const body = rawMap([
+      [0, inputs0],
+      [1, outputs1],
+      [2, fee2],
+      [9, mintMap], // dangerous: creates tokens
+      [9, enc(new Map())], // harmless: an empty mint
+    ]);
+    expect(() => summariseTx(tx(body), own.addresses, own.inputs, 0)).toThrow(/given twice/);
+  });
+
+  it("network id (key 15): the wrong network, not the matching duplicate, is seen and refused", () => {
+    const body = rawMap([
+      [0, inputs0],
+      [1, outputs1],
+      [2, fee2],
+      [15, enc(1)], // dangerous: mainnet, while the wallet is on 0
+      [15, enc(0)], // harmless: matches the wallet's network
+    ]);
+    expect(() => summariseTx(tx(body), own.addresses, own.inputs, 0)).toThrow(/given twice/);
+  });
+
+  it("outputs (key 1): the real outputs, not the empty duplicate, are seen and refused", () => {
+    const body = rawMap([
+      [0, inputs0],
+      [1, enc([outBytes(PAYEE, 999_000_000)])], // dangerous: a large payment
+      [2, fee2],
+      [1, enc([])], // harmless: no outputs
+    ]);
+    expect(() => summariseTx(tx(body), own.addresses, own.inputs, 0)).toThrow(/given twice/);
+  });
+
+  it("collateral (key 13): the collateral input, not the empty duplicate, is seen and refused", () => {
+    const body = rawMap([
+      [0, inputs0],
+      [1, outputs1],
+      [2, fee2],
+      [13, enc([[Buffer.from(BIG_OWN, "hex"), 0]])], // dangerous: puts up a 1000-ADA UTxO
+      [13, enc([])], // harmless: no collateral
+    ]);
+    expect(() => summariseTx(tx(body), own.addresses, withBig, 0)).toThrow(/given twice/);
+  });
+});
+
+// A CBOR *text* key "4" coerces to the integer 4 under `Number(key)`, so it used
+// to pass the body-field allow-list, while `b.get(4)` (an integer lookup) never
+// saw it — a certificate under a string key sailed through invisibly. Before the
+// `typeof key === "number"` guard the summary describes the tx (no cert seen);
+// after it, the unknown field is refused.
+describe("summariseTx — a text key is not an integer key", () => {
+  const own = ownership(myUtxo("10000000").held);
+  const enc = (v: unknown): Buffer => Encoder.encode(v);
+  // body map {0: inputs, 1: outputs, 2: fee, "4": [cert]} — the "4" is TEXT.
+  const body = Buffer.concat([
+    Buffer.from([0xa4]),
+    enc(0),
+    enc([[Buffer.from(TXID, "hex"), 0]]),
+    enc(1),
+    enc([[tyUtils.getAddressFromString(PAYEE).getBytes(), 3_000_000]]),
+    enc(2),
+    enc(170_000),
+    enc("4"), // a text key, not integer 4
+    enc([[0, [0, Buffer.from("bb".repeat(28), "hex")]]]),
+  ]);
+  const txHex = Buffer.concat([Buffer.from([0x84]), body, Buffer.from([0xa0, 0xf5, 0xf6])]).toString("hex");
+
+  it("refuses a body whose field is keyed by a string instead of an integer", () => {
+    expect(() => summariseTx(txHex, own.addresses, own.inputs, 0)).toThrow(/cannot describe/);
+  });
+
+  // Output map {0: addr, 1: coin, "3": script ref} — `Number("3")` is 3, so a
+  // numeric check would let it in while `m.get(3)` never sees it.
+  it("refuses an output whose field is keyed by a string instead of an integer", () => {
+    const output = Buffer.concat([
+      Buffer.from([0xa3]),
+      enc(0),
+      enc(tyUtils.getAddressFromString(PAYEE).getBytes()),
+      enc(1),
+      enc(3_000_000),
+      enc("3"),
+      enc(Buffer.from("8200", "hex")),
+    ]);
+    const b = Buffer.concat([
+      Buffer.from([0xa3]),
+      enc(0),
+      enc([[Buffer.from(TXID, "hex"), 0]]),
+      enc(1),
+      Buffer.from([0x81]),
+      output,
+      enc(2),
+      enc(170_000),
+    ]);
+    const hex = Buffer.concat([Buffer.from([0x84]), b, Buffer.from([0xa0, 0xf5, 0xf6])]).toString("hex");
+    expect(() => summariseTx(hex, own.addresses, own.inputs, 0)).toThrow(/an output has a field this wallet cannot describe/);
+  });
+
+  it("refuses a body that states no fee, rather than showing a fee of 0", () => {
+    const b = Buffer.concat([
+      Buffer.from([0xa2]),
+      enc(0),
+      enc([[Buffer.from(TXID, "hex"), 0]]),
+      enc(1),
+      enc([[tyUtils.getAddressFromString(PAYEE).getBytes(), 3_000_000]]),
+    ]);
+    const hex = Buffer.concat([Buffer.from([0x84]), b, Buffer.from([0xa0, 0xf5, 0xf6])]).toString("hex");
+    expect(() => summariseTx(hex, own.addresses, own.inputs, 0)).toThrow(/states no fee/);
+  });
+});
+
+// A reference-script UTxO the wallet owns is dropped from the spendable set
+// (`walletOwnsOutput`), so without `heldWithScript` it counts as a stranger's
+// input: a tx spending it next to a 2-ADA plain UTxO at the same address shows
+// ~2 ADA leaving and "1 input not yours", while this wallet's key signs the
+// 50-ADA one away. With `heldWithScript` the summary refuses the tx instead.
+describe("summariseTx — a wallet-owned reference-script UTxO is not a stranger's input", () => {
+  const XID = "55".repeat(32); // the 50-ADA reference-script UTxO
+  const addresses = [hexOf(MINE), hexOf(MY_CHANGE)];
+  const held = new Map([[`${TXID}#0`, { lovelace: BigInt(2_000_000), assets: new Map<string, bigint>() }]]);
+  const heldWithScript = new Map([[`${XID}#0`, { lovelace: BigInt(50_000_000), assets: new Map<string, bigint>() }]]);
+  const spendsBoth = Encoder.encode([
+    new Map<number, unknown>([
+      [0, [[Buffer.from(TXID, "hex"), 0], [Buffer.from(XID, "hex"), 0]]],
+      [1, [[tyUtils.getAddressFromString(PAYEE).getBytes(), 1_000_000]]],
+      [2, 200_000],
+    ]),
+    new Map(),
+    true,
+    null,
+  ]).toString("hex");
+
+  it("without heldWithScript it undercounts — the 50 ADA UTxO drains behind a 2 ADA screen (the hole)", () => {
+    const s = summariseTx(spendsBoth, addresses, held, 0);
+    // Only the 2-ADA plain UTxO is counted; the 50-ADA one is "not yours".
+    expect(s.net).toEqual([{ unit: "", policyId: "", assetNameHex: "", amount: BigInt(2_000_000) }]);
+    expect(s.foreignInputs).toBe(1);
+  });
+
+  it("with heldWithScript it refuses the transaction that spends the reference-script UTxO", () => {
+    expect(() => summariseTx(spendsBoth, addresses, held, 0, heldWithScript)).toThrow(UndescribableTxError);
+    expect(() => summariseTx(spendsBoth, addresses, held, 0, heldWithScript)).toThrow(/publishes a script/);
   });
 });
