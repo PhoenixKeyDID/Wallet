@@ -1,11 +1,13 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi as vitest } from "vitest";
 import {
   DELEGATION_UNSEEN_MS,
   DELEGATION_WATCH_LIMIT_MS,
   VOTE_DELEGATION_TTL_SLOTS,
   VOTE_DELEGATION_WATCH_LIMIT_MS,
   delegationWatch,
+  lookUpVoteTx,
   nextAccountIndex,
+  voteDelegationLanded,
   voteDelegationPending,
   voteDelegationWatch,
   type SentDelegation,
@@ -53,7 +55,7 @@ describe("delegationWatch", () => {
 });
 
 describe("voteDelegationWatch", () => {
-  const vote: SentVoteDelegation = { account: ACCOUNT, network: 2, sentAt: T0 };
+  const vote: SentVoteDelegation = { account: ACCOUNT, network: 2, sentAt: T0, txHash: "aa".repeat(32) };
 
   it("is none when nothing was sent, or under another account or network", () => {
     expect(voteDelegationWatch(null, ACCOUNT, 2, T0)).toEqual({ kind: "none" });
@@ -125,5 +127,37 @@ describe("wording", () => {
     expect(vi.local_account_switch_help).not.toMatch(/trục trặc/);
     expect(ja.local_account_switch_help).not.toMatch(/異常/);
     expect(zh.local_account_switch_help).not.toMatch(/故障/);
+  });
+});
+
+describe("lookUpVoteTx — the transaction itself, found in a block", () => {
+  const TX = "ab".repeat(32);
+  const vote: SentVoteDelegation = { account: ACCOUNT, network: 2, sentAt: T0, txHash: TX };
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+
+  it("reports the hash once the look-up says it is in a block, asking on the record's network", async () => {
+    const lookUp = vitest.fn(async () => true);
+    const onLanded = vitest.fn();
+    lookUpVoteTx(vote, lookUp, onLanded);
+    await flush();
+    expect(lookUp).toHaveBeenCalledWith(2, TX);
+    expect(onLanded).toHaveBeenCalledWith(TX);
+  });
+
+  it("does nothing on 'not yet', on a failed look-up, or after release", async () => {
+    const onLanded = vitest.fn();
+    lookUpVoteTx(vote, async () => false, onLanded);
+    lookUpVoteTx(vote, async () => Promise.reject(new Error("koios down")), onLanded);
+    const release = lookUpVoteTx(vote, async () => true, onLanded);
+    release();
+    lookUpVoteTx(null, async () => true, onLanded);
+    await flush();
+    expect(onLanded).not.toHaveBeenCalled();
+  });
+
+  it("the DRep-change signal stays secondary: equal or unread says nothing", () => {
+    expect(voteDelegationLanded({ ...vote, drepBefore: "drep1x" }, "drep1x")).toBe(false);
+    expect(voteDelegationLanded({ ...vote }, "drep1x")).toBe(false);
+    expect(voteDelegationLanded({ ...vote, drepBefore: null }, "drep1x")).toBe(true);
   });
 });

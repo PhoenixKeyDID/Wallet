@@ -77,18 +77,30 @@ export type SentVoteDelegation = {
   /** `Date.now()` at submit. */
   sentAt: number;
   /**
+   * Hash of the submitted transaction, as the submit returned it. The primary
+   * "landed" test: once the indexer has this transaction in a block, the
+   * delegation is on chain whatever the account's DRep reads — which is the
+   * only test that works when the new choice equals the old one (X → X,
+   * Abstain again) or when the DRep before sending was never read. Checked on
+   * the tabs' existing re-read timer; a found hash clears the record
+   * (`WalletTabs`), and with it the waiting line on both tabs.
+   */
+  txHash: string;
+  /**
    * The DRep the chain showed for this account just before sending (`null`:
-   * none; absent: not read). A chain answer that differs from it means the new
-   * choice has landed — the only "landed" test that needs no guess at how the
-   * indexer spells a choice. Absent ⇒ the clock alone decides.
+   * none; absent: not read). A secondary signal only: a chain answer that
+   * differs from it also means the new choice has landed. Equal, or absent,
+   * says nothing — {@link txHash} decides those.
    */
   drepBefore?: string | null;
 };
 
 /**
- * Whether the chain's current answer shows the sent vote delegation landed:
- * it is known, the answer before sending is known, and they differ.
- * `onChain` undefined = not read (or the read failed).
+ * Whether the chain's current answer shows the sent vote delegation landed by
+ * the secondary, DRep-change signal: it is known, the answer before sending is
+ * known, and they differ. `onChain` undefined = not read (or the read failed).
+ * The primary signal — the transaction itself found in a block — clears the
+ * record instead, so it is not asked here.
  */
 export function voteDelegationLanded(
   sent: SentVoteDelegation | null,
@@ -96,6 +108,32 @@ export function voteDelegationLanded(
 ): boolean {
   if (sent === null || sent.drepBefore === undefined || onChain === undefined) return false;
   return onChain !== sent.drepBefore;
+}
+
+/**
+ * One look-up of the sent vote-delegation transaction, for a tab's re-read
+ * timer. Calls `onLanded(txHash)` only on a definite "it is in a block"; "not
+ * yet" and a failed look-up both do nothing — a failure is "not known", and
+ * must neither clear the waiting line nor be shown as "not in". Returns a
+ * release that drops a late answer (the tab moved on, or unmounted).
+ */
+export function lookUpVoteTx(
+  sent: SentVoteDelegation | null,
+  lookUp: (network: PhoenixNetwork, txHash: string) => Promise<boolean>,
+  onLanded: (txHash: string) => void,
+): () => void {
+  if (sent === null) return () => {};
+  let alive = true;
+  const { network, txHash } = sent;
+  lookUp(network, txHash).then(
+    (seen) => {
+      if (alive && seen) onLanded(txHash);
+    },
+    () => {},
+  );
+  return () => {
+    alive = false;
+  };
 }
 
 export type VoteDelegationWatch = { kind: "none" } | { kind: "pending" } | { kind: "unseen" };
@@ -110,9 +148,12 @@ export type VoteDelegationWatch = { kind: "none" } | { kind: "pending" } | { kin
  * - `unseen`: longer than that, still inside the validity window — it most
  *   likely did not get in, but still can until the window closes.
  *
- * Whether the chain already shows it is the caller's half: the Staking tab
- * reads any recorded DRep as "landed", since it only offers Abstain to an
- * account that had none.
+ * Whether the chain already shows it is the caller's half: each tab looks the
+ * transaction up by {@link SentVoteDelegation.txHash} on its re-read timer and
+ * reports a hit, which drops the record. On top of that the Staking tab reads
+ * any recorded DRep as "landed", since it only offers Abstain to an account
+ * that had none, and the Governance tab reads a DRep different from the one
+ * before sending as "landed".
  */
 export function voteDelegationWatch(
   sent: SentVoteDelegation | null,

@@ -18,12 +18,13 @@
  * together and pin that the offer is suppressed and survives a tab switch.
  */
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import { render, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { render, cleanup, fireEvent, screen, waitFor, within, act } from "@testing-library/react";
 import i18next, { type i18n as I18n } from "i18next";
 import { I18nextProvider, initReactI18next } from "react-i18next";
 import type { ReactNode } from "react";
 import en from "../../../../locales/en/wallet.json";
 import type { WalletPort } from "@/lib/cardano";
+import { DELEGATION_UNSEEN_MS } from "../delegationFeedback";
 
 const ACCOUNT = "stake_test1uqtestaccount";
 const DREP = "drep1testdrepidentifier0000abcd";
@@ -38,6 +39,8 @@ const m = vi.hoisted(() => ({
   buildVoteDelegation: vi.fn(),
   toastSuccess: vi.fn(),
   toastError: vi.fn(),
+  fetchTxSeen: vi.fn(),
+  getVoteDelegationState: vi.fn(),
 }));
 
 vi.mock("@/lib/cardano/staking", async (orig) => {
@@ -55,7 +58,7 @@ vi.mock("@/lib/cardano/governance", async (orig) => {
     ...real,
     listDReps: m.listDReps,
     listGovActions: async () => [],
-    getVoteDelegationState: async () => ({ delegatedDRep: null }),
+    getVoteDelegationState: m.getVoteDelegationState,
     rewardAddressFrom: () => ({ getBech32: () => ACCOUNT }),
     buildVoteDelegation: m.buildVoteDelegation,
     parseDRepId: (x: string) => x,
@@ -63,7 +66,7 @@ vi.mock("@/lib/cardano/governance", async (orig) => {
 });
 vi.mock("@/lib/cardano", async (orig) => {
   const real = (await orig()) as Record<string, unknown>;
-  return { ...real, fetchProtocolParams: async () => ({}), fetchTipSlot: async () => 1000 };
+  return { ...real, fetchProtocolParams: async () => ({}), fetchTipSlot: async () => 1000, fetchTxSeen: m.fetchTxSeen };
 });
 vi.mock("@/lib/toast", async (orig) => {
   const real = (await orig()) as Record<string, unknown>;
@@ -98,6 +101,10 @@ beforeEach(async () => {
   m.buildVoteDelegation.mockReturnValue(VOTE_TX);
   m.toastSuccess.mockReset();
   m.toastError.mockReset();
+  m.fetchTxSeen.mockReset();
+  m.fetchTxSeen.mockResolvedValue(false);
+  m.getVoteDelegationState.mockReset();
+  m.getVoteDelegationState.mockResolvedValue({ delegatedDRep: null });
 });
 
 afterEach(() => {
@@ -231,6 +238,113 @@ describe("FIX5: the Governance tab reads the same in-flight record", () => {
     fireEvent.click(historyTab());
     expect(await screen.findByText("history-stub")).toBeTruthy();
     fireEvent.click(governanceTab());
+    expect(await screen.findByText(en.gov_delegate_pending)).toBeTruthy();
+  });
+});
+
+/**
+ * "Landed" read from the transaction itself, not from a DRep change.
+ *
+ * Re-delegating to the DRep already held (X → X), or sending while the DRep
+ * before was never read, leaves no DRep change to see. Judged by that alone,
+ * the line turned into "most likely did not get in" after ten minutes for a
+ * transaction that had landed — and stayed up to two hours, inviting a second,
+ * paid delegation. The hash the submit returned is looked up on the same 20 s
+ * re-read; found in a block ⇒ the record is dropped and both tabs stop waiting.
+ */
+describe("FIX-R2: a sent vote delegation found by its hash clears the line", () => {
+  const TX_HASH = "abcdef0123456789abcdef"; // what `makePort().signAndSubmit` returns
+
+  /** Governance tab: search → delegate to DREP → tick → confirm. */
+  async function delegateOnGovernance(port: ReturnType<typeof makePort>) {
+    fireEvent.click(governanceTab());
+    await waitFor(() => expect(port.getDrepKeyHashHex).toHaveBeenCalled());
+    await waitFor(() => expect(m.getVoteDelegationState).toHaveBeenCalled());
+    // Let the first DRep read settle, so `drepBefore` is what it read.
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: en.gov_search }));
+    const row = (await screen.findByText(DREP)).parentElement!;
+    fireEvent.click(within(row).getByRole("button", { name: en.gov_delegate }));
+    fireEvent.click(await screen.findByLabelText(en.gov_verify_checkbox));
+    const confirm = screen.getByRole("button", { name: en.gov_confirm }) as HTMLButtonElement;
+    await waitFor(() => expect(confirm.disabled).toBe(false));
+    fireEvent.click(confirm);
+    expect(await screen.findByText(en.gov_delegate_pending)).toBeTruthy();
+  }
+
+  /** Past the ten-minute "unseen" mark, in two steps: the first tick, then the rest. */
+  async function passTenMinutes() {
+    await act(async () => {
+      vi.advanceTimersByTime(20_000);
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(DELEGATION_UNSEEN_MS);
+    });
+  }
+
+  it("(a) X → X: the DRep before is the target, the tx is in a block ⇒ no 'unseen' line", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, DREP));
+    m.getVoteDelegationState.mockResolvedValue({ delegatedDRep: DREP });
+    const port = makePort();
+    render(wrap(<WalletTabs port={port} changeAddress={CHANGE_HEX} network={NETWORK} />));
+    await delegateOnGovernance(port);
+
+    m.fetchTxSeen.mockResolvedValue(true);
+    await passTenMinutes();
+    expect(m.fetchTxSeen).toHaveBeenCalledWith(NETWORK, TX_HASH);
+    await waitFor(() => expect(screen.queryByText(en.vote_delegation_unseen)).toBeNull());
+    expect(screen.queryByText(en.gov_delegate_pending)).toBeNull();
+
+    // The record is gone from the parent: the Staking tab shows no line either.
+    fireEvent.click(stakingTab());
+    await screen.findByText(en.withdraw_rewards);
+    expect(screen.queryByText(en.vote_delegation_pending)).toBeNull();
+    expect(screen.queryByText(en.vote_delegation_unseen)).toBeNull();
+  });
+
+  it("(b) the DRep before was never read, the tx is in a block ⇒ no 'unseen' line", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, null));
+    m.getVoteDelegationState.mockRejectedValue(new Error("koios down"));
+    const port = makePort();
+    render(wrap(<WalletTabs port={port} changeAddress={CHANGE_HEX} network={NETWORK} />));
+    await delegateOnGovernance(port);
+    expect(screen.queryByText(en.gov_current_delegation, { exact: false })).toBeNull();
+
+    m.fetchTxSeen.mockResolvedValue(true);
+    await passTenMinutes();
+    await waitFor(() => expect(screen.queryByText(en.vote_delegation_unseen)).toBeNull());
+    expect(screen.queryByText(en.gov_delegate_pending)).toBeNull();
+  });
+
+  it("(c) control: the tx is not found after ten minutes ⇒ the 'unseen' line is up", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, DREP));
+    m.getVoteDelegationState.mockResolvedValue({ delegatedDRep: DREP });
+    const port = makePort();
+    render(wrap(<WalletTabs port={port} changeAddress={CHANGE_HEX} network={NETWORK} />));
+    await delegateOnGovernance(port);
+
+    m.fetchTxSeen.mockResolvedValue(false);
+    await passTenMinutes();
+    expect(m.fetchTxSeen).toHaveBeenCalledWith(NETWORK, TX_HASH);
+    expect(await screen.findByText(en.vote_delegation_unseen)).toBeTruthy();
+  });
+
+  it("a failed look-up is 'not known', not 'landed': the line stays", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, DREP));
+    m.getVoteDelegationState.mockResolvedValue({ delegatedDRep: DREP });
+    const port = makePort();
+    render(wrap(<WalletTabs port={port} changeAddress={CHANGE_HEX} network={NETWORK} />));
+    await delegateOnGovernance(port);
+
+    m.fetchTxSeen.mockRejectedValue(new Error("koios down"));
+    await act(async () => {
+      vi.advanceTimersByTime(20_000);
+    });
+    expect(m.fetchTxSeen).toHaveBeenCalled();
     expect(await screen.findByText(en.gov_delegate_pending)).toBeTruthy();
   });
 });

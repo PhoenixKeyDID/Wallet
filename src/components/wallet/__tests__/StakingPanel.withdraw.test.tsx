@@ -26,6 +26,7 @@ const ACCOUNT = "stake_test1uqtestaccount";
 const NETWORK = 0 as const;
 const CHANGE_HEX = "60" + "11".repeat(28);
 const REWARDS = BigInt(5_000_000);
+const TX_HASH = "abcdef0123456789abcdef";
 
 const m = vi.hoisted(() => ({
   getStakeAccountState: vi.fn(),
@@ -33,6 +34,7 @@ const m = vi.hoisted(() => ({
   buildVoteDelegation: vi.fn(),
   toastSuccess: vi.fn(),
   toastError: vi.fn(),
+  fetchTxSeen: vi.fn(),
 }));
 
 vi.mock("@/lib/cardano/staking", async (orig) => {
@@ -54,6 +56,7 @@ vi.mock("@/lib/cardano", async (orig) => {
     ...real,
     fetchProtocolParams: async () => ({}),
     fetchTipSlot: async () => 1000,
+    fetchTxSeen: m.fetchTxSeen,
   };
 });
 vi.mock("@/lib/toast", async (orig) => {
@@ -83,6 +86,8 @@ beforeEach(async () => {
   m.buildVoteDelegation.mockReturnValue(ABSTAIN_TX);
   m.toastSuccess.mockReset();
   m.toastError.mockReset();
+  m.fetchTxSeen.mockReset();
+  m.fetchTxSeen.mockResolvedValue(false);
 });
 
 afterEach(() => {
@@ -128,6 +133,7 @@ function Harness({ port, uncertainHash }: { port: WalletPort; uncertainHash: str
       onDelegationSettled={() => {}}
       sentVoteDelegation={sv}
       onVoteDelegationSent={setSv}
+      onVoteDelegationLanded={(h) => setSv((cur) => (cur?.txHash === h ? null : cur))}
     />
   );
 }
@@ -199,6 +205,24 @@ describe("StakingPanel withdraw door: rewards, no vote delegation", () => {
     expect(abstainButton()).toBeNull();
   });
 
+  it("records the submit's hash, and clears the waiting line once that transaction is in a block", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, null));
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: en.withdraw_abstain_button }));
+    await screen.findByText(en.withdraw_abstain_review_title);
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: en.withdraw_abstain_confirm }));
+    await screen.findByText(en.vote_delegation_pending);
+    // Koios still reads no DRep, but the transaction is found by its hash.
+    m.fetchTxSeen.mockResolvedValue(true);
+    await act(async () => {
+      vi.advanceTimersByTime(20_000);
+    });
+    expect(m.fetchTxSeen).toHaveBeenCalledWith(NETWORK, TX_HASH);
+    await waitFor(() => expect(screen.queryByText(en.vote_delegation_pending)).toBeNull());
+  });
+
   it("re-reads the account while waiting, and opens withdraw once the chain shows the DRep", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
     m.getStakeAccountState.mockResolvedValue(account(REWARDS, null));
@@ -256,6 +280,7 @@ function renderWithSentVote(sent: SentVoteDelegation) {
         onDelegationSettled={() => {}}
         sentVoteDelegation={sent}
         onVoteDelegationSent={() => {}}
+        onVoteDelegationLanded={() => {}}
       />,
     ),
   );
@@ -264,7 +289,7 @@ function renderWithSentVote(sent: SentVoteDelegation) {
 describe("StakingPanel: a vote delegation in flight, over time and through a failed read", () => {
   it("keeps the waiting line when the account read fails", async () => {
     m.getStakeAccountState.mockRejectedValue(new Error("koios down"));
-    renderWithSentVote({ account: ACCOUNT, network: NETWORK, sentAt: Date.now(), drepBefore: null });
+    renderWithSentVote({ account: ACCOUNT, network: NETWORK, sentAt: Date.now(), txHash: TX_HASH, drepBefore: null });
     expect(await screen.findByText(en.stake_read_failed)).toBeTruthy();
     // Outside the error branch: a failed read must not hide that one is in flight.
     expect(screen.getByText(en.vote_delegation_pending)).toBeTruthy();
@@ -275,6 +300,7 @@ describe("StakingPanel: a vote delegation in flight, over time and through a fai
     renderWithSentVote({
       account: ACCOUNT,
       network: NETWORK,
+      txHash: TX_HASH,
       sentAt: Date.now() - DELEGATION_UNSEEN_MS - 60_000,
       drepBefore: null,
     });
@@ -287,7 +313,7 @@ describe("StakingPanel: a vote delegation in flight, over time and through a fai
   it("turns 'waiting' into 'not seen' on an open panel once ten minutes pass", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
     m.getStakeAccountState.mockResolvedValue(account(REWARDS, null));
-    renderWithSentVote({ account: ACCOUNT, network: NETWORK, sentAt: Date.now(), drepBefore: null });
+    renderWithSentVote({ account: ACCOUNT, network: NETWORK, sentAt: Date.now(), txHash: TX_HASH, drepBefore: null });
     await screen.findByText(en.vote_delegation_pending);
     await act(async () => {
       vi.advanceTimersByTime(DELEGATION_UNSEEN_MS + 20_000);
@@ -301,6 +327,7 @@ describe("StakingPanel: a vote delegation in flight, over time and through a fai
     renderWithSentVote({
       account: ACCOUNT,
       network: NETWORK,
+      txHash: TX_HASH,
       sentAt: Date.now() - VOTE_DELEGATION_WATCH_LIMIT_MS,
       drepBefore: null,
     });

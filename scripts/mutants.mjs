@@ -90,6 +90,9 @@ const TESTS = [
   // both tabs read it across a tab switch.
   "src/components/wallet/__tests__/StakingPanel.delegation.test.tsx",
   "src/components/wallet/__tests__/StakingPanel.voteGate.test.tsx",
+  // The sent vote delegation found by its hash.
+  "src/components/wallet/__tests__/delegationFeedback.test.ts",
+  "src/lib/cardano/__tests__/txSeen.test.ts",
 ];
 
 /**
@@ -1256,6 +1259,26 @@ const MUTANTS = [
     file: GOV,
     from: "  const sentVote = sentVoteDelegation !== undefined ? sentVoteDelegation : ownSentVote;",
     to: "  const sentVote = ownSentVote;",
+  },
+  // ── Round eight: "landed" read from the transaction itself, and an account
+  // read that does not outlive a network switch ──
+  {
+    name: "the sent vote-delegation transaction is never taken as found (X → X stays 'unseen')",
+    file: FEEDBACK,
+    from: "      if (alive && seen) onLanded(txHash);",
+    to: "      if (alive && false) onLanded(txHash);",
+  },
+  {
+    name: "a transaction the indexer does not have in a block reads as found",
+    file: HISTORY,
+    from: "  if (n === null) return false;",
+    to: "  if (n === null) return true;",
+  },
+  {
+    name: "the old network's account read survives a network switch (Delegate on the wrong chain)",
+    file: STAKING,
+    from: "      setAccountState(null);\n      setLoadError(false);",
+    to: "      setLoadError(false);",
   },
 ];
 

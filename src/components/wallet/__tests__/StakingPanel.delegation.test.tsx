@@ -142,6 +142,7 @@ function renderPanel(props: {
         onDelegationSettled={props.onDelegationSettled ?? (() => {})}
         sentVoteDelegation={null}
         onVoteDelegationSent={() => {}}
+        onVoteDelegationLanded={() => {}}
       />,
     ),
   );
@@ -216,6 +217,67 @@ describe("StakingPanel: Delegate waits for the account read", () => {
     fireEvent.click(screen.getByRole("button", { name: en.search_pools_button }));
     const button = (await screen.findByRole("button", { name: en.delegate_button })) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
+  });
+});
+
+describe("StakingPanel: switching the network drops the old network's account read", () => {
+  // The network picker re-renders the same panel with another `network`. The
+  // account read of the old network must not stand in for the new one: it
+  // would enable Delegate and decide `needsRegistration` for a chain it was
+  // never read on — a registration the node rejects, or a phantom 2 ADA deposit.
+  const panelOn = (port: WalletPort, network: 0 | 2) =>
+    wrap(
+      <StakingPanel
+        port={port}
+        network={network}
+        changeAddress={CHANGE_HEX}
+        uncertainHash={null}
+        onUncertain={() => {}}
+        sentDelegation={null}
+        onDelegationSent={() => {}}
+        onDelegationSettled={() => {}}
+        sentVoteDelegation={null}
+        onVoteDelegationSent={() => {}}
+        onVoteDelegationLanded={() => {}}
+      />,
+    );
+
+  async function switchThenTryDelegate(secondRead: Promise<unknown>) {
+    const port = makePort();
+    m.getStakeAccountState.mockResolvedValue({
+      registered: true,
+      delegatedPoolId: null,
+      rewardsAvailable: BigInt(0),
+      delegatedDRep: null,
+    });
+    const view = render(panelOn(port, 0));
+    await waitFor(() => expect(screen.getByText(en.not_delegated)).toBeTruthy());
+    m.getStakeAccountState.mockReturnValue(secondRead);
+    view.rerender(panelOn(port, 2));
+    await waitFor(() => expect(m.getStakeAccountState).toHaveBeenCalledTimes(2));
+    expect(m.getStakeAccountState.mock.calls[1]![0]).toBe(2);
+    fireEvent.change(screen.getByPlaceholderText(en.search_pools_placeholder), {
+      target: { value: "TEST" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: en.search_pools_button }));
+    const button = (await screen.findByRole("button", { name: en.delegate_button })) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    fireEvent.click(button);
+    // Give a wrongly-enabled click time to reach the build.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(m.buildDelegation).not.toHaveBeenCalled();
+  }
+
+  it("while the new network's read hangs, Delegate is off and nothing is built", async () => {
+    await switchThenTryDelegate(new Promise(() => {}));
+    expect(screen.queryByText(en.not_delegated)).toBeNull();
+  });
+
+  it("when the new network's read fails, Delegate is off and nothing is built", async () => {
+    const failed = Promise.reject(new Error("preview koios down"));
+    failed.catch(() => {});
+    await switchThenTryDelegate(failed);
+    expect(await screen.findByText(en.stake_read_failed)).toBeTruthy();
   });
 });
 

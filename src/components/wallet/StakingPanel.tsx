@@ -1,7 +1,7 @@
 "use client";
 
 import "../../lib/node-globals";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Buffer } from "buffer";
 import { useTranslation } from "react-i18next";
 import { utils as tyUtils, types as tyTypes } from "@stricahq/typhonjs";
@@ -21,6 +21,7 @@ import {
   type BuiltTx,
   fetchProtocolParams,
   fetchTipSlot,
+  fetchTxSeen,
   formatAda,
 } from "@/lib/cardano";
 import {
@@ -37,6 +38,7 @@ import {
   DELEGATION_WATCH_LIMIT_MS,
   VOTE_DELEGATION_TTL_SLOTS,
   delegationWatch,
+  lookUpVoteTx,
   voteDelegationWatch,
   type SentDelegation,
   type SentVoteDelegation,
@@ -58,6 +60,12 @@ export type DelegationSentProps = {
    */
   sentVoteDelegation: SentVoteDelegation | null;
   onVoteDelegationSent: (sent: SentVoteDelegation) => void;
+  /**
+   * The sent vote-delegation transaction was found in a block: the parent
+   * drops the record (for that hash only), which clears the waiting line here
+   * and on the Governance tab.
+   */
+  onVoteDelegationLanded: (txHash: string) => void;
 };
 
 /** How often the account is re-read while a delegation waits to be recorded. */
@@ -90,6 +98,7 @@ export function StakingPanel({
   onDelegationSettled,
   sentVoteDelegation,
   onVoteDelegationSent,
+  onVoteDelegationLanded,
 }: {
   port: WalletPort;
   network: PhoenixNetwork;
@@ -138,6 +147,13 @@ export function StakingPanel({
     let cancelled = false;
     (async () => {
       setLoadingAccount(true);
+      // The account read belongs to the network it was read on. Kept across a
+      // switch of the network picker, the old network's answer would enable
+      // Delegate and decide `needsRegistration` for the new one — a
+      // registration the node rejects, or a 2 ADA deposit that is not real.
+      // Until the new network answers there is no answer; and a late answer
+      // from the old network is dropped by `cancelled` below.
+      setAccountState(null);
       setLoadError(false);
       try {
         const hex = await port.getRewardAddressHex();
@@ -222,9 +238,16 @@ export function StakingPanel({
   // a failed read, or the next press sends a second one.
   const voteWatch = voteDelegationWatch(sentVoteDelegation, rewardAddressBech32, network, now);
   const voteInFlight = voteWatch.kind !== "none" && accountState?.delegatedDRep == null;
+  // Read through a ref so a new parent callback does not restart the timer.
+  const voteTxRef = useRef({ sent: sentVoteDelegation, onLanded: onVoteDelegationLanded });
+  voteTxRef.current = { sent: sentVoteDelegation, onLanded: onVoteDelegationLanded };
+  // The same tick also looks the sent transaction up by hash: found in a block
+  // means landed, whatever the account's DRep reads, and the parent drops the
+  // record — the only test that works for a re-delegation to the same DRep.
   useEffect(() => {
     if (!voteInFlight || !rewardAddressBech32) return;
     let cancelled = false;
+    let releaseTx: () => void = () => {};
     const timer = setInterval(() => {
       setNow(Date.now());
       getStakeAccountState(network, rewardAddressBech32)
@@ -234,10 +257,13 @@ export function StakingPanel({
           setLoadError(false);
         })
         .catch(() => {});
+      releaseTx();
+      releaseTx = lookUpVoteTx(voteTxRef.current.sent, fetchTxSeen, voteTxRef.current.onLanded);
     }, PENDING_POLL_MS);
     return () => {
       cancelled = true;
       clearInterval(timer);
+      releaseTx();
     };
   }, [voteInFlight, network, rewardAddressBech32]);
 
@@ -420,6 +446,7 @@ export function StakingPanel({
           account: rewardAddressBech32,
           network,
           sentAt,
+          txHash: hash,
           drepBefore: accountState ? accountState.delegatedDRep : undefined,
         });
       }

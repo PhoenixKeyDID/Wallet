@@ -233,6 +233,15 @@ export function WalletTabs({
    * "None", and its own choice is still marked after a trip away and back.
    */
   const [sentVoteDelegation, setSentVoteDelegation] = useState<SentVoteDelegation | null>(null);
+  /**
+   * Either tab found the sent transaction in a block: nothing left to wait
+   * for, on either tab. Only the record for that hash is dropped — a newer one
+   * sent meanwhile stays.
+   */
+  const clearLandedVoteDelegation = useCallback(
+    (txHash: string) => setSentVoteDelegation((cur) => (cur !== null && cur.txHash === txHash ? null : cur)),
+    [],
+  );
 
   const panelProps = { port, network, changeAddress };
   const moneyProps = { ...panelProps, uncertainHash, onUncertain: rememberUncertain };
@@ -306,6 +315,7 @@ export function WalletTabs({
           onDelegationSettled={clearSentDelegation}
           sentVoteDelegation={sentVoteDelegation}
           onVoteDelegationSent={setSentVoteDelegation}
+          onVoteDelegationLanded={clearLandedVoteDelegation}
         />
       )}
       {activeTab === "governance" && (
@@ -313,6 +323,7 @@ export function WalletTabs({
           {...moneyProps}
           sentVoteDelegation={sentVoteDelegation}
           onVoteDelegationSent={setSentVoteDelegation}
+          onVoteDelegationLanded={clearLandedVoteDelegation}
         />
       )}
       {activeTab === "connect" && <ConnectPanel network={network} changeAddress={changeAddress} />}
