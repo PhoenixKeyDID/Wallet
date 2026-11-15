@@ -80,6 +80,7 @@ const CBOR_DUP = "src/lib/cardano/cborDupKeys.ts";
 const CBOR_SET = "src/lib/cardano/cborSet.ts";
 const UTXO_CBOR = "src/lib/cardano/utxoCbor.ts";
 const APPROVE = "extension/src/approve.tsx";
+const SUBMIT_ERROR = "src/lib/cardano/submitError.ts";
 const UTXO_SELECT = "src/lib/cardano/utxoSelect.ts";
 const SIGN_DATA = "src/lib/keystore/signData.ts";
 const WORKER = "extension/background/worker.ts";
@@ -2563,6 +2564,64 @@ const MUTANTS = [
     from: "      if (seen.has(key)) throw",
     to: "      if (false /* MUT60-UNIQUE */) throw",
     marker: "MUT60-UNIQUE",
+  },
+  // Issue #59, points 10 and 11: what a site is told about a rejection, and
+  // the keys at the idle deadline while a send is out.
+  {
+    name: "MUT59-SITE-STATUS: every 4xx forwards the provider's reply body to the site",
+    file: SUBMIT_ERROR,
+    from: "  if (err.status !== 400) return PROVIDER_REFUSED_REASON;\n",
+    to: "  if (false /* MUT59-SITE-STATUS */) return PROVIDER_REFUSED_REASON;\n",
+    marker: "MUT59-SITE-STATUS",
+  },
+  {
+    name: "MUT59-SITE-LABEL: a 400 reaches the site with the endpoint label that names the provider",
+    file: SUBMIT_ERROR,
+    from: '  return err.detail ? `HTTP 400: ${err.detail}` : "HTTP 400";\n',
+    to: "  return err.message; /* MUT59-SITE-LABEL */\n",
+    marker: "MUT59-SITE-LABEL",
+  },
+  {
+    name: "MUT59-APPROVE-REASON: the window sends the whole error message to the site again",
+    file: APPROVE,
+    from: "answer({ ok: false, error: sendFailed(rejectionReasonForSite(e)) }, req);",
+    to: "answer({ ok: false, error: sendFailed(e.message || rejectionReasonForSite(e)) }, req); /* MUT59-APPROVE-REASON */",
+    marker: "MUT59-APPROVE-REASON",
+  },
+  {
+    name: "MUT59-HELD-WIPE: the idle deadline during a send leaves the keys in memory",
+    file: APPROVE,
+    from: "      account.wipe();\n",
+    to: "      if (!busyRef.current) account.wipe(); /* MUT59-HELD-WIPE */\n",
+    marker: "MUT59-HELD-WIPE",
+  },
+  {
+    name: "MUT59-HELD-PORT: the idle deadline during a send closes the port the answer needs",
+    file: APPROVE,
+    from: "      if (busyRef.current) {\n",
+    to: "      if (false /* MUT59-HELD-PORT */) {\n",
+    marker: "MUT59-HELD-PORT",
+  },
+  {
+    name: "MUT59-HELD-REF: a re-render during the hold hands the wiped account back to the port listener",
+    file: APPROVE,
+    from: "  accountRef.current = heldLockRef.current ? null : account;\n",
+    to: "  accountRef.current = account; /* MUT59-HELD-REF */\n",
+    marker: "MUT59-HELD-REF",
+  },
+  {
+    name: "MUT59-HELD-FINISH: the window never finishes the lock once the held send settles",
+    file: APPROVE,
+    from: "    if (busy || !heldLockRef.current) return;\n",
+    to: "    if (true /* MUT59-HELD-FINISH */) return;\n",
+    marker: "MUT59-HELD-FINISH",
+  },
+  {
+    name: "MUT59-HELD-ONCE: activity during the hold runs the lock again",
+    file: APPROVE,
+    from: "      if (heldLockRef.current) return;\n",
+    to: "      if (false /* MUT59-HELD-ONCE */) return;\n",
+    marker: "MUT59-HELD-ONCE",
   },
 ];
 

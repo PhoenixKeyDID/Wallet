@@ -39,7 +39,7 @@ import { vaultStore, type StoredWallet } from "../../src/lib/keystore/storage";
 import { DEFAULT_LOCK_TIMEOUT_MS } from "../../src/lib/keystore/session";
 import { summariseTx, UndescribableTxError, unconfirmedForeignActions, type TxSummary } from "../../src/lib/cardano/txSummary";
 import { signForeignTx, txIdOf, walletViewFrom, type WalletView } from "../../src/lib/keystore/signForeign";
-import { isDefiniteRejection } from "../../src/lib/cardano/submitError";
+import { isDefiniteRejection, rejectionReasonForSite } from "../../src/lib/cardano/submitError";
 import { planDataSign, signDataCip8, DATA_SIGN_CODE, type DataSignPlan } from "../../src/lib/keystore/signData";
 import { encodeBalanceHex, encodeInputsAsUtxosHex } from "../../src/lib/cardano/utxoCbor";
 import {
@@ -289,7 +289,15 @@ export function Approve() {
    * opened — a wiped one after an idle lock, or another wallet after re-unlock.
    */
   const accountRef = useRef<Account | null>(null);
-  accountRef.current = account;
+  /**
+   * Set when the idle deadline passed while a send was out. The keys are
+   * already wiped by then; what is left is the port and the request on
+   * screen, which the node's answer still needs to reach the site. The rest
+   * of the lock happens when that answer lands (the effect on `busy` below).
+   * While set, the account is gone as far as any new request is concerned.
+   */
+  const heldLockRef = useRef(false);
+  accountRef.current = heldLockRef.current ? null : account;
 
   useEffect(() => {
     void store.list().then((ws) => {
@@ -323,15 +331,21 @@ export function Approve() {
     if (!account) return;
     let timer: ReturnType<typeof setTimeout>;
     const relock = () => {
-      // Not while a send is out. Locking closes the port, and the worker then
-      // tells the site "refused" for bytes that may already be at the node —
-      // the answer that gets the same payment built and sent twice.
-      if (busyRef.current) {
-        restart();
-        return;
-      }
+      if (heldLockRef.current) return;
+      // The keys go at the deadline, send or no send. `broadcast` read the
+      // network before it started and needs nothing else from the account, so
+      // holding the whole unlocked account until the node answers kept every
+      // private key in memory for no reason the send had.
       accountRef.current = null;
       account.wipe();
+      // But the port stays while a send is out. Closing it makes the worker
+      // tell the site "refused" for bytes that may already be at the node —
+      // the answer that gets the same payment built and sent twice. The screen
+      // and the port are torn down once the answer is posted.
+      if (busyRef.current) {
+        heldLockRef.current = true;
+        return;
+      }
       setAccount(null);
       decidingRef.current = false;
       setPhase({ at: "unlock" });
@@ -347,6 +361,18 @@ export function Approve() {
       for (const ev of ["mousedown", "keydown"]) window.removeEventListener(ev, restart);
     };
   }, [account]);
+
+  // Finish a lock the idle deadline started during a send, once the send has
+  // settled. `broadcast` posts its answer before it clears `busy`, so the port
+  // closes only after the site has been told.
+  useEffect(() => {
+    if (busy || !heldLockRef.current) return;
+    heldLockRef.current = false;
+    accountRef.current = null;
+    setAccount(null);
+    decidingRef.current = false;
+    setPhase({ at: "unlock" });
+  }, [busy]);
 
   // Closing the window mid-send has the same effect as the idle lock above; the
   // browser's own "leave this page?" is the one prompt that can stop it.
@@ -629,7 +655,12 @@ export function Approve() {
    * elsewhere, usually by this same window a moment earlier. It goes out
    * through the same provider the wallet's own Send tab uses, and the answer is
    * the hash the node reported — or `TxSendError.Failure` with the node's own
-   * reason, which is the one thing a developer can act on.
+   * reason on a 400, which is the one thing a developer can act on, and a
+   * fixed reason on any other 4xx (`rejectionReasonForSite`).
+   *
+   * Only the network is read from the account, before the await. The idle
+   * lock may wipe the keys while this is out; nothing after the await needs
+   * them.
    */
   const broadcast = async () => {
     if (phase.at !== "decide" || !account || !phase.summary) return;
@@ -658,8 +689,10 @@ export function Approve() {
     } catch (e) {
       if (isDefiniteRejection(e) && !resend) {
         // The node read it and said no: nothing is on chain, and its reason is
-        // what the site's developer can act on.
-        answer({ ok: false, error: sendFailed(e.message) }, req);
+        // what the site's developer can act on. Only the node's reason, though:
+        // a 401/402/403/429 body is about the person's provider account, and
+        // the endpoint label names the provider (`rejectionReasonForSite`).
+        answer({ ok: false, error: sendFailed(rejectionReasonForSite(e)) }, req);
       } else {
         // No answer, a 5xx, a dropped connection — or a 4xx for bytes whose
         // earlier send ended that way: the bytes may be on chain. "Failed"

@@ -27,7 +27,7 @@ import { verifyCip8 } from "./vendor/lamp-drip-pot/cip8";
 import { formatAda } from "@/lib/cardano/provider";
 import { blake2b224, blake2b256 } from "@/lib/cardano/hash";
 import { dripClaimTxHex, AUTH_NAME } from "./fixtures/dripPotClaim";
-import { SubmitRejectedError } from "@/lib/cardano/submitError";
+import { PROVIDER_REFUSED_REASON, SubmitRejectedError } from "@/lib/cardano/submitError";
 import { txIdOf } from "@/lib/keystore/signForeign";
 
 const mocks = vi.hoisted(() => ({
@@ -35,7 +35,24 @@ const mocks = vi.hoisted(() => ({
   fetchUtxos: vi.fn(),
   fetchOwnedUtxos: vi.fn(async () => ({ spendable: [], refScript: [] })),
   submitTx: vi.fn(),
+  /** Every account `accountFromEntropy` built, in order, with `wipe` spied on. */
+  accounts: [] as Array<Awaited<ReturnType<typeof import("@/lib/keystore").accountFromEntropy>>>,
 }));
+
+// Pass-through: the window builds its account exactly as before. The test only
+// keeps a handle on it, to look at the key bytes after an idle lock.
+vi.mock("@/lib/keystore", async (orig) => {
+  const real = await orig<typeof import("@/lib/keystore")>();
+  return {
+    ...real,
+    accountFromEntropy: async (...args: Parameters<typeof real.accountFromEntropy>) => {
+      const a = await real.accountFromEntropy(...args);
+      a.wipe = vi.fn(a.wipe);
+      mocks.accounts.push(a);
+      return a;
+    },
+  };
+});
 
 vi.mock("@/lib/keystore/storage", async (orig) => ({
   ...(await orig<typeof import("@/lib/keystore/storage")>()),
@@ -401,7 +418,26 @@ describe("submitTx is described, then sent — or refused with TxSendError.Refus
       ok: false,
       error: { code: 2, info: expect.stringContaining("BadInputsUTxO") },
     });
+    // The node's reason, not which provider the wallet sent it through.
+    expect(port.sent.find((m) => m.id === "s3")!.result!.error!.info).not.toContain("Koios");
     // A definite no leaves nothing on chain: no "look it up" alarm.
+    expect(view.queryByRole("alert")).toBeNull();
+  });
+
+  it("a 403 from the provider is a Failure with a fixed reason: the body about the person's account stays in the wallet", async () => {
+    mocks.fetchUtxos.mockResolvedValue(ourInputs());
+    mocks.submitTx.mockRejectedValue(
+      new SubmitRejectedError(403, '{"status_code":403,"message":"Invalid project token."}', "Chain endpoint /tx/submit"),
+    );
+    const { port, view } = await unlocked();
+    act(() => port.deliver({ type: "request", id: "s403", origin: ORIGIN, method: "submitTx", params: [SIGNED_TX] }));
+    const send = await view.findByText(en.cip30_submit_cta);
+    await waitFor(() => expect((send as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(send);
+    await waitFor(() => expect(port.sent.find((m) => m.id === "s403")).toBeDefined());
+    const result = port.sent.find((m) => m.id === "s403")!.result!;
+    // Still a definite rejection: TxSendError.Failure, and no "look it up" alarm.
+    expect(result).toEqual({ ok: false, error: { code: 2, info: PROVIDER_REFUSED_REASON } });
     expect(view.queryByRole("alert")).toBeNull();
   });
 
@@ -476,6 +512,74 @@ describe("submitTx is described, then sent — or refused with TxSendError.Refus
     await act(async () => settle("ab".repeat(32)));
     await waitFor(() => expect(port.sent.find((m) => m.id === "s8")).toBeDefined());
     expect(port.sent.find((m) => m.id === "s8")!.result).toEqual({ ok: true, value: "ab".repeat(32) });
+  });
+
+  it("the idle deadline during a send wipes the keys at once; the port waits for the answer, then the window locks", async () => {
+    mocks.fetchUtxos.mockResolvedValue(ourInputs());
+    let settle!: (hash: string) => void;
+    mocks.submitTx.mockImplementationOnce(() => new Promise<string>((res) => (settle = res)));
+    const { port, view } = await unlocked();
+    const acct = mocks.accounts.at(-1)!;
+    // `toBytes()` hands back the live buffer, so these are the key bytes
+    // themselves, not copies.
+    const keyBytes = [...acct.keyByHash.values()].map((k) => k.toBytes());
+    expect(keyBytes.length).toBeGreaterThan(0);
+    expect(keyBytes.every((b) => b.some((x) => x !== 0))).toBe(true);
+    act(() => port.deliver({ type: "request", id: "h1", origin: ORIGIN, method: "submitTx", params: [SIGNED_TX] }));
+    const send = await view.findByText(en.cip30_submit_cta);
+    await waitFor(() => expect((send as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(send);
+    await view.findByText(en.cip30_submitting);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      fireEvent.mouseDown(window);
+      act(() => void vi.advanceTimersByTime(DEFAULT_LOCK_TIMEOUT_MS + 1));
+    } finally {
+      vi.useRealTimers();
+    }
+    // The send is still out, and the keys are already gone: the account's
+    // wipe ran (it also zeroes the account key and the root), the key map is
+    // empty, and every key buffer the window held is zero.
+    expect(acct.wipe).toHaveBeenCalledTimes(1);
+    expect(acct.keyByHash.size).toBe(0);
+    expect(keyBytes.every((b) => b.every((x) => x === 0))).toBe(true);
+    // What the pending answer needs is still there: the port, and the screen
+    // that owns the request.
+    expect(port.disconnected).toBe(false);
+    expect(view.queryByPlaceholderText(en.local_password)).toBeNull();
+    // A re-render during the hold (here, a language switch) must not hand the
+    // account back to the port listener.
+    try {
+      await act(async () => {
+        await i18n.changeLanguage("vi");
+      });
+      await view.findByText(vi_.cip30_submitting);
+    } finally {
+      await act(async () => {
+        await i18n.changeLanguage("en");
+      });
+    }
+    await view.findByText(en.cip30_submitting);
+    // Anything else arriving now finds the window locked.
+    const reads = mocks.fetchUtxos.mock.calls.length;
+    const res = await ask(port, "h2", "getUtxos", []);
+    expect(res.result).toMatchObject({ ok: false, error: { code: -3, info: en.cip30_window_locked } });
+    expect(mocks.fetchUtxos.mock.calls.length).toBe(reads);
+    // More activity during the hold does not wipe twice or reopen anything.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      fireEvent.mouseDown(window);
+      act(() => void vi.advanceTimersByTime(DEFAULT_LOCK_TIMEOUT_MS + 1));
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(acct.wipe).toHaveBeenCalledTimes(1);
+    // The node answers: the site hears it, and only then does the window lock.
+    await act(async () => settle("ab".repeat(32)));
+    await waitFor(() => expect(port.sent.find((m) => m.id === "h1")).toBeDefined());
+    expect(port.sent.find((m) => m.id === "h1")!.result).toEqual({ ok: true, value: "ab".repeat(32) });
+    await view.findByPlaceholderText(en.local_password);
+    expect(port.disconnected).toBe(true);
   });
 });
 
