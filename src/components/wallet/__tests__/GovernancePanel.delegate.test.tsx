@@ -165,7 +165,7 @@ describe("GovernancePanel: a second choice while one is in flight", () => {
     const abstain = screen.getByRole("button", { name: en.gov_abstain }) as HTMLButtonElement;
     expect(abstain.disabled).toBe(false); // warned, not blocked
     fireEvent.click(abstain);
-    const warn = en.gov_delegate_inflight_warn.replace("{{time}}", clockTime(sentAt));
+    const warn = en.gov_delegate_inflight_warn.replace("{{time}}", clockTime(sentAt, Date.now()));
     expect(await screen.findByText(warn, undefined, SETTLE)).toBeTruthy();
   });
 

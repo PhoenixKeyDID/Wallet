@@ -410,7 +410,7 @@ describe("FIX-R3: the in-flight vote delegation survives a lock and a reload", (
     render(wrap(<WalletTabs port={makePort()} changeAddress={CHANGE_HEX} network={NETWORK} />));
     fireEvent.click(stakingTab());
     expect(
-      await screen.findByText(en.vote_delegation_expired.replace("{{time}}", clockTime(sentAt))),
+      await screen.findByText(en.vote_delegation_expired.replace("{{time}}", clockTime(sentAt, Date.now()))),
     ).toBeTruthy();
     expect(abstainButton()).toBeTruthy();
     expect(window.localStorage.getItem(storageKey())).toBeNull();
@@ -584,5 +584,81 @@ describe("FIX-R4: a vote delegation sent in another browser tab", () => {
     await fire(storageKey(), null);
     expect(await screen.findByRole("button", { name: en.withdraw_abstain_button })).toBeTruthy();
     expect(screen.queryByText(en.vote_delegation_pending)).toBeNull();
+  });
+});
+
+/**
+ * Issue #58. The account read answers in one request; the look-up by hash
+ * takes two in a row. A read that already shows the sent choice turned the
+ * waiting off and cancelled the look-up before it finished, so the record
+ * stayed on disk for its whole two-hour watch and the waiting line flashed up
+ * each time a tab opened. And an Abstain review left open while another
+ * browser tab sent a choice could still be signed over it.
+ */
+describe("#58: the in-flight vote delegation, ended by a read, guarded against another tab", () => {
+  const storageKey = () => voteDelegationKey(NETWORK, accountKeyFrom(CHANGE_HEX));
+  const fire = (key: string | null, newValue: string | null) =>
+    act(() => {
+      window.dispatchEvent(new StorageEvent("storage", { key, newValue }));
+    });
+  const OLD_DREP = "drep1olddrepidentifier000wxyz";
+  const stored = (over: Record<string, unknown>) =>
+    JSON.stringify({
+      account: ACCOUNT,
+      network: NETWORK,
+      sentAt: Date.now(),
+      txHash: "cd".repeat(32),
+      drepBefore: null,
+      target: "drep_always_abstain",
+      ...over,
+    });
+
+  it("Staking: an account read that shows the sent choice drops the stored record, with no hash hit", async () => {
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, "drep_always_abstain"));
+    window.localStorage.setItem(storageKey(), stored({}));
+    render(wrap(<WalletTabs port={makePort()} changeAddress={CHANGE_HEX} network={NETWORK} />));
+    fireEvent.click(stakingTab());
+    // `fetchTxSeen` answers "not in a block" (beforeEach): only the read can end it.
+    await waitFor(() => expect(window.localStorage.getItem(storageKey())).toBeNull());
+  });
+
+  it("Staking: a read still showing the DRep held before keeps the record", async () => {
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, OLD_DREP));
+    window.localStorage.setItem(storageKey(), stored({ drepBefore: OLD_DREP, target: DREP }));
+    render(wrap(<WalletTabs port={makePort()} changeAddress={CHANGE_HEX} network={NETWORK} />));
+    fireEvent.click(stakingTab());
+    // The read has landed: rewards and a DRep on it arm the withdraw button.
+    await screen.findByRole("button", { name: en.withdraw_rewards });
+    await act(async () => {});
+    expect(window.localStorage.getItem(storageKey())).not.toBeNull();
+  });
+
+  it("Governance: a DRep read that shows the sent choice drops the stored record, with no hash hit", async () => {
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, OLD_DREP));
+    m.getVoteDelegationState.mockResolvedValue({ found: true, status: "registered", delegatedDRep: DREP });
+    window.localStorage.setItem(storageKey(), stored({ drepBefore: OLD_DREP, target: DREP }));
+    render(wrap(<WalletTabs port={makePort()} changeAddress={CHANGE_HEX} network={NETWORK} />));
+    fireEvent.click(governanceTab());
+    await waitFor(() => expect(window.localStorage.getItem(storageKey())).toBeNull());
+  });
+
+  it("an open Abstain review is refused, not signed, once a choice sent in another tab arrives", async () => {
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, null));
+    const port = makePort();
+    render(wrap(<WalletTabs port={port} changeAddress={CHANGE_HEX} network={NETWORK} />));
+    fireEvent.click(stakingTab());
+    fireEvent.click(await screen.findByRole("button", { name: en.withdraw_abstain_button }));
+    await screen.findByText(en.withdraw_abstain_review_title);
+
+    // Tab B delegates to a real DRep while this review is open.
+    const record = stored({ target: DREP });
+    window.localStorage.setItem(storageKey(), record);
+    await fire(storageKey(), record);
+
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: en.withdraw_abstain_confirm }));
+    await waitFor(() => expect(m.toastError).toHaveBeenCalledWith(en.vote_delegation_inflight_blocked));
+    expect(port.signAndSubmit).not.toHaveBeenCalled();
+    expect(screen.queryByText(en.withdraw_abstain_review_title)).toBeNull();
   });
 });

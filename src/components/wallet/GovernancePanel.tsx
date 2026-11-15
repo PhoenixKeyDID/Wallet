@@ -495,8 +495,17 @@ function DelegateSection({
    */
   const [now, setNow] = useState(() => Date.now());
   const voteWatch = voteDelegationWatch(sentVoteDelegation, rewardBech32 || null, network, now);
-  const voteInFlight =
-    voteWatch.kind !== "none" && !voteDelegationLanded(sentVoteDelegation, current);
+  const voteLandedByRead = voteWatch.kind !== "none" && voteDelegationLanded(sentVoteDelegation, current);
+  const voteInFlight = voteWatch.kind !== "none" && !voteLandedByRead;
+  // The DRep read shows the choice sent, in place of the one before: the
+  // record can go now. Without this, the read turning `voteInFlight` false
+  // cancelled the hash look-up before its second read answered, and the
+  // record stayed on disk until its watch ran out (the Staking tab's twin).
+  useEffect(() => {
+    if (voteLandedByRead && sentVoteDelegation !== null) onVoteDelegationLanded(sentVoteDelegation.txHash);
+    // The record and callback are the parent's; the read's answer is what moves.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [voteLandedByRead]);
 
   const reloadCurrent = useCallback(() => {
     if (!rewardBech32) return () => {};
@@ -630,7 +639,7 @@ function DelegateSection({
         // choice is legitimate, it just should not happen by accident.
         warn:
           voteInFlight && sentVoteDelegation !== null
-            ? t("gov_delegate_inflight_warn", { time: clockTime(sentVoteDelegation.sentAt) })
+            ? t("gov_delegate_inflight_warn", { time: clockTime(sentVoteDelegation.sentAt, now) })
             : undefined,
         onDone: (txHash) => {
           // Tell the parent a vote delegation is in flight: this tab shows its
@@ -681,7 +690,7 @@ function DelegateSection({
         sentVoteDelegation !== null &&
         lookedUp === sentVoteDelegation.txHash && (
         <p className="text-xs text-amber-brand">
-          {t("vote_delegation_unseen", { time: clockTime(voteDelegationExpiresAt(sentVoteDelegation)) })}
+          {t("vote_delegation_unseen", { time: clockTime(voteDelegationExpiresAt(sentVoteDelegation), now) })}
         </p>
       )}
       {/* Ran out without the chain showing it, and the chain still reads no
@@ -692,7 +701,7 @@ function DelegateSection({
         expiredVoteDelegation.network === network &&
         current === null && (
           <p className="text-xs text-amber-brand">
-            {t("vote_delegation_expired", { time: clockTime(expiredVoteDelegation.sentAt) })}
+            {t("vote_delegation_expired", { time: clockTime(expiredVoteDelegation.sentAt, now) })}
           </p>
         )}
 

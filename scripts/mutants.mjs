@@ -2329,6 +2329,51 @@ const MUTANTS = [
     from: "    // was closed is found as the tab opens.\n    lookUpNow();\n",
     to: "    // was closed is found as the tab opens.\n    /* MUT56R4-FIRST */\n",
   },
+  // ── Issue #58 (MUT58-*): a read showing the sent choice ends the record; an
+  // open Abstain review refuses once another choice is in flight; a failed
+  // re-read is said; an expiry on another day carries its date ──
+  {
+    name: "MUT58-LANDEDSTAKING: the Staking tab's read showing the sent choice leaves the record in place",
+    file: STAKING,
+    from: "    if (voteLandedByRead && sentVoteDelegation !== null) onVoteDelegationLanded(sentVoteDelegation.txHash);\n",
+    to: "    /* MUT58-LANDEDSTAKING */\n",
+  },
+  {
+    name: "MUT58-LANDEDGOV: the Governance tab's read showing the sent choice leaves the record in place",
+    file: GOV,
+    from: "    if (voteLandedByRead && sentVoteDelegation !== null) onVoteDelegationLanded(sentVoteDelegation.txHash);\n",
+    to: "    /* MUT58-LANDEDGOV */\n",
+  },
+  {
+    name: "MUT58-ANYDREP: the Staking tab ends the record on any DRep read, not the one sent",
+    file: STAKING,
+    from: "    voteDelegationLanded(sentVoteDelegation, accountState.delegatedDRep);\n",
+    to: "    accountState.delegatedDRep !== null; /* MUT58-ANYDREP */\n",
+  },
+  {
+    name: "MUT58-ABSTAINPENDING: an open Abstain review signs over a choice already in flight",
+    file: STAKING,
+    from: "    if (voteDelegationPending(sentVoteDelegation, rewardAddressBech32, network, Date.now())) {\n",
+    to: "    if (false /* MUT58-ABSTAINPENDING */) {\n",
+  },
+  {
+    name: "MUT58-REREADPOOL: a failed pool-delegation re-read is swallowed",
+    file: STAKING,
+    from: "        .catch(() => {\n          if (!cancelled) setRereadFailed(true);\n        });\n    }, PENDING_POLL_MS);",
+    to: "        .catch(() => {} /* MUT58-REREADPOOL */);\n    }, PENDING_POLL_MS);",
+  },
+  {
+    name: "MUT58-REREADVOTE: a failed vote-delegation re-read is swallowed",
+    file: STAKING,
+    from: "        .catch(() => {\n          if (!cancelled) setRereadFailed(true);\n        });\n      lookUpNow();",
+    to: "        .catch(() => {} /* MUT58-REREADVOTE */);\n      lookUpNow();",
+  },
+  {
+    name: "MUT58-DATE: a time on another day is printed without its date",
+    file: FEEDBACK,
+    from: "  if (sameDay) return time;\n",
+    to: "  if (sameDay || true /* MUT58-DATE */) return time;\n",
+  },
 ];
 
 /**

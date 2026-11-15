@@ -406,7 +406,7 @@ describe("StakingPanel: the waiting line names Withdraw only when there is somet
     m.getStakeAccountState.mockResolvedValue(account(REWARDS, null));
     const sentAt = Date.now() - DELEGATION_UNSEEN_MS - 60_000;
     renderWithSentVote({ account: ACCOUNT, network: NETWORK, txHash: TX_HASH, sentAt, drepBefore: null });
-    const expiry = clockTime(sentAt + VOTE_DELEGATION_WATCH_LIMIT_MS);
+    const expiry = clockTime(sentAt + VOTE_DELEGATION_WATCH_LIMIT_MS, Date.now());
     expect(await screen.findByText(en.vote_delegation_unseen.replace("{{time}}", expiry))).toBeTruthy();
   });
 });
@@ -453,5 +453,44 @@ describe("StakingPanel: a network switch while a signature is open", () => {
     view.rerender(wrap(<Harness port={port} uncertainHash={null} network={2} />));
     await waitFor(() => expect(screen.queryByText(en.withdraw_abstain_review_title)).toBeNull());
     expect(port.signAndSubmit).not.toHaveBeenCalled();
+  });
+});
+
+describe("#58: the timed re-read behind a vote delegation in flight", () => {
+  it("says so when a re-read fails, keeps the waiting line, and drops the warning on the next good read", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, null));
+    renderWithSentVote({ account: ACCOUNT, network: NETWORK, sentAt: Date.now(), txHash: TX_HASH, drepBefore: null });
+    await screen.findByText(en.vote_delegation_pending);
+    expect(screen.queryByText(en.stake_reread_failed)).toBeNull();
+
+    // An answer of an unexpected shape throws inside the read; so does a dead indexer.
+    m.getStakeAccountState.mockRejectedValue(new Error("Indexer response has no delegated_drep field"));
+    await act(async () => {
+      vi.advanceTimersByTime(20_000);
+    });
+    expect(await screen.findByText(en.stake_reread_failed)).toBeTruthy();
+    expect(screen.getByText(en.vote_delegation_pending)).toBeTruthy();
+
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, null));
+    await act(async () => {
+      vi.advanceTimersByTime(20_000);
+    });
+    await waitFor(() => expect(screen.queryByText(en.stake_reread_failed)).toBeNull());
+    expect(screen.getByText(en.vote_delegation_pending)).toBeTruthy();
+  });
+});
+
+describe("#58: the expiry time carries the date when it falls on another day", () => {
+  it("sent at 23:19, the 'not seen' line names 01:19 of the next day with its date", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 10, 13, 23, 30));
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, null));
+    const sentAt = new Date(2026, 10, 13, 23, 19).getTime();
+    expect(Date.now() - sentAt).toBeGreaterThan(DELEGATION_UNSEEN_MS);
+    renderWithSentVote({ account: ACCOUNT, network: NETWORK, txHash: TX_HASH, sentAt, drepBefore: null });
+    expect(
+      await screen.findByText(en.vote_delegation_unseen.replace("{{time}}", "2026-11-14 01:19")),
+    ).toBeTruthy();
   });
 });

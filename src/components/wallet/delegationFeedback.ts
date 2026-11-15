@@ -202,14 +202,22 @@ export function voteDelegationExpiresAt(sent: SentVoteDelegation): number {
 }
 
 /**
- * A moment as the reader's own clock shows it, `HH:MM` in local time. Used in
- * the sentences that say when a vote delegation was sent or stops being able
- * to land, so the time can be matched against the History tab.
+ * A moment as the reader's own clock shows it, `HH:MM` in local time, with
+ * `YYYY-MM-DD ` in front when it falls on another local day than `now`. Used
+ * in the sentences that say when a vote delegation was sent or stops being
+ * able to land, so the time can be matched against the History tab — and so a
+ * choice sent at 23:30 does not read "can still land until 01:30" as though
+ * that were earlier the same day.
  */
-export function clockTime(ms: number): string {
+export function clockTime(ms: number, now: number): string {
   const d = new Date(ms);
   const pad = (n: number) => String(n).padStart(2, "0");
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const time = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const today = new Date(now);
+  const sameDay =
+    d.getFullYear() === today.getFullYear() && d.getMonth() === today.getMonth() && d.getDate() === today.getDate();
+  if (sameDay) return time;
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${time}`;
 }
 
 export type VoteDelegationWatch = { kind: "none" } | { kind: "pending" } | { kind: "unseen" };
