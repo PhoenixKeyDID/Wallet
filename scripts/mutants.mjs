@@ -2453,6 +2453,13 @@ const MUTANTS = [
     marker: "MUTCS-APPROVE-LOCKS",
   },
   {
+    name: "MUTCS-APPROVE-UNTICK: unticking a foreign withdrawal leaves it confirmed",
+    file: APPROVE,
+    from: "        else next.delete(rewardAccountHex);\n",
+    to: "        else void 0 /* MUTCS-APPROVE-UNTICK */;\n",
+    marker: "MUTCS-APPROVE-UNTICK",
+  },
+  {
     name: "MUTCS-SDH: the summary never reports a script_data_hash in the body",
     file: TX_SUMMARY,
     from: "    scriptDataCommitted: b.has(11),\n",

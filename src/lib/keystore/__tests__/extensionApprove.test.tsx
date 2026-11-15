@@ -859,6 +859,25 @@ describe("signTx with a withdrawal from a script account that is not this wallet
     ]);
   });
 
+  it("unticking the entry locks Sign again, and a click then sends nothing", async () => {
+    mocks.fetchUtxos.mockResolvedValue(ourInputs());
+    const { port, view } = await unlocked();
+    act(() => port.deliver({ type: "request", id: "fw4", origin: ORIGIN, method: "signTx", params: [injected(), true] }));
+    await view.findByText(en.cip30_foreign_actions_heading);
+    const approve = view.getByText(en.cip30_approve) as HTMLButtonElement;
+    await ticks();
+    const box = view.getByTestId(`confirm-${SCRIPT_REWARD}`) as HTMLInputElement;
+    fireEvent.click(box);
+    await waitFor(() => expect(approve.disabled).toBe(false));
+    fireEvent.click(box);
+    await waitFor(() => expect(approve.disabled).toBe(true));
+    expect(box.checked).toBe(false);
+    expect(view.getByTestId("sign-locked")).toBeTruthy();
+    fireEvent.click(approve);
+    await ticks();
+    expect(port.sent.find((m) => m.id === "fw4")).toBeUndefined();
+  });
+
   it("a new request starts with nothing confirmed", async () => {
     mocks.fetchUtxos.mockResolvedValue(ourInputs());
     const { port, view } = await unlocked();
