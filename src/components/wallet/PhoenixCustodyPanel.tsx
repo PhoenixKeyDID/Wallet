@@ -58,8 +58,9 @@ export function PhoenixCustodyPanel({ did }: Props) {
 
   // `fixed` is the whole contract for a phoenix wallet — one address, no
   // active/stake. Normally the custody script, but it comes from the backend's
-  // per-user address field and is shown as-is, not checked (Feat §3). The old `addresses.custody ?? addresses.fixed` fallback read
-  // a field the backend never sends; only the fallback kept it working.
+  // per-user address field and is shown as-is, not checked (Feat §3).
+  // The old `addresses.custody ?? addresses.fixed` fallback read a field the
+  // backend never sends; only the fallback kept it working.
   const custodyAddress = phoenix?.addresses.fixed ?? null;
   /**
    * Which network this custody address is on, read off the address itself.
