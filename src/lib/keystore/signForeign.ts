@@ -143,6 +143,12 @@ export type RequiredKeys = {
   keyHashes: string[];
   /** blake2b-256 of the body exactly as it was serialised. */
   bodyHashHex: string;
+  /**
+   * The reward accounts (hex) of every withdrawal the summary counted as not
+   * this wallet's. `signForeignTx` signs only when the person confirmed each
+   * one on the screen, by this same key.
+   */
+  foreignRewardAccounts: string[];
 };
 
 /**
@@ -441,7 +447,7 @@ export function requiredKeysFor(
     }
   }
 
-  return { keyHashes: need, bodyHashHex };
+  return { keyHashes: need, bodyHashHex, foreignRewardAccounts: summary.foreignWithdrawalList.map((w) => w.rewardAccountHex) };
 }
 
 /**
@@ -456,8 +462,19 @@ export function signForeignTx(
   account: Account,
   view: WalletView,
   partialSign: boolean,
+  /**
+   * The foreign withdrawals the person confirmed on the screen, one by one, by
+   * reward account (hex). Empty by default, and empty refuses any transaction
+   * that carries one: a withdrawal from an account that is not this wallet's
+   * is somebody else's action riding on this signature — a script account runs
+   * its script for it, and a contract can count that run as a vote — so it is
+   * signed only after the person has seen and confirmed that very entry.
+   */
+  confirmed: ReadonlySet<string> = new Set(),
 ): string {
-  const { keyHashes, bodyHashHex } = requiredKeysFor(txCborHex, account, view);
+  const { keyHashes, bodyHashHex, foreignRewardAccounts } = requiredKeysFor(txCborHex, account, view);
+  const unconfirmed = foreignRewardAccounts.filter((k) => !confirmed.has(k));
+  if (unconfirmed.length > 0) throw new LocalSignError("sign_foreign_withdrawal_unconfirmed", unconfirmed.join(","));
 
   const bodyHash = Buffer.from(bodyHashHex, "hex");
   if (bodyHash.length !== 32) throw new LocalSignError("sign_bad_body_hash");

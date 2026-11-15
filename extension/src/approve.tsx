@@ -37,7 +37,7 @@ import {
 } from "../../src/lib/keystore";
 import { vaultStore, type StoredWallet } from "../../src/lib/keystore/storage";
 import { DEFAULT_LOCK_TIMEOUT_MS } from "../../src/lib/keystore/session";
-import { summariseTx, UndescribableTxError, type TxSummary } from "../../src/lib/cardano/txSummary";
+import { summariseTx, UndescribableTxError, unconfirmedForeignActions, type TxSummary } from "../../src/lib/cardano/txSummary";
 import { signForeignTx, txIdOf, walletViewFrom, type WalletView } from "../../src/lib/keystore/signForeign";
 import { isDefiniteRejection } from "../../src/lib/cardano/submitError";
 import { planDataSign, signDataCip8, DATA_SIGN_CODE, type DataSignPlan } from "../../src/lib/keystore/signData";
@@ -212,6 +212,12 @@ type Phase =
        * the summary never counted and sign for it.
        */
       view?: WalletView;
+      /**
+       * The withdrawals from accounts that are not this wallet's that the
+       * person ticked, one by one, by reward account (hex). Lives on this
+       * request's phase, so a new request starts with none confirmed.
+       */
+      confirmed?: ReadonlySet<string>;
       undescribable?: string;
       /**
        * Reading this wallet's coins failed (network, indexer). Not a verdict
@@ -577,7 +583,10 @@ export function Approve() {
     }
     setBusy(true);
     try {
-      const witnessSetHex = signForeignTx(cbor, account, phase.view, partial);
+      // The confirmations ticked on this screen go to the signer, which
+      // refuses a foreign withdrawal that is not among them — the button lock
+      // below is the first door, this is the one that holds the key.
+      const witnessSetHex = signForeignTx(cbor, account, phase.view, partial, phase.confirmed ?? new Set());
       answer({ ok: true, value: witnessSetHex });
     } catch (e) {
       const key = (e as { key?: string })?.key;
@@ -750,6 +759,20 @@ export function Approve() {
   if (phase.at === "decide") {
     const { summary, undescribable, readFailed, readFailedWhy, req, dataSign } = phase;
     const describesTx = req.method === "signTx" || req.method === "submitTx";
+    const confirmed = phase.confirmed ?? new Set<string>();
+    // Signing gives this wallet's authority to every withdrawal in the body,
+    // so `signTx` stays locked until each one that is not this wallet's has
+    // been ticked. `submitTx` adds no signature — the authority was given
+    // when it was signed — and shows the same list without the lock.
+    const signLocked = req.method === "signTx" && !!summary && unconfirmedForeignActions(summary, confirmed).length > 0;
+    const setConfirmed = (rewardAccountHex: string, checked: boolean) =>
+      setPhase((cur) => {
+        if (cur.at !== "decide" || cur.req !== req) return cur;
+        const next = new Set(cur.confirmed ?? []);
+        if (checked) next.add(rewardAccountHex);
+        else next.delete(rewardAccountHex);
+        return { ...cur, confirmed: next };
+      });
     return (
       <div className="approve">
         <OriginLine />
@@ -781,7 +804,14 @@ export function Approve() {
           </p>
         )}
 
-        {summary && <TxSummaryView summary={summary} />}
+        {summary && (
+          <TxSummaryView
+            summary={summary}
+            confirmed={confirmed}
+            onConfirm={req.method === "signTx" ? setConfirmed : undefined}
+            locks={req.method === "signTx"}
+          />
+        )}
         {dataSign && <DataSignView plan={dataSign} />}
 
         <div className="approve-actions">
@@ -806,7 +836,7 @@ export function Approve() {
             {t("cip30_reject")}
           </button>
           <button
-            disabled={busy || (req.method === "signData" ? !dataSign : !summary || !!undescribable)}
+            disabled={busy || signLocked || (req.method === "signData" ? !dataSign : !summary || !!undescribable)}
             onClick={() =>
               req.method === "signData" ? signMessage() : void (req.method === "submitTx" ? broadcast() : sign())
             }
