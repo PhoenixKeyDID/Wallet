@@ -40,6 +40,7 @@ import { types as tyTypes, utils as tyUtils } from "@stricahq/typhonjs";
 import { ProviderUnreachableError } from "./provider";
 import type { AddressBalance } from "./provider";
 import { SubmitRejectedError } from "./submitError";
+import { addressHexOf, readChainDatum, walletOwnsOutput, walletOwnsRefScriptOutput, type WalletInput } from "./ownUtxo";
 
 type ProtocolParams = tyTypes.ProtocolParams;
 
@@ -301,11 +302,63 @@ export async function bfAddressBalance(
   return { lovelace, assets: [...byUnit].map(([unit, v]) => ({ unit, ...v })) };
 }
 
+/** Blockfrost's page size ceiling: `count` above 100 is refused. */
+export const BF_PAGE = 100;
+/** Past this many pages the read stops with an error rather than walk forever. */
+const BF_MAX_PAGES = 1000;
+
+/**
+ * Every row of a paged list, not the first page of it.
+ *
+ * A list endpoint answers at most `BF_PAGE` rows. Reading one page of an
+ * address's UTxOs is not a smaller wallet: the coins on page two are still this
+ * wallet's, and a signing screen that does not know them labels them a
+ * stranger's while the key it signs with opens them. A page holding fewer than
+ * `BF_PAGE` rows is the last; a list that never ends is an error, not a total.
+ */
+async function bfAllPages<T>(ep: BlockfrostEndpoint, path: string): Promise<T[]> {
+  const all: T[] = [];
+  for (let page = 1; page <= BF_MAX_PAGES; page++) {
+    let rows: unknown;
+    try {
+      rows = await bf<unknown>(ep, `${path}?count=${BF_PAGE}&page=${page}`);
+    } catch (e) {
+      // A 404 on the first page is the chain saying "nothing here" and the
+      // caller may read it as empty. A 404 after rows were already read is not
+      // that: passing it up as `NotOnChainError` would turn 100 coins read into
+      // none at all, with no error, so it stops the read instead.
+      if (page > 1 && e instanceof NotOnChainError) {
+        throw new Error(`Chain endpoint ${path} answered 404 on page ${page} after ${all.length} rows — the list is not read whole`);
+      }
+      throw e;
+    }
+    if (!Array.isArray(rows)) throw new Error(`Chain endpoint ${path} answered a page that is not a list`);
+    all.push(...(rows as T[]));
+    if (rows.length < BF_PAGE) return all;
+  }
+  throw new Error(`Chain endpoint ${path} still had rows after ${BF_MAX_PAGES} pages — the list is not read whole`);
+}
+
+/** Spendable UTxOs only — the shape every transaction builder takes. */
 export async function bfUtxos(
   ep: BlockfrostEndpoint,
   addresses: string[],
-): Promise<tyTypes.Input[]> {
-  const out: tyTypes.Input[] = [];
+): Promise<WalletInput[]> {
+  return (await bfOwnedUtxos(ep, addresses)).spendable;
+}
+
+/**
+ * The Blockfrost reader's UTxOs split into spendable and the reference-script
+ * ones this wallet owns but never spends (`walletOwnsRefScriptOutput`). The
+ * mirror of the Koios path's `fetchOwnedUtxos`: one read answers both the
+ * builder and the foreign-tx screen.
+ */
+export async function bfOwnedUtxos(
+  ep: BlockfrostEndpoint,
+  addresses: string[],
+): Promise<{ spendable: WalletInput[]; refScript: WalletInput[] }> {
+  const out: WalletInput[] = [];
+  const refScript: WalletInput[] = [];
   for (const addr of addresses) {
     let rows: Array<{
       tx_hash?: string;
@@ -317,21 +370,33 @@ export async function bfUtxos(
       reference_script_hash?: unknown;
     }>;
     try {
-      rows = await bf(ep, `/addresses/${encodeURIComponent(addr)}/utxos`);
+      rows = await bfAllPages(ep, `/addresses/${encodeURIComponent(addr)}/utxos`);
     } catch (e) {
       if (e instanceof NotOnChainError) continue;
       throw e;
     }
     for (const r of rows) {
-      // Same rule as the Koios path and the CIP-30 path: a UTxO carrying a datum
-      // or a reference script usually belongs to a script. Spending it casually
-      // can destroy a reference script other people depend on, and the datum is
-      // not ours to reinterpret. `data_hash` is included because a datum can be
-      // attached by hash rather than inline, and a wallet that skips only the
-      // inline case would spend exactly the outputs whose meaning it cannot see.
-      if (r.inline_datum != null || r.data_hash != null || r.reference_script_hash != null) continue;
       if (typeof r.tx_hash !== "string" || typeof r.output_index !== "number") {
         throw new Error("the chain endpoint returned an unspent output with no id");
+      }
+      // The one rule the Koios path, the CIP-30 path and the approval screen
+      // share (`walletOwnsOutput`): a reference script is skipped; a datum —
+      // inline, or by hash in `data_hash` — is kept on a key-locked output,
+      // because the ledger ignores it there and the LAMP drip-pot pays every
+      // claim to a key address under one, and skipped on a script-locked one.
+      // Blockfrost sets `data_hash` beside `inline_datum` too (the hash of the
+      // inline one), so the inline datum is read first.
+      const chainDatum = readChainDatum(r.inline_datum, r.data_hash, `${r.tx_hash}#${r.output_index}`);
+      const address = tyUtils.getAddressFromString(r.address ?? addr) as tyTypes.ShelleyAddress;
+      const facts = {
+        addressHex: addressHexOf(address),
+        datum: chainDatum !== undefined,
+        referenceScript: r.reference_script_hash != null,
+      };
+      const spendable = walletOwnsOutput(facts);
+      const refScriptOwned = !spendable && walletOwnsRefScriptOutput(facts);
+      if (!spendable && !refScriptOwned) {
+        continue;
       }
       // The same distinction the Koios path draws on `asset_list`, on the field
       // that carries it here. `?? []` reads "this output holds nothing" out of a
@@ -364,18 +429,17 @@ export async function bfUtxos(
             amount: new BigNumber(q.toString()),
           }),
       );
-      out.push({
+      (spendable ? out : refScript).push({
         txId: r.tx_hash,
         index: r.output_index,
         amount,
         tokens,
-        address: tyUtils.getAddressFromString(
-          r.address ?? addr,
-        ) as tyTypes.ShelleyAddress,
+        address,
+        ...(chainDatum ? { chainDatum } : {}),
       });
     }
   }
-  return out;
+  return { spendable: out, refScript };
 }
 
 /**

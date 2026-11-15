@@ -40,6 +40,17 @@ function say(key: string, values?: Record<string, unknown>): string {
 }
 
 /**
+ * The class list of each kind, written out whole so `check:popup-css` can read
+ * every class the toast puts on the page. `info` has no modifier rule in
+ * `popup.css` and wears the plain banner, as it always has.
+ */
+const TOAST_CLASS: Record<ToastKind, string> = {
+  error: "phoenix-toast phoenix-toast-error",
+  success: "phoenix-toast phoenix-toast-success",
+  info: "phoenix-toast",
+};
+
+/**
  * Paint the message.
  *
  * A popup is 360px of chrome with no room for a toast library, and the approval
@@ -51,7 +62,7 @@ function paint(kind: ToastKind, message: string): void {
   if (typeof document === "undefined" || !document.body) return;
   const el = document.createElement("div");
   el.setAttribute("role", kind === "error" ? "alert" : "status");
-  el.className = "phoenix-toast phoenix-toast-" + kind;
+  el.className = TOAST_CLASS[kind];
   el.textContent = message;
   document.body.appendChild(el);
   // Errors stay twice as long. A success message is a receipt you glance at; an

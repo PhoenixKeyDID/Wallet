@@ -12,7 +12,8 @@
  *
  * ## What is measured
  *
- * Start at the popup's entry file and follow every relative or `@/` import (the
+ * Start at the entry files of both pages that load `popup.css` — the popup
+ * (`popup.tsx`) and the approval window (`approve.tsx`) — and follow every relative or `@/` import (the
  * same two spellings Vite resolves in `extension/vite.config.ts`). In each file
  * reached, collect the class tokens from
  *   - every `className` / `class` JSX attribute (all string and template pieces
@@ -20,15 +21,26 @@
  *   - every variable initialised with a string or template that a `className`
  *     expression names (the `btnCls` / `card` idiom the panels use — the name
  *     does not matter, the reference does).
- * Then compare against the classes `popup.css` defines.
+ * Add the `class="…"` attributes of the two HTML pages themselves
+ * (`extension/popup.html`, `extension/approve.html`). Then compare against the
+ * classes `popup.css` defines — a class named there only inside `:not(…)` or
+ * `:has(…)` is not a rule for it (see `definedClasses`).
  *
  * ## What is NOT measured, said out loud
  *
  * - A `className={someParameter}` whose value arrives from a caller cannot be
  *   read at that site (the caller's own literal is read at the caller). They are counted and printed, never silently
  *   dropped (the third state: "could not look" is not "fine").
- * - Classes assembled at runtime (`` `text-${tone}` ``) contribute their literal
- *   pieces only.
+ * - Classes assembled at runtime (`` `text-${tone}` ``, `"toast-" + kind`)
+ *   contribute their literal pieces only: the piece `toast-` is not a class and
+ *   the class it becomes is never compared. Write such a list out whole, per
+ *   case, in a table (as `toast.ts` does) so every class is a literal.
+ * - Outside JSX, only `el.className =` / `+=`, `el.setAttribute("class", …)` and
+ *   `el.classList.add/toggle/replace(…)` are read. `el.classList = …`,
+ *   `setAttribute` with a computed name, `Reflect.set`, `innerHTML` strings and
+ *   class lists built in another module and passed in are not.
+ * - In the HTML pages, the first `class` of each start tag is read; markup
+ *   written by a script at runtime is not.
  * - The exemptions below, each with its reason, and the count of tokens they
  *   absorbed, so a growing exemption list is visible.
  *
@@ -129,6 +141,23 @@ export function scanSource(file, source) {
   };
   collect(sf);
 
+  // Every literal piece of a class expression, plus the literal of each variable
+  // it names. True when at least one piece was found: an expression with nothing
+  // literal in it here is the caller's to say, and is counted as unreadable.
+  const readClasses = (expr) => {
+    const got = textOf(expr);
+    pieces.push(...got);
+    let resolved = got.length > 0;
+    for (const id of identifiersIn(expr)) {
+      const via = named.get(id);
+      if (via) {
+        pieces.push(...via);
+        resolved = true;
+      }
+    }
+    return resolved;
+  };
+
   const visit = (n) => {
     if (ts.isImportDeclaration(n) && ts.isStringLiteral(n.moduleSpecifier)) {
       imports.push(n.moduleSpecifier.text);
@@ -150,20 +179,36 @@ export function scanSource(file, source) {
       (n.name.getText(sf) === "className" || n.name.getText(sf) === "class") &&
       n.initializer
     ) {
-      const got = textOf(n.initializer);
-      pieces.push(...got);
-      let resolved = got.length > 0;
-      for (const id of identifiersIn(n.initializer)) {
-        const via = named.get(id);
-        if (via) {
-          pieces.push(...via);
-          resolved = true;
-        }
-      }
       // `className={prop}` where nothing in it resolves to a literal here
       // (a parameter handed down by the caller): unreadable at this site. The
       // caller's own `className="…"` is read where the caller is.
-      if (!resolved && ts.isJsxExpression(n.initializer) && n.initializer.expression) dynamic.push(where(n));
+      if (!readClasses(n.initializer) && ts.isJsxExpression(n.initializer) && n.initializer.expression) dynamic.push(where(n));
+    } else if (
+      // The same list written to the DOM by hand, outside JSX: `el.className =
+      // "…"` (the toast does this), `el.className += …`, `el.setAttribute("class",
+      // …)`, `el.classList.add(…)` / `.toggle(…)` / `.replace(…)`. Read like an
+      // attribute; one with nothing literal in it is unreadable.
+      ts.isBinaryExpression(n) &&
+      (n.operatorToken.kind === ts.SyntaxKind.EqualsToken || n.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken) &&
+      ts.isPropertyAccessExpression(n.left) &&
+      n.left.name.text === "className"
+    ) {
+      if (!readClasses(n.right)) dynamic.push(where(n));
+    } else if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression)) {
+      const method = n.expression.name.text;
+      const target = n.expression.expression;
+      const onClassList = ts.isPropertyAccessExpression(target) && target.name.text === "classList";
+      const args =
+        method === "setAttribute" && n.arguments[0] && ts.isStringLiteralLike(n.arguments[0]) && n.arguments[0].text === "class"
+          ? n.arguments.slice(1)
+          : onClassList && ["add", "toggle", "replace"].includes(method)
+            ? method === "toggle"
+              ? n.arguments.slice(0, 1) // the second argument is the on/off flag
+              : method === "replace"
+                ? n.arguments.slice(1) // the first is the class taken away
+                : n.arguments
+            : [];
+      for (const a of args) if (!readClasses(a)) dynamic.push(where(a));
     } else if (ts.isJsxSpreadAttribute(n) && /^[a-z]/.test(n.parent.parent.tagName.getText(sf))) {
       // `<div {...props}>` can put a `className` on the DOM that this file never
       // names. A spread onto a component (`<SendPanel {...p}>`) cannot: that
@@ -179,14 +224,26 @@ export function scanSource(file, source) {
   return { imports, tokens, dynamic: dynamic.length, unreadable: dynamic };
 }
 
-/** The class names that `css` has at least one selector for. */
+/**
+ * The class names that `css` has at least one selector for.
+ *
+ * A class named only inside `:not(…)` or `:has(…)` is not counted: `.a:not(.b)`
+ * styles elements that do NOT carry `b`, and `.a:has(.b)` styles their parent,
+ * so neither is a rule for `b`. `:is(…)` / `:where(…)` do style what they name
+ * and are read as written.
+ *
+ * Not modelled: a rule inside `@media` counts as defined whatever the query, so
+ * a class styled only under `prefers-color-scheme: light` passes. Telling a
+ * query that can match the popup from one that cannot needs a media-query
+ * evaluator; the breakpoint variants it would matter for are exempted by name.
+ */
 export function definedClasses(css) {
   const stripped = css.replace(/\/\*[\s\S]*?\*\//g, "");
   const out = new Set();
   const prelude = /([^{}]+)\{/g;
   let m;
   while ((m = prelude.exec(stripped))) {
-    const sel = m[1];
+    const sel = withoutNegatedArguments(m[1]);
     if (sel.trim().startsWith("@")) continue;
     const cls = /\.((?:\\.|[A-Za-z0-9_-])+)/g;
     let c;
@@ -195,15 +252,132 @@ export function definedClasses(css) {
   return out;
 }
 
+/** `sel` with the argument of every `:not(…)` and `:has(…)` removed, nesting included. */
+function withoutNegatedArguments(sel) {
+  let out = "";
+  let i = 0;
+  const open = /:(?:not|has)\(/gi;
+  let m;
+  while ((m = open.exec(sel))) {
+    out += sel.slice(i, m.index);
+    let depth = 1;
+    let j = m.index + m[0].length;
+    for (; j < sel.length && depth > 0; j++) {
+      if (sel[j] === "\\") j++;
+      else if (sel[j] === "(") depth++;
+      else if (sel[j] === ")") depth--;
+    }
+    i = j;
+    open.lastIndex = j;
+  }
+  return out + sel.slice(i);
+}
+
 /**
- * @param {{entries: string[], css: string, root?: string, aliases?: [string,string][]}} o
+ * Class tokens from the `class` attribute of every start tag in an HTML page,
+ * split the way the HTML tokenizer splits a tag (WHATWG HTML §13.2.5): an
+ * attribute ends at whitespace, `/` or `>`; a quoted value runs to its closing
+ * quote and may hold `>`; an unquoted value ends at whitespace or `>`; a quoted
+ * value may be followed by the next attribute with no space between; only the
+ * first `class` on a tag counts, as in the browser. Comments and the text of
+ * `<script>` / `<style>` are skipped. A regular expression over the raw text got
+ * `<body/class="x">`, `id="r"class="x"` and `title="a>b" class="x"` wrong, and
+ * read `title=" class=y"` as a class.
  */
-export function analyze({ entries, css, root = REPO, aliases = [] }) {
+export function htmlClasses(html) {
+  const out = new Set();
+  const WS = /[\t\n\f\r ]/;
+  const n = html.length;
+  let i = 0;
+  while (i < n) {
+    const lt = html.indexOf("<", i);
+    if (lt < 0) break;
+    if (html.startsWith("<!--", lt)) {
+      // As the HTML tokenizer ends a comment: `<!-->` and `<!--->` are empty
+      // comments closed at once, and `--!>` closes one as well as `-->`.
+      // Searching only for `-->` past `<!--` would run an empty comment on to
+      // a later `-->` and hide every tag in between.
+      const body = lt + 4;
+      if (html[body] === ">") i = body + 1;
+      else if (html.startsWith("->", body)) i = body + 2;
+      else {
+        const ends = [["-->", 3], ["--!>", 4]].map(([t, len]) => [html.indexOf(t, body), len]).filter(([at]) => at >= 0);
+        const [at, len] = ends.sort((x, y) => x[0] - y[0])[0] ?? [n, 0];
+        i = at + len;
+      }
+      continue;
+    }
+    if (!/[A-Za-z]/.test(html[lt + 1] ?? "")) {
+      // `</…>`, `<!doctype …>`, `<?…>` or a stray `<`: no attributes to read
+      const gt = html.indexOf(">", lt + 1);
+      i = /[!/?]/.test(html[lt + 1] ?? "") && gt >= 0 ? gt + 1 : lt + 1;
+      continue;
+    }
+    let j = lt + 1;
+    let tag = "";
+    while (j < n && !WS.test(html[j]) && html[j] !== "/" && html[j] !== ">") tag += html[j++];
+    tag = tag.toLowerCase();
+    let sawClass = false;
+    while (j < n && html[j] !== ">") {
+      if (WS.test(html[j]) || html[j] === "/") {
+        j++;
+        continue;
+      }
+      let name = html[j++]; // a leading `=` is part of the name, as in the spec
+      while (j < n && !WS.test(html[j]) && html[j] !== "/" && html[j] !== ">" && html[j] !== "=") name += html[j++];
+      while (j < n && WS.test(html[j])) j++;
+      let value = null;
+      if (html[j] === "=") {
+        j++;
+        while (j < n && WS.test(html[j])) j++;
+        const q = html[j];
+        if (q === '"' || q === "'") {
+          const close = html.indexOf(q, j + 1);
+          value = html.slice(j + 1, close < 0 ? n : close);
+          j = close < 0 ? n : close + 1;
+        } else {
+          const start = j;
+          while (j < n && !WS.test(html[j]) && html[j] !== ">") j++;
+          value = html.slice(start, j);
+        }
+      }
+      if (name.toLowerCase() === "class" && !sawClass) {
+        sawClass = true;
+        for (const t of (value ?? "").split(/[\t\n\f\r ]+/)) if (t) out.add(t);
+      }
+    }
+    i = j + 1;
+    if (tag === "script" || tag === "style") {
+      const end = html.toLowerCase().indexOf("</" + tag, i);
+      i = end < 0 ? n : end;
+    }
+  }
+  return out;
+}
+
+/**
+ * @param {{entries: string[], css: string, root?: string, aliases?: [string,string][], html?: string[]}} o
+ *   `html`: the pages that load the stylesheet; their own `class="…"` (the
+ *   approval window's `<body class="approve-page">`) is used as much as a
+ *   `className` is.
+ */
+export function analyze({ entries, css, root = REPO, aliases = [], html = [] }) {
   const seen = new Set();
   const queue = [...entries];
   const used = new Map(); // token -> first file
   const problems = [];
   const unreadable = [];
+  for (const page of html) {
+    let source;
+    try {
+      source = readFileSync(page, "utf8");
+    } catch (e) {
+      problems.push(`cannot read ${page}: ${e.code ?? e.message}`);
+      continue;
+    }
+    seen.add(page);
+    for (const t of htmlClasses(source)) if (!used.has(t)) used.set(t, page);
+  }
   while (queue.length) {
     const file = queue.pop();
     if (seen.has(file)) continue;
@@ -235,7 +409,7 @@ export function analyze({ entries, css, root = REPO, aliases = [] }) {
     }
     missing.push({ token, file });
   }
-  return { files: seen.size, used: used.size, missing, exempted, dynamic: unreadable.length, unreadable, problems };
+  return { files: seen.size, pages: html.length, used: used.size, missing, exempted, dynamic: unreadable.length, unreadable, problems };
 }
 
 /**
@@ -248,17 +422,21 @@ export function analyze({ entries, css, root = REPO, aliases = [] }) {
 export const MAX_UNREADABLE = 2;
 
 function main() {
-  const entries = [join(REPO, "extension/src/popup.tsx")];
+  // Both pages that load popup.css: the toolbar popup and the approval window
+  // (`approve.tsx` imports the same stylesheet). A class only the approval
+  // window uses is as invisible without a rule as one in the popup.
+  const entries = [join(REPO, "extension/src/popup.tsx"), join(REPO, "extension/src/approve.tsx")];
   const css = join(REPO, "extension/src/popup.css");
   const aliases = [["@/lib/toast", join(REPO, "extension/src/toast.ts")]];
-  const r = analyze({ entries, css, aliases });
+  const html = [join(REPO, "extension/popup.html"), join(REPO, "extension/approve.html")];
+  const r = analyze({ entries, css, aliases, html });
   if (r.problems.length) {
     console.error("popup CSS gate did NOT run to completion:");
     for (const p of r.problems) console.error(`  • ${p}`);
     process.exit(2);
   }
   console.log(
-    `popup CSS: ${r.files} source files reached from the popup, ${r.used} class tokens, ` +
+    `popup CSS: ${r.files} files (${r.pages} HTML pages and the sources reached from the popup and the approval window), ${r.used} class tokens, ` +
       `${r.exempted.length} exempt (breakpoint variants + markers), ` +
       `${r.dynamic} className expression(s) not readable from source`,
   );

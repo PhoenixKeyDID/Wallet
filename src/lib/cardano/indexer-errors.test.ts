@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { searchPools, getStakeAccountState } from "./staking";
-import { listDReps } from "./governance";
+import { getVoteDelegationState, listDReps } from "./governance";
 
 /**
  * Indexer failures must reach the caller (Wallet#8).
@@ -63,6 +63,7 @@ describe("indexer failures propagate instead of becoming data", () => {
       registered: false,
       delegatedPoolId: null,
       rewardsAvailable: BigInt("0"),
+      delegatedDRep: null,
     });
   });
 
@@ -76,6 +77,7 @@ describe("indexer failures propagate instead of becoming data", () => {
             status: "registered",
             delegated_pool: "pool1abc",
             rewards_available: "12345",
+            delegated_drep: "drep_always_abstain",
           },
         ]),
       ),
@@ -84,7 +86,29 @@ describe("indexer failures propagate instead of becoming data", () => {
       registered: true,
       delegatedPoolId: "pool1abc",
       rewardsAvailable: BigInt("12345"),
+      delegatedDRep: "drep_always_abstain",
     });
+  });
+
+  it("getVoteDelegationState: a row without delegated_drep is a failed read, not 'no DRep'", async () => {
+    const reply = (row: Record<string, unknown>) =>
+      vi.stubGlobal("fetch", vi.fn(async () => Response.json([{ stake_address: STAKE_ADDR, status: "registered", ...row }])));
+    reply({});
+    await expect(getVoteDelegationState(PREPROD, STAKE_ADDR)).rejects.toThrow(/delegated_drep/);
+    reply({ delegated_drep: 5 });
+    await expect(getVoteDelegationState(PREPROD, STAKE_ADDR)).rejects.toThrow(/delegated_drep/);
+    reply({ delegated_drep: null });
+    await expect(getVoteDelegationState(PREPROD, STAKE_ADDR)).resolves.toEqual({
+      found: true,
+      status: "registered",
+      delegatedDRep: null,
+    });
+    reply({ delegated_drep: "drep_always_abstain" });
+    await expect(getVoteDelegationState(PREPROD, STAKE_ADDR)).resolves.toMatchObject({
+      delegatedDRep: "drep_always_abstain",
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json([])));
+    await expect(getVoteDelegationState(PREPROD, STAKE_ADDR)).resolves.toEqual({ found: false });
   });
 
   it("searchPools rejects on HTTP 503 rather than reporting no such pool", async () => {

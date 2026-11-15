@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 // @ts-expect-error — plain .mjs script, no declaration file
-import { analyze, definedClasses, MAX_UNREADABLE, scanSource } from "../check-popup-css.mjs";
+import { analyze, definedClasses, htmlClasses, MAX_UNREADABLE, scanSource } from "../check-popup-css.mjs";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -118,6 +118,34 @@ describe("class collection", () => {
     expect(r.unreadable).toEqual([expect.stringMatching(/popup\.tsx:2$/)]);
   });
 
+  it("reads classes written to the DOM by hand, outside JSX", () => {
+    const r = stage(
+      {
+        "src/popup.tsx":
+          `const K = { a: "via-table" } as const;\n` +
+          `export function paint(el: HTMLElement, k: "a") {\n` +
+          `  el.className = "by-assign";\n` +
+          `  el.className += " by-append";\n` +
+          `  el.setAttribute("class", "by-attr");\n` +
+          `  el.classList.add("by-add", "by-add-2");\n` +
+          `  el.classList.toggle("by-toggle", true);\n` +
+          `  el.classList.replace("taken-away", "by-replace");\n` +
+          `  el.className = K[k];\n` +
+          `}`,
+      },
+      "",
+    );
+    expect(missingOf(r)).toEqual(
+      ["by-add", "by-add-2", "by-append", "by-assign", "by-attr", "by-replace", "by-toggle", "via-table"].sort(),
+    );
+    expect(r.dynamic).toBe(0);
+  });
+
+  it("counts a className assigned outside JSX with nothing literal in it", () => {
+    const r = stage({ "src/popup.tsx": `export function p(el: HTMLElement, c: string) { el.className = c; el.classList.add(c); }` }, "");
+    expect(r.dynamic).toBe(2);
+  });
+
   it("reports an import that does not resolve rather than skipping it", () => {
     const r = stage({ "src/popup.tsx": `import "./Gone"; export const A = () => <div />;` }, "");
     expect(r.problems.join("\n")).toContain("./Gone");
@@ -145,6 +173,74 @@ describe("stylesheet reading", () => {
     const set = definedClasses(".a .b, .c:hover { x: y; }\n@media (min-width: 1px) { .d { x: y; } }");
     for (const c of ["a", "b", "c", "d"]) expect(set.has(c), c).toBe(true);
   });
+
+  // `.a:not(.b)` styles what does NOT carry `b`; `.a:has(.b)` styles the parent.
+  it("does not count a class named only inside :not() or :has()", () => {
+    const set = definedClasses(".a:not(.b) { x: y; }\n.c:has(.d) { x: y; }\n.e:not(:is(.f, .g)) { x: y; }");
+    for (const c of ["a", "c", "e"]) expect(set.has(c), c).toBe(true);
+    for (const c of ["b", "d", "f", "g"]) expect(set.has(c), c).toBe(false);
+  });
+
+  it("still counts a class that has its own rule as well as a :not() mention", () => {
+    const set = definedClasses(".a:not(.b) { x: y; }\n.b { x: y; }\n.h:is(.i) { x: y; }");
+    expect(set.has("b")).toBe(true);
+    expect(set.has("i")).toBe(true);
+  });
+});
+
+describe("HTML pages", () => {
+  it("reads class attributes in any quoting, and not from comments", () => {
+    const set = htmlClasses(`<body class="approve-page x"><div class='y'></div><p class=z></p><!-- <i class="ghost"> --></body>`);
+    expect([...set].sort()).toEqual(["approve-page", "x", "y", "z"]);
+  });
+
+  // Each of these is a tag the browser reads as `class="x"`.
+  it.each([
+    [`<body/class="x">`],
+    [`<body id="r"class="x">`],
+    [`<body title="a>b" class="x">`],
+    [`<body title='a>b' class=x>`],
+    [`<body\nclass="x"\n>`],
+    [`<body CLASS="x" class="later">`],
+  ])("reads the class of %j the way the browser does", (html) => {
+    expect([...htmlClasses(html)]).toEqual(["x"]);
+  });
+
+  // The browser closes `<!-->` and `<!--->` at once, and `--!>` closes a
+  // comment too: the tag after each is a real tag.
+  it.each([
+    [`<!--><i class="x"><!-- -->`],
+    [`<!---><i class="x"><!-- -->`],
+    [`<!-- note --!><i class="x"><!-- -->`],
+    [`<!-- a --!> <i class="x"> <!-- <b class="ghost"> -->`],
+  ])("ends the comment in %j where the browser does", (html) => {
+    expect([...htmlClasses(html)]).toEqual(["x"]);
+  });
+  it("still hides a tag inside an ordinary comment, and to the end in an unclosed one", () => {
+    expect([...htmlClasses(`<!-- - -> <i class="ghost"> --><b class="x">`)]).toEqual(["x"]);
+    expect([...htmlClasses(`<b class="x"><!-- <i class="ghost">`)]).toEqual(["x"]);
+  });
+
+  it("does not read a class from inside another attribute's value, a script or a style", () => {
+    expect([...htmlClasses(`<body title=" class=y">`)]).toEqual([]);
+    expect([...htmlClasses(`<body data-x='<p class="y">'>`)]).toEqual([]);
+    expect([...htmlClasses(`<script>const s = '<p class="y">';</script><style>p[class="y"]{}</style><i class="z">`)]).toEqual(["z"]);
+  });
+
+  it("fails a class the page's own HTML uses with no rule", () => {
+    writeFileSync(join(dir, "src/popup.tsx"), `export const A = () => <div className="ok" />;`);
+    writeFileSync(join(dir, "page.html"), `<body class="approve-page"><div id="root"></div></body>`);
+    writeFileSync(join(dir, "popup.css"), ".ok { x: y; }");
+    const r = analyze({ entries: [join(dir, "src/popup.tsx")], css: join(dir, "popup.css"), root: dir, html: [join(dir, "page.html")] });
+    expect(missingOf(r)).toEqual(["approve-page"]);
+  });
+
+  it("reports an HTML page it cannot read rather than skipping it", () => {
+    writeFileSync(join(dir, "src/popup.tsx"), `export const A = () => <div />;`);
+    writeFileSync(join(dir, "popup.css"), "");
+    const r = analyze({ entries: [join(dir, "src/popup.tsx")], css: join(dir, "popup.css"), root: dir, html: [join(dir, "gone.html")] });
+    expect(r.problems.join("\n")).toContain("gone.html");
+  });
 });
 
 describe("exemptions", () => {
@@ -171,6 +267,8 @@ describe("the real popup", () => {
   it("every class it renders has a rule (CLI exits 0)", () => {
     const run = spawnSync("node", [join(REPO, "scripts", "check-popup-css.mjs")], { encoding: "utf8" });
     expect(run.stdout + run.stderr).toContain("popup CSS OK");
+    // Both pages, so a class on approve.html's own <body> is checked too.
+    expect(run.stdout).toContain("(2 HTML pages and");
     expect(run.status).toBe(0);
   });
 

@@ -66,11 +66,14 @@ function newId(): string {
 class PhoenixApiError extends Error {
   code: number;
   info: string;
+  /** Set only on a CIP-30 `PaginateError`, which dApps recognise by this field. */
+  maxSize?: number;
   constructor(err: ApiError) {
     super(err.info);
     this.name = "PhoenixApiError";
     this.code = err.code;
     this.info = err.info;
+    if (typeof err.maxSize === "number") this.maxSize = err.maxSize;
   }
 }
 

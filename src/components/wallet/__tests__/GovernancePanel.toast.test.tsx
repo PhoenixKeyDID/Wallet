@@ -33,7 +33,7 @@ vi.mock("@/lib/cardano/governance", async (orig) => {
     ...real,
     listDReps: m.listDReps,
     listGovActions: m.listGovActions,
-    getVoteDelegationState: async () => ({ delegatedDRep: null }),
+    getVoteDelegationState: async () => ({ found: true, status: "registered", delegatedDRep: null }),
     rewardAddressFrom: () => ({ getBech32: () => ACCOUNT }),
     buildVoteDelegation: () => built,
     buildVote: () => built,
@@ -43,7 +43,12 @@ vi.mock("@/lib/cardano/governance", async (orig) => {
 });
 vi.mock("@/lib/cardano", async (orig) => {
   const real = (await orig()) as Record<string, unknown>;
-  return { ...real, fetchProtocolParams: async () => ({}), fetchTipSlot: async () => 1000 };
+  return {
+    ...real,
+    fetchProtocolParams: async () => ({}),
+    fetchTipSlot: async () => 1000,
+    fetchTxSeen: async () => false,
+  };
 });
 vi.mock("@/lib/toast", async (orig) => {
   const real = (await orig()) as Record<string, unknown>;

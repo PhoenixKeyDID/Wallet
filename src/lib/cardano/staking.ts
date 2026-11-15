@@ -125,12 +125,21 @@ export type StakeAccountState = {
   registered: boolean;
   delegatedPoolId: string | null;
   rewardsAvailable: bigint;
+  /**
+   * The account's vote delegation: a `drep1…` id, `drep_always_abstain`,
+   * `drep_always_no_confidence`, or null when it has none. Since the Conway
+   * hard fork a key-based account with no vote delegation cannot withdraw its
+   * rewards — the node rejects the whole transaction — so the withdraw button
+   * reads this before it builds anything.
+   */
+  delegatedDRep: string | null;
 };
 
 type AccountInfoRow = {
   stake_address?: string;
   status?: string; // "registered" | "not registered"
   delegated_pool?: string | null;
+  delegated_drep?: string | null;
   rewards_available?: string | null;
 };
 
@@ -155,11 +164,34 @@ export async function getStakeAccountState(
     _stake_addresses: [rewardAddressBech32],
   });
   const r = rows[0];
-  if (!r) return { registered: false, delegatedPoolId: null, rewardsAvailable: BigInt("0") };
+  if (!r) {
+    return { registered: false, delegatedPoolId: null, rewardsAvailable: BigInt("0"), delegatedDRep: null };
+  }
+  // Absent is not the same as null. An indexer that does not report the field
+  // must not be read as "no DRep": that would send a user who already chose
+  // one into a second, paid vote-delegation transaction.
+  if (r.delegated_drep === undefined) {
+    throw new Error("Indexer response has no delegated_drep field");
+  }
+  // null means "no vote delegation"; a string is a DRep id or label. Anything
+  // else (a number, an object) is a shape the type did not promise — reading it
+  // as "has a DRep" would hide a malformed row and offer a doomed withdrawal.
+  if (r.delegated_drep !== null && typeof r.delegated_drep !== "string") {
+    throw new Error("Indexer delegated_drep is neither a string nor null");
+  }
+  // A missing rewards field must not pad to 0. The withdraw gate reads this
+  // value directly, so a padded 0 would show "no rewards to withdraw yet" as if
+  // the chain said so — hiding a balance the user could claim. Surface it, the
+  // same way the DRep field above does. Koios always reports "0" when there are
+  // none, so an absent field is a broken answer, not an empty wallet.
+  if (r.rewards_available == null) {
+    throw new Error("Indexer response has no rewards_available field");
+  }
   return {
     registered: r.status === "registered",
     delegatedPoolId: r.delegated_pool ?? null,
-    rewardsAvailable: BigInt(r.rewards_available ?? "0"),
+    rewardsAvailable: BigInt(r.rewards_available),
+    delegatedDRep: r.delegated_drep,
   };
 }
 

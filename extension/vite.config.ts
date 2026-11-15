@@ -19,9 +19,9 @@
  *   anyone who unpacks it. That is a deliberate local build, not something to
  *   hand to anybody.
  */
-import { defineConfig, loadEnv } from "vite";
+import { build, defineConfig, loadEnv, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { chainSourceFromEnv } from "../src/lib/cardano/chainEnv";
@@ -157,6 +157,121 @@ export function manifestForBuild(
   return { manifest: m, granted };
 }
 
+/**
+ * Module aliases, shared by the main build and the page-world build below so
+ * the two cannot resolve the same import to different files.
+ *
+ * The extension is a **host** of this module, and until now it was one that
+ * supplied nothing.
+ *
+ * `docs/host-contract.json` names five aliases a host is expected to point at
+ * its own implementations. The web app points all five at real ones. This
+ * config declared a single catch-all, so all five resolved back into the
+ * module's own stand-ins — and nothing failed, because they resolved
+ * *successfully*. A stand-in that logs to the console is a working import.
+ *
+ * What that cost: panels call toast with a bare i18n key, the stand-in prints
+ * the key, and somebody who had just delegated their stake read the literal
+ * word `delegate_submitted` — a message indistinguishable from a crash, right
+ * after an action that moves money.
+ *
+ * Order matters and is the whole mechanism: Vite tries these in sequence, so
+ * every specific entry must precede the catch-all. Putting `"@"` first would
+ * swallow all of them and restore the bug in a way no test would notice.
+ */
+const ALIASES = [
+  { find: "@/lib/toast", replacement: resolve(here, "src/toast.ts") },
+  { find: "@", replacement: resolve(repo, "src") },
+];
+
+/**
+ * The two scripts that run inside a website, and the file each is built from.
+ *
+ * Neither is loaded as a module. A manifest `content_scripts` entry is a
+ * classic script, and so is the `<script src>` that `content/bridge.ts` puts
+ * into the page to load `inpage.js` — Chrome offers no `type: "module"` for a
+ * content script. A classic script that opens with `import` is a SyntaxError
+ * before its first line runs. Measured in Chrome for Testing 142 with the build
+ * that emitted both as ES modules sharing a `protocol.js` chunk: the content
+ * script threw `Cannot use import statement outside a module`, nothing was
+ * injected, and `window.cardano.phoenix` was `undefined` on every page — while
+ * every unit test and `check:package` were green.
+ *
+ * So each is built on its own, as one self-contained IIFE with nothing
+ * imported and nothing exported. A shared chunk is not possible here by
+ * construction: a classic script has no way to load one.
+ */
+export const PAGE_WORLD_ENTRIES: Record<string, string> = {
+  content: resolve(here, "content/bridge.ts"),
+  inpage: resolve(here, "inpage/provider.ts"),
+};
+
+/** Where the page-world build writes down which source modules each file holds. */
+export const PAGE_WORLD_RECEIPT = ".page-world-modules.json";
+
+/**
+ * Builds `content.js` and `inpage.js` into `outDir`, one IIFE each, and writes
+ * {@link PAGE_WORLD_RECEIPT}: for each file, the repo-relative path of every
+ * module the bundler put into it.
+ *
+ * The receipt exists because inlining removes the signal the package gate used
+ * to read. With shared chunks, a keystore that reached a page-world file had to
+ * show up as an import of something other than the protocol chunk. Inlined, it
+ * is just more lines in the same file. The bundler is the one party that knows
+ * which modules it inlined, so it says so, and `check:package` refuses any
+ * module outside its list — and refuses a package with no receipt at all.
+ *
+ * Exported so a test can run it into a temporary directory and parse what it
+ * produced: the gate reads a staged package, so without that test nothing would
+ * notice this function going back to emitting modules.
+ */
+export async function buildPageWorld(outDir: string): Promise<Record<string, string[]>> {
+  const modules: Record<string, string[]> = {};
+  for (const [name, entry] of Object.entries(PAGE_WORLD_ENTRIES)) {
+    const record: Plugin = {
+      name: "phoenix-page-world-receipt",
+      generateBundle(_opts, bundle) {
+        const ids = new Set<string>();
+        for (const chunk of Object.values(bundle)) {
+          if (chunk.type !== "chunk") continue;
+          for (const id of Object.keys(chunk.modules)) {
+            // A virtual module (`\0…`) keeps its id, so the gate sees it and
+            // refuses it; a file is written relative to the repo with `/`, so
+            // the receipt is the same on every machine.
+            ids.add(id.startsWith("\0") ? id : relative(repo, id).split(sep).join("/"));
+          }
+        }
+        modules[name + ".js"] = [...ids].sort();
+      },
+    };
+    await build({
+      configFile: false,
+      root: here,
+      base: "./",
+      logLevel: "warn",
+      publicDir: false,
+      plugins: [record],
+      resolve: { alias: ALIASES },
+      build: {
+        outDir,
+        emptyOutDir: false,
+        copyPublicDir: false,
+        minify: false,
+        rollupOptions: {
+          input: { [name]: entry },
+          output: {
+            format: "iife",
+            inlineDynamicImports: true,
+            entryFileNames: "[name].js",
+          },
+        },
+      },
+    });
+  }
+  writeFileSync(resolve(outDir, PAGE_WORLD_RECEIPT), JSON.stringify(modules, null, 2) + "\n");
+  return modules;
+}
+
 export default defineConfig(({ mode }) => ({
   root: here,
   // Relative asset paths: an extension page is served from the package root,
@@ -209,8 +324,9 @@ export default defineConfig(({ mode }) => ({
        * package was not built by this config, which the gate must refuse rather
        * than read as "no extra hosts".
        */
-      closeBundle() {
+      async closeBundle() {
         const out = resolve(repo, "dist-extension");
+        await buildPageWorld(out);
         if (existsSync(resolve(here, "icon128.png"))) {
           copyFileSync(resolve(here, "icon128.png"), resolve(out, "icon128.png"));
         }
@@ -229,31 +345,7 @@ export default defineConfig(({ mode }) => ({
       },
     },
   ],
-  resolve: {
-    /**
-     * The extension is a **host** of this module, and until now it was one that
-     * supplied nothing.
-     *
-     * `docs/host-contract.json` names five aliases a host is expected to point at
-     * its own implementations. The web app points all five at real ones. This
-     * config declared a single catch-all, so all five resolved back into the
-     * module's own stand-ins — and nothing failed, because they resolved
-     * *successfully*. A stand-in that logs to the console is a working import.
-     *
-     * What that cost: panels call toast with a bare i18n key, the stand-in prints
-     * the key, and somebody who had just delegated their stake read the literal
-     * word `delegate_submitted` — a message indistinguishable from a crash, right
-     * after an action that moves money.
-     *
-     * Order matters and is the whole mechanism: Vite tries these in sequence, so
-     * every specific entry must precede the catch-all. Putting `"@"` first would
-     * swallow all of them and restore the bug in a way no test would notice.
-     */
-    alias: [
-      { find: "@/lib/toast", replacement: resolve(here, "src/toast.ts") },
-      { find: "@", replacement: resolve(repo, "src") },
-    ],
-  },
+  resolve: { alias: ALIASES },
   build: {
     outDir: resolve(repo, "dist-extension"),
     emptyOutDir: true,
@@ -262,24 +354,24 @@ export default defineConfig(({ mode }) => ({
     minify: false,
     rollupOptions: {
       /**
-       * Five entry points, and the three new ones are separate on purpose.
+       * Three entry points here, two more in `buildPageWorld`.
        *
        * `content` and `inpage` run in a web page's process, not in the
        * extension's, so anything they pull in ships to every site the user
        * visits. Keeping them out of the popup's graph is what stops the wallet,
        * the keystore and Argon2 from being loaded into every page — which would
        * be both a large download on every navigation and a much wider surface
-       * than either script needs. `background` is separate because a service
+       * than either script needs. They are not in this list at all: this build
+       * emits ES modules, and a page-world script cannot be one (see
+       * `PAGE_WORLD_ENTRIES`). `background` is separate because a service
        * worker has no DOM and must not be handed code that assumes one.
        *
        * `approve` is the wallet window a website's request opens: it does have
-       * the keystore, and it is the only one of the three new surfaces that does.
+       * the keystore, and it is the only website-facing surface that does.
        */
       input: {
         popup: resolve(here, "popup.html"),
         approve: resolve(here, "approve.html"),
-        content: resolve(here, "content/bridge.ts"),
-        inpage: resolve(here, "inpage/provider.ts"),
         background: resolve(here, "background/worker.ts"),
       },
       output: { entryFileNames: "[name].js", chunkFileNames: "[name].js", assetFileNames: "[name].[ext]" },

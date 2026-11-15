@@ -16,7 +16,7 @@
  * see those two sections disabled with an explanation; we never fake the key.
  */
 import "../../lib/node-globals";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Buffer } from "buffer";
 import { useTranslation } from "react-i18next";
 import BigNumber from "bignumber.js";
@@ -37,6 +37,7 @@ import {
   type BuiltTx,
   fetchProtocolParams,
   fetchTipSlot,
+  fetchTxSeen,
   formatAda,
   fetchGovDeposit,
   blake2b224,
@@ -51,6 +52,9 @@ import {
   listDReps,
   listGovActions,
   getVoteDelegationState,
+  DREP_ALWAYS_ABSTAIN,
+  DREP_ALWAYS_NO_CONFIDENCE,
+  voteTargetId,
   rewardAddressFrom,
   parseGovActionId,
   parseDRepId,
@@ -63,6 +67,19 @@ import {
   infoAction,
   treasuryWithdrawalAction,
 } from "@/lib/cardano/governance";
+import {
+  VOTE_DELEGATION_TTL_SLOTS,
+  clockTime,
+  lookUpVoteTx,
+  voteDelegationExpiresAt,
+  voteDelegationConfirmed,
+  voteDelegationLanded,
+  voteDelegationWatch,
+  type SentVoteDelegation,
+} from "@/components/wallet/delegationFeedback";
+
+/** How often the current DRep is re-read while a sent vote delegation waits. */
+const VOTE_PENDING_POLL_MS = 20_000;
 
 type Section = "delegate" | "actions" | "become" | "submit";
 /**
@@ -76,14 +93,15 @@ type SummaryRow = { label: string; value: string; mono?: boolean; challenged?: b
  * `onDone` runs only after the transaction actually reached the network. A
  * section uses it to clear the form it just spent — leaving a filled form on
  * screen after a successful submit invites a second press, and a second
- * governance action costs a second deposit that no one asked for.
+ * governance action costs a second deposit that no one asked for. It is given
+ * the hash the submit returned.
  */
 type Pending = {
   built: BuiltTx;
   title: string;
   rows: SummaryRow[];
   warn?: string;
-  onDone?: () => void;
+  onDone?: (txHash: string) => void;
   /**
    * Toast shown once the tx reaches the network. Defaults to "governance action
    * submitted", which is wrong for a vote delegation: a delegation locks no
@@ -118,12 +136,61 @@ export function GovernancePanel({
   changeAddress,
   uncertainHash,
   onUncertain,
+  sentVoteDelegation,
+  expiredVoteDelegation = null,
+  onVoteDelegationSent,
+  onVoteDelegationLanded,
 }: {
   port: WalletPort;
   network: PhoenixNetwork;
   changeAddress: string;
+  /**
+   * A vote delegation in flight, from this tab or from the Staking tab's
+   * Abstain, held by the parent above the tab switch. This panel unmounts
+   * whenever another tab is opened, so a flag of its own would be gone on
+   * return — and an Abstain sent on Staking would never be seen here at all,
+   * leaving a bare "None" that invites a second, paid delegation. Absent
+   * (`undefined`) when the panel runs standalone: it then keeps its own.
+   */
+  sentVoteDelegation?: SentVoteDelegation | null;
+  /**
+   * A vote delegation the parent dropped because it ran past its watch limit
+   * without the chain showing it. Said once, while the chain still shows no
+   * vote delegation. Optional: absent means none.
+   */
+  expiredVoteDelegation?: SentVoteDelegation | null;
+  /**
+   * Called when a vote delegation (any DRep, or Abstain / No-Confidence) is
+   * signed here, so the Staking tab knows one is in flight and does not then
+   * offer "Choose Abstain" and overwrite it. Optional: the panel also works
+   * standalone, where no sibling tab needs to be told.
+   */
+  onVoteDelegationSent?: (sent: SentVoteDelegation) => void;
+  /**
+   * The sent vote-delegation transaction was found in a block, so the parent
+   * drops its record (for that hash only) and both tabs stop waiting.
+   * Optional for the same reason as above.
+   */
+  onVoteDelegationLanded?: (txHash: string) => void;
 } & UncertainLock) {
   const { t } = useTranslation("wallet");
+  // Standalone fallback only; under `WalletTabs` the parent's record is used.
+  const [ownSentVote, setOwnSentVote] = useState<SentVoteDelegation | null>(null);
+  const sentVote = sentVoteDelegation !== undefined ? sentVoteDelegation : ownSentVote;
+  const recordVoteSent = useCallback(
+    (sent: SentVoteDelegation) => {
+      setOwnSentVote(sent);
+      onVoteDelegationSent?.(sent);
+    },
+    [onVoteDelegationSent],
+  );
+  const recordVoteLanded = useCallback(
+    (txHash: string) => {
+      setOwnSentVote((cur) => (cur !== null && cur.txHash === txHash ? null : cur));
+      onVoteDelegationLanded?.(txHash);
+    },
+    [onVoteDelegationLanded],
+  );
   const [section, setSection] = useState<Section>("delegate");
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState<Pending | null>(null);
@@ -170,7 +237,8 @@ export function GovernancePanel({
       inputs,
       protocolParams,
       changeAddress: changeAddr,
-      ttl: tip + 7200,
+      // Shared with the vote-delegation waiting line, which is timed off it.
+      ttl: tip + VOTE_DELEGATION_TTL_SLOTS,
     };
   }, [port, network, changeAddr, t]);
 
@@ -211,7 +279,7 @@ export function GovernancePanel({
     try {
       const hash = await port.signAndSubmit(pending.built, network);
       toastSuccess(pending.submittedKey ?? "gov_submitted", { hash: hash.slice(0, 12) });
-      pending.onDone?.();
+      pending.onDone?.(hash);
       resetReview();
     } catch (err) {
       resetReview(); // drop the built tx: it already carries a witness; a retry must rebuild
@@ -328,6 +396,10 @@ export function GovernancePanel({
           onReview={review}
           loadCtx={loadCtx}
           feeRow={feeRow}
+          sentVoteDelegation={sentVote}
+          expiredVoteDelegation={expiredVoteDelegation}
+          onVoteDelegationSent={recordVoteSent}
+          onVoteDelegationLanded={recordVoteLanded}
         />
       )}
       {section === "actions" && (
@@ -386,31 +458,133 @@ function DelegateSection({
   onReview,
   loadCtx,
   feeRow,
-}: SectionProps & { network: PhoenixNetwork; rewardBech32: string }) {
+  sentVoteDelegation,
+  expiredVoteDelegation,
+  onVoteDelegationSent,
+  onVoteDelegationLanded,
+}: SectionProps & {
+  network: PhoenixNetwork;
+  rewardBech32: string;
+  sentVoteDelegation: SentVoteDelegation | null;
+  expiredVoteDelegation: SentVoteDelegation | null;
+  onVoteDelegationSent: (sent: SentVoteDelegation) => void;
+  onVoteDelegationLanded: (txHash: string) => void;
+}) {
   const { t } = useTranslation("wallet");
   const [query, setQuery] = useState("");
   const [dreps, setDreps] = useState<DRepSummary[]>([]);
   const [searching, setSearching] = useState(false);
   const [current, setCurrent] = useState<string | null | undefined>(undefined);
+  // The last DRep read failed (indexer down, or an answer without the DRep
+  // field). Said on screen: a blank where "Currently delegated to" was is
+  // read as "none", the sentence that invites a second, paid delegation.
+  const [currentFailed, setCurrentFailed] = useState(false);
   /**
    * A delegation that was just submitted is not yet visible to the indexer —
    * it needs a block first. Showing the old delegation with no note reads as
    * "it did not work", which is what makes people delegate a second time.
+   * The record is the parent's (`WalletTabs`), shared with the Staking tab, so
+   * the line is there after a tab switch and after an Abstain sent on Staking.
+   * It goes once the transaction itself is found in a block (looked up by
+   * hash on the re-read timer; the parent then drops the record), once the
+   * chain shows a DRep other than the one before sending, or once the
+   * transaction's validity window has closed; past the "unseen" mark it says
+   * the transaction most likely did not get in. The hash look-up is what
+   * clears a re-delegation to the DRep already held, where the DRep read
+   * cannot change.
    */
-  const [justDelegated, setJustDelegated] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
+  const voteWatch = voteDelegationWatch(sentVoteDelegation, rewardBech32 || null, network, now);
+  const voteInFlight =
+    voteWatch.kind !== "none" && !voteDelegationLanded(sentVoteDelegation, current);
 
   const reloadCurrent = useCallback(() => {
     if (!rewardBech32) return () => {};
     let alive = true;
     getVoteDelegationState(network, rewardBech32)
-      .then((s) => alive && setCurrent(s.delegatedDRep ?? null))
-      .catch(() => alive && setCurrent(undefined));
+      // Not found = an account the chain has never seen: no DRep. A row
+      // without the DRep field is not that — it throws, and stays "not read".
+      .then((s) => {
+        if (!alive) return;
+        setCurrent(s.found ? s.delegatedDRep : null);
+        setCurrentFailed(false);
+      })
+      .catch(() => {
+        if (!alive) return;
+        setCurrent(undefined);
+        setCurrentFailed(true);
+      });
     return () => {
       alive = false;
     };
   }, [network, rewardBech32]);
 
+  // The DRep read belongs to the network it was read on. Kept across a switch
+  // of the network picker, the old network's DRep would sit on the new one's
+  // screen (and become `drepBefore` of a choice sent there) until the new
+  // read answers — or for good, if it fails. Declared before the re-read so it
+  // runs first on a switch.
+  useEffect(() => {
+    setCurrent(undefined);
+    setCurrentFailed(false);
+  }, [network]);
+
   useEffect(() => reloadCurrent(), [reloadCurrent]);
+
+  // While one is in flight: move the clock (pending → unseen → window closed)
+  // and re-read the current DRep, so a landed choice clears the line by itself.
+  // The same tick looks the sent transaction up by hash (read through a ref,
+  // so a new record or callback does not restart the timer).
+  const voteTxRef = useRef({ sent: sentVoteDelegation, onLanded: onVoteDelegationLanded });
+  voteTxRef.current = { sent: sentVoteDelegation, onLanded: onVoteDelegationLanded };
+  // The hash whose look-up has answered on this screen. The "not seen" line
+  // waits for it: opened past the ten-minute mark, the tab must not say "not
+  // seen" for a transaction it has not yet asked about.
+  const [lookedUp, setLookedUp] = useState<string | null>(null);
+  //
+  // A hash found in a block lets the record go only once a fresh DRep read
+  // SUCCEEDS and shows the choice that was sent (`voteDelegationConfirmed`).
+  // Any non-null answer is not enough: the account endpoint can lag
+  // `/tx_status`, and a lagging read still shows the DRep held before — a
+  // different, non-null answer. A failed read is "not known". Otherwise the
+  // record stays and the timer goes on (`lookUpVoteTx`).
+  useEffect(() => {
+    if (!voteInFlight) return;
+    let cancelled = false;
+    let release: () => void = () => {};
+    let releaseTx: () => void = () => {};
+    const confirmOnChain = (sent: SentVoteDelegation) =>
+      getVoteDelegationState(sent.network, sent.account).then((s) => {
+        const onChain = s.found ? s.delegatedDRep : null;
+        if (!cancelled) setCurrent(onChain);
+        return !cancelled && voteDelegationConfirmed(sent, onChain);
+      });
+    const lookUpNow = () => {
+      releaseTx();
+      releaseTx = lookUpVoteTx(
+        voteTxRef.current.sent,
+        fetchTxSeen,
+        confirmOnChain,
+        voteTxRef.current.onLanded,
+        setLookedUp,
+      );
+    };
+    // Once now, not one interval from now: a record that landed while the tab
+    // was closed is found as the tab opens.
+    lookUpNow();
+    const timer = setInterval(() => {
+      setNow(Date.now());
+      release();
+      release = reloadCurrent();
+      lookUpNow();
+    }, VOTE_PENDING_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+      release();
+      releaseTx();
+    };
+  }, [voteInFlight, reloadCurrent]);
 
   const search = async () => {
     setSearching(true);
@@ -451,8 +625,31 @@ function DelegateSection({
           feeRow(built),
         ],
         submittedKey: "gov_delegation_submitted",
-        onDone: () => {
-          setJustDelegated(true);
+        // One is already on its way: sending this replaces it and pays a second
+        // fee. Said on the review, not by disabling the buttons — changing the
+        // choice is legitimate, it just should not happen by accident.
+        warn:
+          voteInFlight && sentVoteDelegation !== null
+            ? t("gov_delegate_inflight_warn", { time: clockTime(sentVoteDelegation.sentAt) })
+            : undefined,
+        onDone: (txHash) => {
+          // Tell the parent a vote delegation is in flight: this tab shows its
+          // waiting line from that record, and the Staking tab stops offering
+          // Abstain — which would overwrite the choice just made. `txHash` is
+          // how either tab later finds it on chain; `current` is the chain's
+          // answer before this one, a secondary "landed" signal when it changes.
+          const sentAt = Date.now();
+          setNow(sentAt);
+          // `target` is what the chain must show before the record may end.
+          // The hash is kept lower-case, the form the indexer answers in.
+          onVoteDelegationSent({
+            account: rewardBech32,
+            network,
+            sentAt,
+            txHash: txHash.toLowerCase(),
+            drepBefore: current,
+            target: voteTargetId(target),
+          });
           reloadCurrent();
         },
       };
@@ -464,10 +661,40 @@ function DelegateSection({
       {current !== undefined && (
         <p className="text-xs text-text-dim">
           {t("gov_current_delegation")}:{" "}
-          <span className="mono">{current ? short(current) : t("gov_none")}</span>
+          {current === DREP_ALWAYS_ABSTAIN ? (
+            <span>{t("gov_abstain")}</span>
+          ) : current === DREP_ALWAYS_NO_CONFIDENCE ? (
+            <span>{t("gov_no_confidence")}</span>
+          ) : (
+            <span className="mono">{current ? short(current) : t("gov_none")}</span>
+          )}
         </p>
       )}
-      {justDelegated && <p className="text-xs text-amber-brand">{t("gov_delegate_pending")}</p>}
+      {current === undefined && currentFailed && (
+        <p className="text-xs text-amber-brand">{t("gov_current_read_failed")}</p>
+      )}
+      {voteInFlight && voteWatch.kind === "pending" && (
+        <p className="text-xs text-amber-brand">{t("gov_delegate_pending")}</p>
+      )}
+      {voteInFlight &&
+        voteWatch.kind === "unseen" &&
+        sentVoteDelegation !== null &&
+        lookedUp === sentVoteDelegation.txHash && (
+        <p className="text-xs text-amber-brand">
+          {t("vote_delegation_unseen", { time: clockTime(voteDelegationExpiresAt(sentVoteDelegation)) })}
+        </p>
+      )}
+      {/* Ran out without the chain showing it, and the chain still reads no
+          vote delegation: the choice did not happen, and may be made again. */}
+      {!voteInFlight &&
+        expiredVoteDelegation !== null &&
+        expiredVoteDelegation.account === rewardBech32 &&
+        expiredVoteDelegation.network === network &&
+        current === null && (
+          <p className="text-xs text-amber-brand">
+            {t("vote_delegation_expired", { time: clockTime(expiredVoteDelegation.sentAt) })}
+          </p>
+        )}
 
       <div className="flex gap-2">
         <button

@@ -89,15 +89,28 @@ const BUILT_PAGE = (entry: string) =>
   `<!doctype html><html><head><meta charset="utf-8"></head><body>` +
   `<div id="root"></div><script type="module" src="./${entry}.js"></script></body></html>\n`;
 
+const PAGE_WORLD_SCRIPT = '(function() {\n  "use strict";\n  var x = 1;\n})();\n';
+const PAGE_WORLD_MODULES = (): Record<string, string[]> => ({
+  "content.js": ["extension/content/bridge.ts", "extension/src/rpc/protocol.ts"],
+  "inpage.js": ["extension/inpage/provider.ts", "extension/src/rpc/protocol.ts"],
+});
+
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "phoenix-pkg-"));
   mkdirSync(dir, { recursive: true });
   for (const page of ["popup", "approve"]) {
     writeFileSync(join(dir, `${page}.html`), BUILT_PAGE(page));
   }
-  for (const f of ["approve.js", "content.js", "inpage.js", "background.js"]) {
+  for (const f of ["approve.js", "background.js"]) {
     writeFileSync(join(dir, f), "export const x = 1;\n");
   }
+  // The two page-world files are classic scripts in the shipped package (see
+  // `buildPageWorld` in `extension/vite.config.ts`), so the staged ones are too,
+  // with the receipt the build writes beside them.
+  for (const f of ["content.js", "inpage.js"]) {
+    writeFileSync(join(dir, f), PAGE_WORLD_SCRIPT);
+  }
+  writeFileSync(join(dir, ".page-world-modules.json"), JSON.stringify(PAGE_WORLD_MODULES()) + "\n");
   cpSync(join(REPO, "extension", "icon128.png"), join(dir, "icon128.png"));
 });
 
@@ -1093,5 +1106,97 @@ describe("check:package > the freshness check reads source, not build output", (
     } finally {
       utimesSync(probe, before.atime, before.mtime);
     }
+  });
+});
+
+/**
+ * Page-world files are classic scripts, so the gate applies the browser's rule.
+ *
+ * The rule this replaced allowed each file to `import "./protocol.js"` — and a
+ * content script or a `<script src>` that opens with `import` throws a
+ * SyntaxError before its first line. Measured in Chrome for Testing 142: no
+ * `window.cardano.phoenix` on any page, with this gate green.
+ */
+describe("check:package > page-world files run as classic scripts", () => {
+  it("passes the shape the build emits: an IIFE plus a receipt listing only the relay and the rules", () => {
+    stage({});
+    const { code, out } = runGate();
+    expect(out).not.toMatch(/does not compile|page-world-modules|holds "|calls import/);
+    expect(code).toBe(0);
+  });
+
+  for (const f of ["content.js", "inpage.js"]) {
+    it(`refuses ${f} when it imports the shared protocol chunk (the shape that broke the extension)`, () => {
+      stage({});
+      writeFileSync(
+        join(dir, f),
+        'import { C as CHANNEL } from "./protocol.js";\nwindow.addEventListener("message", () => CHANNEL);\n',
+      );
+      const { code, out } = runGate();
+      expect(code).toBe(1);
+      expect(out).toContain(`${f} does not compile as a classic script`);
+      expect(out).toMatch(/Cannot use import statement outside a module/);
+    });
+  }
+
+  it("refuses an export, which a classic script cannot carry either", () => {
+    stage({});
+    writeFileSync(join(dir, "content.js"), "var x = 1;\nexport {};\n");
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toContain("content.js does not compile as a classic script");
+  });
+
+  it("refuses a dynamic import(), which parses as a classic script but loads a module at run time", () => {
+    stage({});
+    writeFileSync(join(dir, "inpage.js"), '(function() {\n  import("./protocol.js");\n})();\n');
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toContain("inpage.js calls import(…)");
+    expect(out).not.toContain("inpage.js does not compile");
+  });
+
+  it("refuses a keystore module the build inlined into a page-world file", () => {
+    stage({});
+    const mods = PAGE_WORLD_MODULES();
+    mods["content.js"].push("src/lib/keystore/vault.ts");
+    writeFileSync(join(dir, ".page-world-modules.json"), JSON.stringify(mods));
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toContain('content.js runs inside every website and holds "src/lib/keystore/vault.ts"');
+  });
+
+  it("refuses a package with no module receipt rather than reading it as nothing extra", () => {
+    stage({});
+    rmSync(join(dir, ".page-world-modules.json"));
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/\.page-world-modules\.json is missing/);
+  });
+
+  it("refuses a receipt that says nothing about one of the files", () => {
+    stage({});
+    const mods = PAGE_WORLD_MODULES();
+    delete (mods as Record<string, unknown>)["inpage.js"];
+    writeFileSync(join(dir, ".page-world-modules.json"), JSON.stringify(mods));
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toContain("does not say which modules inpage.js holds");
+  });
+
+  it("refuses a receipt of the wrong shape", () => {
+    stage({});
+    writeFileSync(join(dir, ".page-world-modules.json"), "[]");
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toContain("must map each page-world file to the modules it holds");
+  });
+
+  it("still refuses a page-world file past the byte ceiling, whatever the receipt says", () => {
+    stage({});
+    writeFileSync(join(dir, "content.js"), `var s = "${"a".repeat(40 * 1024)}";\n`);
+    const { code, out } = runGate();
+    expect(code).toBe(1);
+    expect(out).toMatch(/content\.js is \d+ bytes, past the 32768 allowed/);
   });
 });

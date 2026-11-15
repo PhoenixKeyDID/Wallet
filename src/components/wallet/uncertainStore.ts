@@ -126,11 +126,22 @@ export function accountKeyFrom(changeAddressHex: string): string {
  * bytes.
  */
 export function lockKey(network: number, accountKey: string): string {
-  return `${PREFIX}.${network}.${accountKey}`;
+  return slotKey(PREFIX, network, accountKey);
+}
+
+/**
+ * The storage key for one kind of record (`prefix`) on one account on one
+ * chain. Shared with every other per-account record this wallet keeps on disk
+ * (`voteDelegationStore`), so they all follow the keying rules above — the
+ * stake credential, whole, and the per-network fallback slot — instead of a
+ * second copy of them drifting.
+ */
+export function slotKey(prefix: string, network: number, accountKey: string): string {
+  return `${prefix}.${network}.${accountKey}`;
 }
 
 /** A 64-character hex transaction id, and nothing else. */
-const isTxHash = (v: unknown): v is string => typeof v === "string" && /^[0-9a-f]{64}$/i.test(v);
+export const isTxHash = (v: unknown): v is string => typeof v === "string" && /^[0-9a-f]{64}$/i.test(v);
 
 /**
  * The unresolved submit for this wallet+network, or `null` if there is none.
