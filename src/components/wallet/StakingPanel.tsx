@@ -43,8 +43,10 @@ import {
   voteDelegationConfirmed,
   voteDelegationExpiresAt,
   voteDelegationWatch,
+  withdrawalWatch,
   type SentDelegation,
   type SentVoteDelegation,
+  type SentWithdrawal,
 } from "@/components/wallet/delegationFeedback";
 
 /**
@@ -55,6 +57,15 @@ export type DelegationSentProps = {
   sentDelegation: SentDelegation | null;
   onDelegationSent: (sent: SentDelegation) => void;
   onDelegationSettled: () => void;
+  /**
+   * A reward withdrawal just sent, held by the parent so a tab switch does not
+   * bring the withdraw button back while the indexer still reports the old
+   * balance (`withdrawalWatch`). `onWithdrawalSettled(txHash)` lets it go once
+   * the balance drops below what was withdrawn or its validity window closes.
+   */
+  sentWithdrawal: SentWithdrawal | null;
+  onWithdrawalSent: (sent: SentWithdrawal) => void;
+  onWithdrawalSettled: (txHash: string) => void;
   /**
    * A vote (DRep) delegation just sent — from here, or from the Governance tab.
    * Held by the parent, above the tab switch, so this panel offering "Choose
@@ -105,6 +116,9 @@ export function StakingPanel({
   sentDelegation,
   onDelegationSent,
   onDelegationSettled,
+  sentWithdrawal,
+  onWithdrawalSent,
+  onWithdrawalSettled,
   sentVoteDelegation,
   onVoteDelegationSent,
   onVoteDelegationLanded,
@@ -240,8 +254,28 @@ export function StakingPanel({
     (watch.kind === "pending" || watch.kind === "unseen") &&
     sentDelegation !== null &&
     now - sentDelegation.sentAt < DELEGATION_WATCH_LIMIT_MS;
+
+  // A reward withdrawal just sent from this account. The indexer reports the
+  // old balance until it catches up, so while the record is held the withdraw
+  // door shows a waiting line instead of a second withdraw button; the same
+  // re-read below brings the new balance, and a balance lower than what was
+  // withdrawn (or the closed validity window) lets the record go.
+  const withdrawal = withdrawalWatch(
+    sentWithdrawal,
+    rewardAddressBech32,
+    network,
+    accountState?.rewardsAvailable,
+    now,
+  );
   useEffect(() => {
-    if (!waiting || !rewardAddressBech32) return;
+    if (withdrawal === "released" && sentWithdrawal !== null) onWithdrawalSettled(sentWithdrawal.txHash);
+    // The record and callback are the parent's; the watch's answer is what moves.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [withdrawal]);
+
+  const rereading = waiting || withdrawal === "held";
+  useEffect(() => {
+    if (!rereading || !rewardAddressBech32) return;
     let cancelled = false;
     const timer = setInterval(() => {
       setNow(Date.now());
@@ -257,7 +291,7 @@ export function StakingPanel({
       cancelled = true;
       clearInterval(timer);
     };
-  }, [waiting, network, rewardAddressBech32]);
+  }, [rereading, network, rewardAddressBech32]);
 
   // A vote delegation (Abstain here, or any choice on the Governance tab) is
   // in flight and the chain has not shown it yet. Held by the parent, so it
@@ -428,6 +462,9 @@ export function StakingPanel({
   const reviewWithdraw = async () => {
     if (!rewardAddressHex) return toastError(t("reward_addr_not_ready"));
     if (!accountState || accountState.rewardsAvailable <= BigInt("0")) return;
+    // The door shows no button while a sent withdrawal is held; this is the
+    // same refusal for any other way in.
+    if (withdrawal === "held") return;
     // The node rejects a withdrawal from an account with no vote delegation.
     // Building it anyway would show a fee for a transaction that cannot land.
     if (accountState.delegatedDRep === null) return toastError(t("withdraw_needs_drep"));
@@ -458,6 +495,17 @@ export function StakingPanel({
     try {
       const hash = await port.signAndSubmit(withdrawReview.built, network);
       toastSuccess("withdraw_submitted", { hash: hash.slice(0, 12) });
+      if (rewardAddressBech32) {
+        const sentAt = Date.now();
+        setNow(sentAt);
+        onWithdrawalSent({
+          account: rewardAddressBech32,
+          network,
+          amount: withdrawReview.amount,
+          sentAt,
+          txHash: hash.toLowerCase(),
+        });
+      }
       setWithdrawReview(null);
       setChecked(false);
       await refreshAccountState();
@@ -844,6 +892,7 @@ export function StakingPanel({
           <WithdrawDoor
             state={accountState}
             voteInFlight={voteInFlight}
+            withdrawHeld={withdrawal === "held"}
             locked={busy || uncertainHash !== null}
             busy={busy}
             onWithdraw={reviewWithdraw}
@@ -939,20 +988,23 @@ export function StakingPanel({
 }
 
 /**
- * The withdraw button and the reason when it cannot be used. Three states,
+ * The withdraw button and the reason when it cannot be used. Four states,
  * each with its own sentence, so "nothing to take yet", "the chain will refuse
- * this account" and "waiting for the fix to land" never look the same:
+ * this account", "waiting for the fix to land" and "the withdrawal just sent
+ * has not shown yet" never look the same:
  *
  * - no rewards        → button shown, disabled, with the reason;
  * - no vote delegation → the rule explained, and Abstain offered — or, once a
  *                        vote delegation is in flight, nothing here: the
  *                        waiting line above (outside the read-error branch)
  *                        says it, and the offer must not be made again;
+ * - a withdrawal just sent and still held → a waiting line, no button;
  * - otherwise          → the button.
  */
 function WithdrawDoor({
   state,
   voteInFlight,
+  withdrawHeld,
   locked,
   busy,
   onWithdraw,
@@ -961,6 +1013,7 @@ function WithdrawDoor({
 }: {
   state: StakeAccountState;
   voteInFlight: boolean;
+  withdrawHeld: boolean;
   locked: boolean;
   busy: boolean;
   onWithdraw: () => void;
@@ -992,6 +1045,12 @@ function WithdrawDoor({
         </button>
       </div>
     );
+  }
+
+  // A withdrawal was just sent and the indexer still reports the balance it
+  // took: a second button would sign a withdrawal the node refuses.
+  if (withdrawHeld) {
+    return <p className="text-xs text-amber-brand">{t("withdraw_sent_waiting")}</p>;
   }
 
   return (

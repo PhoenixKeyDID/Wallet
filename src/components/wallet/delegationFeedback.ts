@@ -10,6 +10,7 @@
 
 import type { PhoenixNetwork } from "@/lib/cardano";
 import { sameVoteTarget } from "@/lib/cardano/governance";
+import { WITHDRAWAL_TTL_SLOTS } from "@/lib/cardano/staking";
 
 /**
  * A delegation this wallet sent and the chain has not shown yet. Held above
@@ -258,6 +259,62 @@ export function voteDelegationPending(
   now: number,
 ): boolean {
   return voteDelegationWatch(sent, account, network, now).kind !== "none";
+}
+
+/**
+ * A reward withdrawal this wallet just sent. Held above the tab switch for the
+ * same reason as {@link SentDelegation}: the indexer goes on reporting the old
+ * `rewards_available` after the withdrawal lands, so without this the withdraw
+ * door offers the same amount again. The node refuses that second one (a
+ * Conway withdrawal must equal the whole balance when it lands, and the
+ * balance is 0 by then), so it costs nothing — but the reader sees a submit
+ * error they cannot explain, about a withdrawal that did in fact work.
+ */
+export type SentWithdrawal = {
+  /** Reward address (bech32) the rewards were withdrawn from. */
+  account: string;
+  network: PhoenixNetwork;
+  /** Lovelace withdrawn: the whole balance the indexer reported at build time. */
+  amount: bigint;
+  /** `Date.now()` at submit. */
+  sentAt: number;
+  /** Hash of the submitted transaction, lower-case. */
+  txHash: string;
+};
+
+/**
+ * How long a sent withdrawal is held. It cannot land after its TTL
+ * (`WITHDRAWAL_TTL_SLOTS`, one second per slot), and `sentAt` is taken after
+ * the tip that TTL was counted from was read, so this is an upper bound.
+ */
+export const WITHDRAWAL_WATCH_LIMIT_MS = WITHDRAWAL_TTL_SLOTS * 1000;
+
+/**
+ * Where a just-sent withdrawal stands for the account on screen:
+ *
+ * - `none`: nothing sent, or sent from another account or network;
+ * - `held`: sent from this account, and nothing yet says it is over — the
+ *   withdraw door must not offer a second one;
+ * - `released`: the indexer now reports less than was withdrawn (it landed),
+ *   or the transaction's validity window has closed (it can no longer land).
+ *   The record can go.
+ *
+ * `rewardsAvailable` undefined means the account has not been read (or the
+ * read failed): that says nothing, so the record stays held.
+ */
+export type WithdrawalWatch = "none" | "held" | "released";
+
+export function withdrawalWatch(
+  sent: SentWithdrawal | null,
+  account: string | null,
+  network: PhoenixNetwork,
+  rewardsAvailable: bigint | undefined,
+  now: number,
+): WithdrawalWatch {
+  if (sent === null || sent.account !== account || sent.network !== network) return "none";
+  if (now - sent.sentAt >= WITHDRAWAL_WATCH_LIMIT_MS) return "released";
+  if (rewardsAvailable !== undefined && rewardsAvailable < sent.amount) return "released";
+  return "held";
 }
 
 export type DelegationWatch =

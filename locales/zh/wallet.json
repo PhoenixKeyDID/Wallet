@@ -128,6 +128,7 @@
   "rewards_available_label": "可领取奖励",
   "withdraw_rewards": "提取奖励",
   "withdraw_no_rewards": "暂无可提取的奖励。委托给池后，奖励会在几个纪元后到账。",
+  "withdraw_sent_waiting": "提取已发送，正在等待链上记录；在此之前，上方的奖励余额尚未更新。由于节点会拒绝，等待期间不会再提供第二次提取。",
   "withdraw_needs_drep": "Cardano 只允许已做出投票选择（DRep）的账户提取奖励。在此期间奖励仍会照常累积。此账户尚未选择，因此提取会被拒绝。选择“弃权”即可满足条件而不投票给任何人（这是一笔单独的交易，需支付少量网络手续费），之后可在“治理”标签页更改。",
   "withdraw_abstain_button": "选择“弃权”",
   "vote_delegation_pending": "投票选择已发送。链上记录后即可使用“提取奖励”，通常需要一两分钟。在此期间请不要再发送其他选择。",

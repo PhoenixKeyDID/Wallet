@@ -2329,6 +2329,44 @@ const MUTANTS = [
     from: "    // was closed is found as the tab opens.\n    lookUpNow();\n",
     to: "    // was closed is found as the tab opens.\n    /* MUT56R4-FIRST */\n",
   },
+  // ── Issue #57 (MUT57-*): a reward withdrawal just sent is held, above the
+  // tab switch, until the balance drops below it or its TTL has passed ──
+  {
+    name: "MUT57-HOLD: the withdraw door offers the button again while a sent withdrawal is held",
+    file: STAKING,
+    from: "  if (withdrawHeld) {\n",
+    to: "  if (false /* MUT57-HOLD */) {\n",
+  },
+  {
+    name: "MUT57-LIFT: the Staking tab is not handed the parent's withdrawal record",
+    file: TABS,
+    from: "          sentWithdrawal={sentWithdrawal}\n",
+    to: "          sentWithdrawal={null /* MUT57-LIFT */}\n",
+  },
+  {
+    name: "MUT57-DROP: a balance lower than the amount withdrawn does not release the hold",
+    file: FEEDBACK,
+    from: '  if (rewardsAvailable !== undefined && rewardsAvailable < sent.amount) return "released";\n',
+    to: "  /* MUT57-DROP */\n",
+  },
+  {
+    name: "MUT57-TTL: a held withdrawal outlives the transaction's validity window",
+    file: FEEDBACK,
+    from: '  if (now - sent.sentAt >= WITHDRAWAL_WATCH_LIMIT_MS) return "released";\n',
+    to: "  /* MUT57-TTL */\n",
+  },
+  {
+    name: "MUT57-REREAD: nobody re-reads the account while a withdrawal is held",
+    file: STAKING,
+    from: '  const rereading = waiting || withdrawal === "held";\n',
+    to: "  const rereading = waiting; /* MUT57-REREAD */\n",
+  },
+  {
+    name: "MUT57-SETTLE: a released withdrawal record is never handed back to the parent",
+    file: STAKING,
+    from: '    if (withdrawal === "released" && sentWithdrawal !== null) onWithdrawalSettled(sentWithdrawal.txHash);\n',
+    to: "    /* MUT57-SETTLE */\n",
+  },
 ];
 
 /**
@@ -2352,6 +2390,13 @@ const MUTANTS = [
  * button for such an account, and dropping THAT is caught above ("the DRep
  * rule is not read"). With no button there is no way to reach the function
  * from the screen, so no screen test can tell whether its own check is there.
+ *
+ *   - `StakingPanel.reviewWithdraw()`'s `withdrawal === "held"` refusal
+ *
+ * The same shape for issue #57: while a sent withdrawal is held the door draws
+ * a waiting line and no button (MUT57-HOLD pins that), so nothing on the
+ * screen reaches the function's own check. Not listed as a mutant: it would
+ * stay green by construction.
  */
 
 const read = (rel) => readFileSync(join(REPO, rel), "utf8");

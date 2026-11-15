@@ -43,6 +43,7 @@ const m = vi.hoisted(() => ({
   toastError: vi.fn(),
   fetchTxSeen: vi.fn(),
   getVoteDelegationState: vi.fn(),
+  buildWithdrawal: vi.fn(),
 }));
 
 vi.mock("@/lib/cardano/staking", async (orig) => {
@@ -51,6 +52,7 @@ vi.mock("@/lib/cardano/staking", async (orig) => {
     ...real,
     getStakeAccountState: m.getStakeAccountState,
     searchPools: m.searchPools,
+    buildWithdrawal: m.buildWithdrawal,
     rewardAddressFromHex: () => ({ getBech32: () => ACCOUNT, stakeCredential: {} }),
   };
 });
@@ -101,6 +103,8 @@ beforeEach(async () => {
   m.listDReps.mockResolvedValue([{ drepId: DREP, votingPower: "1000000" }]);
   m.buildVoteDelegation.mockReset();
   m.buildVoteDelegation.mockReturnValue(VOTE_TX);
+  m.buildWithdrawal.mockReset();
+  m.buildWithdrawal.mockReturnValue({ fee: "190000", tag: "withdraw-tx" });
   m.toastSuccess.mockReset();
   m.toastError.mockReset();
   m.fetchTxSeen.mockReset();
@@ -584,5 +588,69 @@ describe("FIX-R4: a vote delegation sent in another browser tab", () => {
     await fire(storageKey(), null);
     expect(await screen.findByRole("button", { name: en.withdraw_abstain_button })).toBeTruthy();
     expect(screen.queryByText(en.vote_delegation_pending)).toBeNull();
+  });
+});
+
+describe("A reward withdrawal just sent survives a tab switch", () => {
+  // The Staking panel unmounts while another tab is open. A "just withdrew"
+  // flag kept inside it would be gone on return, and the old balance the
+  // indexer still reports would put the withdraw button back.
+  it("keeps the waiting line, and no withdraw button, after History and back", async () => {
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, "drep_always_abstain"));
+    const port = makePort();
+    render(wrap(<WalletTabs port={port} changeAddress={CHANGE_HEX} network={NETWORK} />));
+
+    fireEvent.click(stakingTab());
+    fireEvent.click(await screen.findByRole("button", { name: en.withdraw_rewards }));
+    await screen.findByLabelText(en.withdraw_verify_checkbox);
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: en.confirm_withdraw }));
+    expect(await screen.findByText(en.withdraw_sent_waiting)).toBeTruthy();
+    expect(port.signAndSubmit).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(historyTab());
+    await screen.findByText("history-stub");
+    fireEvent.click(stakingTab());
+
+    // The fresh mount reads the account again: still the old balance.
+    expect(await screen.findByText(en.withdraw_sent_waiting)).toBeTruthy();
+    await waitFor(() => expect(m.getStakeAccountState.mock.calls.length).toBeGreaterThanOrEqual(3));
+    expect(screen.queryByRole("button", { name: en.withdraw_rewards })).toBeNull();
+  });
+});
+
+describe("A released withdrawal record is let go, not just looked past", () => {
+  // Rewards keep arriving: a later epoch can report a balance at least as
+  // large as the one withdrawn. A record still held above the tabs would read
+  // that as "the old balance, not landed yet" and hide the button again.
+  it("after the balance dropped, a later read with new rewards shows the button", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, "drep_always_abstain"));
+    const port = makePort();
+    render(wrap(<WalletTabs port={port} changeAddress={CHANGE_HEX} network={NETWORK} />));
+
+    fireEvent.click(stakingTab());
+    fireEvent.click(await screen.findByRole("button", { name: en.withdraw_rewards }));
+    await screen.findByLabelText(en.withdraw_verify_checkbox);
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: en.confirm_withdraw }));
+    await screen.findByText(en.withdraw_sent_waiting);
+
+    // It lands: the re-read shows the balance gone.
+    m.getStakeAccountState.mockResolvedValue(account(BigInt(0), "drep_always_abstain"));
+    await act(async () => {
+      vi.advanceTimersByTime(20_000);
+    });
+    expect(await screen.findByText(en.withdraw_no_rewards)).toBeTruthy();
+
+    // Next epoch's rewards, as large as the amount withdrawn.
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, "drep_always_abstain"));
+    fireEvent.click(historyTab());
+    await screen.findByText("history-stub");
+    fireEvent.click(stakingTab());
+    await waitFor(() =>
+      expect((screen.queryByRole("button", { name: en.withdraw_rewards }) as HTMLButtonElement | null)?.disabled).toBe(false),
+    );
+    expect(screen.queryByText(en.withdraw_sent_waiting)).toBeNull();
   });
 });

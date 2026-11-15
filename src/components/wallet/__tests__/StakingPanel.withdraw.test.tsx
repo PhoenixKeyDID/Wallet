@@ -19,8 +19,10 @@ import type { PhoenixNetwork, WalletPort } from "@/lib/cardano";
 import {
   DELEGATION_UNSEEN_MS,
   VOTE_DELEGATION_WATCH_LIMIT_MS,
+  WITHDRAWAL_WATCH_LIMIT_MS,
   clockTime,
   type SentVoteDelegation,
+  type SentWithdrawal,
 } from "../delegationFeedback";
 
 const ACCOUNT = "stake_test1uqtestaccount";
@@ -132,6 +134,7 @@ function Harness({
   network?: PhoenixNetwork;
 }) {
   const [sv, setSv] = useState<SentVoteDelegation | null>(null);
+  const [sw, setSw] = useState<SentWithdrawal | null>(null);
   return (
     <StakingPanel
       port={port}
@@ -142,6 +145,9 @@ function Harness({
       sentDelegation={null}
       onDelegationSent={() => {}}
       onDelegationSettled={() => {}}
+      sentWithdrawal={sw}
+      onWithdrawalSent={setSw}
+      onWithdrawalSettled={(h) => setSw((cur) => (cur?.txHash === h ? null : cur))}
       sentVoteDelegation={sv}
       onVoteDelegationSent={setSv}
       onVoteDelegationLanded={(h) => setSv((cur) => (cur?.txHash === h ? null : cur))}
@@ -333,6 +339,9 @@ function renderWithSentVote(sent: SentVoteDelegation) {
         sentDelegation={null}
         onDelegationSent={() => {}}
         onDelegationSettled={() => {}}
+        sentWithdrawal={null}
+        onWithdrawalSent={() => {}}
+        onWithdrawalSettled={() => {}}
         sentVoteDelegation={sent}
         onVoteDelegationSent={() => {}}
         onVoteDelegationLanded={() => {}}
@@ -453,5 +462,68 @@ describe("StakingPanel: a network switch while a signature is open", () => {
     view.rerender(wrap(<Harness port={port} uncertainHash={null} network={2} />));
     await waitFor(() => expect(screen.queryByText(en.withdraw_abstain_review_title)).toBeNull());
     expect(port.signAndSubmit).not.toHaveBeenCalled();
+  });
+});
+
+/** Withdraw → tick → confirm, through the screen. */
+async function withdrawThroughUi(port: WalletPort & { signAndSubmit: ReturnType<typeof vi.fn> }) {
+  fireEvent.click(await screen.findByRole("button", { name: en.withdraw_rewards }));
+  await screen.findByLabelText(en.withdraw_verify_checkbox);
+  fireEvent.click(screen.getByRole("checkbox"));
+  fireEvent.click(screen.getByRole("button", { name: en.confirm_withdraw }));
+  await waitFor(() => expect(port.signAndSubmit).toHaveBeenCalledTimes(1));
+}
+
+describe("StakingPanel: a withdrawal just sent is held until the balance or the TTL says it is over", () => {
+  // The indexer goes on reporting the old balance after the withdrawal lands.
+  // Every read below returns REWARDS until the test changes it, which is the
+  // state in which the old screen offered the same withdrawal a second time.
+
+  it("offers no second withdraw button while the indexer still reports the balance withdrawn", async () => {
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, "drep_always_abstain"));
+    const port = renderPanel();
+    await withdrawThroughUi(port);
+    expect(await screen.findByText(en.withdraw_sent_waiting)).toBeTruthy();
+    // The post-submit read came back with the old balance, and still no button.
+    await waitFor(() => expect(m.getStakeAccountState.mock.calls.length).toBeGreaterThanOrEqual(2));
+    expect(screen.getByText(en.withdraw_sent_waiting)).toBeTruthy();
+    expect(withdrawButton()).toBeNull();
+    expect(m.buildWithdrawal).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets go once a re-read reports less than was withdrawn", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, "drep_always_abstain"));
+    const port = renderPanel();
+    await withdrawThroughUi(port);
+    await screen.findByText(en.withdraw_sent_waiting);
+    m.getStakeAccountState.mockResolvedValue(account(BigInt(0), "drep_always_abstain"));
+    await act(async () => {
+      vi.advanceTimersByTime(20_000);
+    });
+    expect(await screen.findByText(en.withdraw_no_rewards)).toBeTruthy();
+    expect(screen.queryByText(en.withdraw_sent_waiting)).toBeNull();
+    expect(withdrawButton()!.disabled).toBe(true);
+  });
+
+  it("lets go once the transaction's validity window has closed, even on the old balance", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, "drep_always_abstain"));
+    const port = renderPanel();
+    await withdrawThroughUi(port);
+    await screen.findByText(en.withdraw_sent_waiting);
+    // One tick short of the window: still held.
+    vi.setSystemTime(Date.now() + WITHDRAWAL_WATCH_LIMIT_MS - 40_000);
+    await act(async () => {
+      vi.advanceTimersByTime(20_000);
+    });
+    expect(screen.getByText(en.withdraw_sent_waiting)).toBeTruthy();
+    expect(withdrawButton()).toBeNull();
+    // Past it: the transaction can no longer land, so the balance on screen is real.
+    await act(async () => {
+      vi.advanceTimersByTime(20_000);
+    });
+    await waitFor(() => expect(withdrawButton()?.disabled).toBe(false));
+    expect(screen.queryByText(en.withdraw_sent_waiting)).toBeNull();
   });
 });

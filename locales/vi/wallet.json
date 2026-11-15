@@ -128,6 +128,7 @@
   "rewards_available_label": "Phần thưởng có thể rút",
   "withdraw_rewards": "Rút phần thưởng",
   "withdraw_no_rewards": "Chưa có phần thưởng để rút. Phần thưởng về sau vài epoch kể từ khi bạn uỷ quyền cho một pool.",
+  "withdraw_sent_waiting": "Đã gửi lệnh rút. Đang chờ chuỗi ghi nhận; tới lúc đó số dư thưởng ở trên chưa được cập nhật. Trong lúc chờ, ví không mời rút lần thứ hai vì nút mạng sẽ từ chối.",
   "withdraw_needs_drep": "Cardano chỉ cho rút phần thưởng khi tài khoản đã có lựa chọn biểu quyết (DRep). Phần thưởng vẫn tiếp tục tích luỹ trong lúc này. Tài khoản này chưa chọn, nên lệnh rút sẽ bị từ chối. Chọn Bỏ phiếu trắng là đủ điều kiện mà không bầu cho ai — đó là một giao dịch riêng, mất một khoản phí mạng nhỏ — và bạn đổi lại được sau ở tab Quản trị.",
   "withdraw_abstain_button": "Chọn Bỏ phiếu trắng",
   "vote_delegation_pending": "Đã gửi lựa chọn biểu quyết. Nút Rút phần thưởng sẽ mở khi chuỗi ghi nhận, thường trong một hai phút. Đừng gửi thêm lựa chọn nào trong lúc chờ.",
