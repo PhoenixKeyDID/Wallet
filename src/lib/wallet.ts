@@ -2,7 +2,10 @@
  * PhoenixKey backend wallet API (read paths) — per `PhoenixKey-Wallet-API-v2-Feat.md`.
  *
  * The browser reads the Phoenix custody address (a script base address, derived on
- * the backend from `did + anchor_nft_policy`) and public balances here. Custody
+ * the backend from `did + anchor_nft_policy`) and public balances here. The
+ * backend serves it from its per-user wallet address field, so for a DID
+ * registered before its anchor existed that field can hold a plain key address
+ * instead; nothing here checks which (Feat §3). Custody
  * derivation needs a Rust/UPLC apply-params step, so it is NOT done in the
  * browser — we read the ready address the backend already computes.
  */
