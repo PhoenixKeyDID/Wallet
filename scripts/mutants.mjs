@@ -127,6 +127,8 @@ const TESTS = [
   "src/lib/keystore/__tests__/signForeign.test.ts",
   // Clear signing of foreign withdrawals, votes, proposals and script inputs.
   "src/lib/keystore/__tests__/foreignActions.test.ts",
+  // Conway sets read bare or under tag 258, on the screen and in the signer.
+  "src/lib/keystore/__tests__/tag258Sets.test.ts",
   "extension/background/__tests__/worker.test.ts",
   "extension/src/__tests__/DataSignView.test.tsx",
   "scripts/__tests__/classifyRun.test.ts",
