@@ -141,6 +141,7 @@
   "withdraw_abstain_submitted": "Abstain submitted — {{hash}}…",
   "vote_delegation_untracked": "Abstain was sent ({{hash}}…), but this screen could not link it to your account, so it will not show it as waiting. Check the History tab before choosing Abstain again — a second one costs another fee.",
   "vote_delegation_inflight_blocked": "Another voting choice was sent from this wallet and is not on chain yet. Signing this one would replace it and cost a second network fee, so it was not sent. Check the History tab, and choose again once that one has landed or expired.",
+  "gov_delegate_inflight_arrived": "A voting choice was sent from this wallet after this review opened, and it is not on chain yet. Nothing was signed. Open the review again: it will say what sending this one would replace.",
   "search_pools_placeholder": "Search by ticker or pool ID (pool1…)",
   "searching_pools": "Searching…",
   "search_pools_button": "Search",

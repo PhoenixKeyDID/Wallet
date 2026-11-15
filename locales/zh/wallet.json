@@ -141,6 +141,7 @@
   "withdraw_abstain_submitted": "已提交“弃权” — {{hash}}…",
   "vote_delegation_untracked": "已提交“弃权”（{{hash}}…），但此页面无法将其关联到您的账户，因此不会显示为等待中。再次选择“弃权”前请先查看“历史”标签页 — 第二次会再收取一笔费用。",
   "vote_delegation_inflight_blocked": "此钱包发送的另一个投票选择尚未上链。签署此交易会替换它并再付一次网络费用，因此未发送。请查看历史记录标签页，待该交易上链或过期后再重新选择。",
+  "gov_delegate_inflight_arrived": "此确认页面打开后，此钱包又发送了一个投票选择，且尚未上链。未签署任何内容。请重新打开确认页面：它会说明发送此选择将替换哪一个。",
   "search_pools_placeholder": "按代号或质押池 ID（pool1…）搜索",
   "searching_pools": "搜索中…",
   "search_pools_button": "搜索",

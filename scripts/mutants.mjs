@@ -2374,6 +2374,12 @@ const MUTANTS = [
     from: "  if (sameDay) return time;\n",
     to: "  if (sameDay || true /* MUT58-DATE */) return time;\n",
   },
+  {
+    name: "MUT58-GOVINFLIGHT: a Governance delegation review signs over a choice that arrived after it opened",
+    file: GOV,
+    from: "      pending.voteInFlightAtReview !== undefined &&\n",
+    to: "      false /* MUT58-GOVINFLIGHT */ &&\n",
+  },
 ];
 
 /**

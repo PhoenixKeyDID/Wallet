@@ -9,6 +9,8 @@
  *   - With a choice already on its way, a second one is allowed — changing it
  *     is legitimate — but its review says that it replaces the first and pays
  *     a second fee.
+ *   - A review opened before a choice arrived from another tab never showed
+ *     that warning, so pressing sign on it is refused, not signed.
  */
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
@@ -54,6 +56,7 @@ vi.mock("@/lib/toast", async (orig) => {
 });
 
 import { GovernancePanel } from "../GovernancePanel";
+import { toastError } from "@/lib/toast";
 
 let i18n: I18n;
 beforeEach(async () => {
@@ -178,5 +181,51 @@ describe("GovernancePanel: a second choice while one is in flight", () => {
     await screen.findByLabelText(en.gov_verify_checkbox, undefined, SETTLE);
     const head = en.gov_delegate_inflight_warn.split("{{time}}")[1]!.trim();
     expect(screen.queryByText(head, { exact: false })).toBeNull();
+  });
+});
+
+describe("GovernancePanel: a choice that arrives while a delegation review is open", () => {
+  const fresh = (): SentVoteDelegation => ({
+    account: ACCOUNT,
+    network: 0,
+    sentAt: Date.now(),
+    txHash: "ef".repeat(32),
+    drepBefore: null,
+  });
+
+  async function openAbstainReview(port: WalletPort) {
+    await waitFor(() => expect(port.getDrepKeyHashHex).toHaveBeenCalled(), SETTLE);
+    fireEvent.click(screen.getByRole("button", { name: en.gov_abstain }));
+    return screen.findByLabelText(en.gov_verify_checkbox, undefined, SETTLE);
+  }
+
+  it("refuses to sign a review built before the other choice arrived, and closes it", async () => {
+    m.getVoteDelegationState.mockResolvedValue({ found: true, status: "registered", delegatedDRep: null });
+    vi.mocked(toastError).mockClear();
+    const port = makePort();
+    const view = render(panel(port, 0, null));
+    const box = await openAbstainReview(port);
+
+    // Another tab sends a choice while this review is on screen.
+    view.rerender(panel(port, 0, fresh()));
+
+    fireEvent.click(box);
+    fireEvent.click(screen.getByRole("button", { name: en.gov_confirm }));
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith(en.gov_delegate_inflight_arrived));
+    expect(port.signAndSubmit).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText(en.gov_verify_checkbox)).toBeNull();
+  });
+
+  it("control: a review that already warned about the choice in flight still signs", async () => {
+    m.getVoteDelegationState.mockResolvedValue({ found: true, status: "registered", delegatedDRep: null });
+    vi.mocked(toastError).mockClear();
+    const port = makePort();
+    render(panel(port, 0, fresh()));
+    const box = await openAbstainReview(port);
+
+    fireEvent.click(box);
+    fireEvent.click(screen.getByRole("button", { name: en.gov_confirm }));
+    await waitFor(() => expect(port.signAndSubmit).toHaveBeenCalledTimes(1), SETTLE);
+    expect(toastError).not.toHaveBeenCalledWith(en.gov_delegate_inflight_arrived);
   });
 });

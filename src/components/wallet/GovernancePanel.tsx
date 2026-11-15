@@ -74,6 +74,7 @@ import {
   voteDelegationExpiresAt,
   voteDelegationConfirmed,
   voteDelegationLanded,
+  voteDelegationPending,
   voteDelegationWatch,
   type SentVoteDelegation,
 } from "@/components/wallet/delegationFeedback";
@@ -102,6 +103,15 @@ type Pending = {
   rows: SummaryRow[];
   warn?: string;
   onDone?: (txHash: string) => void;
+  /**
+   * Set only on a vote-delegation review: the hash of the vote delegation that
+   * was in flight when the review was built (`null` if none was). Its warning
+   * line is built from that moment. If a different one is in flight when the
+   * person presses sign — sent from another tab after this review opened —
+   * the review never showed it, so `confirm` refuses instead of replacing it
+   * unseen.
+   */
+  voteInFlightAtReview?: string | null;
   /**
    * Toast shown once the tx reaches the network. Defaults to "governance action
    * submitted", which is wrong for a vote delegation: a delegation locks no
@@ -275,6 +285,21 @@ export function GovernancePanel({
     // and a review assembled before the lock came on would otherwise still be
     // signable from a screen that is already open.
     if (uncertainHash !== null) return toastError(t("uncertain_blocked"));
+    // A vote delegation arrived after this delegation review was built (from
+    // the Staking tab, or from this wallet in another browser tab through the
+    // `storage` event). The review's warning was written without it, so
+    // signing now would replace a choice the person was never told about.
+    // Refused, not re-warned in place: opening the review again shows the
+    // warning and keeps changing the choice possible on purpose.
+    if (
+      pending.voteInFlightAtReview !== undefined &&
+      sentVote !== null &&
+      sentVote.txHash !== pending.voteInFlightAtReview &&
+      voteDelegationPending(sentVote, rewardBech32 || null, network, Date.now())
+    ) {
+      resetReview();
+      return toastError(t("gov_delegate_inflight_arrived"));
+    }
     setBusy(true);
     try {
       const hash = await port.signAndSubmit(pending.built, network);
@@ -641,6 +666,7 @@ function DelegateSection({
           voteInFlight && sentVoteDelegation !== null
             ? t("gov_delegate_inflight_warn", { time: clockTime(sentVoteDelegation.sentAt, now) })
             : undefined,
+        voteInFlightAtReview: voteInFlight && sentVoteDelegation !== null ? sentVoteDelegation.txHash : null,
         onDone: (txHash) => {
           // Tell the parent a vote delegation is in flight: this tab shows its
           // waiting line from that record, and the Staking tab stops offering
