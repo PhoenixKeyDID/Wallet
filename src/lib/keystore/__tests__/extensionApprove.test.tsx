@@ -547,6 +547,13 @@ describe("submitTx is described, then sent — or refused with TxSendError.Refus
     // that owns the request.
     expect(port.disconnected).toBe(false);
     expect(view.queryByPlaceholderText(en.local_password)).toBeNull();
+    // A read arriving right after the deadline, before anything re-renders,
+    // is already refused: `relock` itself cut the account away from the port
+    // listener, not the next render.
+    const readsBefore = mocks.fetchUtxos.mock.calls.length;
+    const early = await ask(port, "h0", "getUtxos", []);
+    expect(early.result).toMatchObject({ ok: false, error: { code: -3, info: en.cip30_window_locked } });
+    expect(mocks.fetchUtxos.mock.calls.length).toBe(readsBefore);
     // A re-render during the hold (here, a language switch) must not hand the
     // account back to the port listener.
     try {

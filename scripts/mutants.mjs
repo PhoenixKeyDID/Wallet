@@ -2610,6 +2610,13 @@ const MUTANTS = [
     marker: "MUT59-HELD-REF",
   },
   {
+    name: "MUT59-HELD-CUT: the deadline during a send leaves the account with the port listener until the next render",
+    file: APPROVE,
+    from: "      accountRef.current = null;\n      account.wipe();\n",
+    to: "      if (!busyRef.current) accountRef.current = null; /* MUT59-HELD-CUT */\n      account.wipe();\n",
+    marker: "MUT59-HELD-CUT",
+  },
+  {
     name: "MUT59-HELD-FINISH: the window never finishes the lock once the held send settles",
     file: APPROVE,
     from: "    if (busy || !heldLockRef.current) return;\n",
