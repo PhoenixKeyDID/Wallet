@@ -75,6 +75,9 @@ const SIGN_FOREIGN = "src/lib/keystore/signForeign.ts";
 // collapses: revert any branch to raw bytes and a non-canonical duplicate the
 // decoder folds slips past, which the dup-key suite must catch.
 const CBOR_DUP = "src/lib/cardano/cborDupKeys.ts";
+// The one helper both the screen and the signer read a Conway set through
+// (issue #60): a plain array or the same array under tag 258, nothing else.
+const CBOR_SET = "src/lib/cardano/cborSet.ts";
 const UTXO_CBOR = "src/lib/cardano/utxoCbor.ts";
 const APPROVE = "extension/src/approve.tsx";
 const UTXO_SELECT = "src/lib/cardano/utxoSelect.ts";
@@ -2500,6 +2503,64 @@ const MUTANTS = [
     from: "      if ((raw[0] & 0x0f) > 1) {\n",
     to: "      if (false /* MUTCS-NETWORK */) {\n",
     marker: "MUTCS-NETWORK",
+  },
+  // Issue #60: Conway set encodings. Each one puts back a way the readers
+  // treated tag 258 before the fix, or opens the helper's refusal.
+  {
+    name: "MUT60-SCREEN-INPUTS: the screen reads inputs only as a plain array, refusing tag 258",
+    file: TX_SUMMARY,
+    from: '  const inputList = setOr(b.get(0), "this transaction has no inputs this wallet can read");\n',
+    to: '  const inputList = (Array.isArray(b.get(0)) ? b.get(0) : bad("this transaction has no inputs this wallet can read")) as unknown[]; /* MUT60-SCREEN-INPUTS */\n',
+    marker: "MUT60-SCREEN-INPUTS",
+  },
+  {
+    name: "MUT60-SIGNER-INPUTS: the signer reads inputs only as a plain array, refusing tag 258",
+    file: SIGN_FOREIGN,
+    from: "  for (const i of setOf(b.get(0))) {\n",
+    to: "  for (const i of (Array.isArray(b.get(0)) ? b.get(0) : setOf(new Map())) as unknown[] /* MUT60-SIGNER-INPUTS */) {\n",
+    marker: "MUT60-SIGNER-INPUTS",
+  },
+  {
+    name: "MUT60-SIGNERS: the signer skips a required_signers field that is not a plain array",
+    file: SIGN_FOREIGN,
+    from: "    for (const s of setOf(signers)) {\n",
+    to: "    for (const s of (Array.isArray(signers) ? signers : []) as unknown[] /* MUT60-SIGNERS */) {\n",
+    marker: "MUT60-SIGNERS",
+  },
+  {
+    name: "MUT60-SIGNER-LEN: a required signer of any length is accepted",
+    file: TX_SUMMARY,
+    from: "      if (!(k instanceof Uint8Array) || k.length !== 28) {\n",
+    to: "      if (!(k instanceof Uint8Array) /* MUT60-SIGNER-LEN */) {\n",
+    marker: "MUT60-SIGNER-LEN",
+  },
+  {
+    name: "MUT60-HELPER-UNWRAP: the helper no longer unwraps tag 258",
+    file: CBOR_SET,
+    from: "v instanceof CborTag && v.tag === CBOR_SET_TAG && Array.isArray(v.value)",
+    to: "v instanceof CborTag && v.tag === -1 /* MUT60-HELPER-UNWRAP */ && Array.isArray(v.value)",
+    marker: "MUT60-HELPER-UNWRAP",
+  },
+  {
+    name: "MUT60-UNKNOWN-TAG: a tag other than 258 around an array is read as a set",
+    file: CBOR_SET,
+    from: "v instanceof CborTag && v.tag === CBOR_SET_TAG && Array.isArray(v.value)",
+    to: "v instanceof CborTag && true /* MUT60-UNKNOWN-TAG */ && Array.isArray(v.value)",
+    marker: "MUT60-UNKNOWN-TAG",
+  },
+  {
+    name: "MUT60-TAG-NONARRAY: tag 258 around anything is spread as a set",
+    file: CBOR_SET,
+    from: "v instanceof CborTag && v.tag === CBOR_SET_TAG && Array.isArray(v.value)) list = v.value;",
+    to: "v instanceof CborTag && v.tag === CBOR_SET_TAG /* MUT60-TAG-NONARRAY */) list = [...(v.value as Iterable<unknown>)];",
+    marker: "MUT60-TAG-NONARRAY",
+  },
+  {
+    name: "MUT60-UNIQUE: the same element twice in a set is accepted",
+    file: CBOR_SET,
+    from: "      if (seen.has(key)) throw",
+    to: "      if (false /* MUT60-UNIQUE */) throw",
+    marker: "MUT60-UNIQUE",
   },
 ];
 
