@@ -11,7 +11,7 @@ import { BalanceView } from "./BalanceView";
 import { CopyBtn } from "@/components/CopyBtn";
 
 /**
- * Phoenix custody wallet = a script enterprise address bound to a DID
+ * Phoenix custody wallet = a script address bound to a DID
  * (`did + anchor_nft_policy`), invariant across key rotation/recovery.
  * View-only in v1: the address + balances come from the backend; spending needs
  * the controller key (mobile / air-gap), which is phase 2.
@@ -56,9 +56,15 @@ export function PhoenixCustodyPanel({ did }: Props) {
     }
   };
 
-  // `fixed` is the whole contract for a phoenix wallet — one script address, no
-  // active/stake. The old `addresses.custody ?? addresses.fixed` fallback read
-  // a field the backend never sends; only the fallback kept it working.
+  // `fixed` is the only address a phoenix entry carries — no active/stake.
+  // Normally the custody script, but it comes from the backend's per-user
+  // address field and is shown as-is, not checked (Feat §3). When `fixed` is
+  // the custody address the backend derives for the DID, the entry's balance
+  // is NOT this address alone: the backend also counts the enterprise address
+  // with the same payment part, so an explorer lookup of `fixed` can show less
+  // than the panel.
+  // The old `addresses.custody ?? addresses.fixed` fallback read a field the
+  // backend never sends; only the fallback kept it working.
   const custodyAddress = phoenix?.addresses.fixed ?? null;
   /**
    * Which network this custody address is on, read off the address itself.
