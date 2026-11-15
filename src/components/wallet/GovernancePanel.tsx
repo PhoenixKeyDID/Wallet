@@ -500,6 +500,10 @@ function DelegateSection({
   const [dreps, setDreps] = useState<DRepSummary[]>([]);
   const [searching, setSearching] = useState(false);
   const [current, setCurrent] = useState<string | null | undefined>(undefined);
+  // When the read behind `current` was STARTED (taken before the request): a
+  // read only speaks for a vote delegation sent before it began (see
+  // `voteLandedByRead`).
+  const [currentReadAt, setCurrentReadAt] = useState<number | null>(null);
   // The last DRep read failed (indexer down, or an answer without the DRep
   // field). Said on screen: a blank where "Currently delegated to" was is
   // read as "none", the sentence that invites a second, paid delegation.
@@ -520,7 +524,22 @@ function DelegateSection({
    */
   const [now, setNow] = useState(() => Date.now());
   const voteWatch = voteDelegationWatch(sentVoteDelegation, rewardBech32 || null, network, now);
-  const voteLandedByRead = voteWatch.kind !== "none" && voteDelegationLanded(sentVoteDelegation, current);
+  // Only a read STARTED after the record was sent counts. The record is shared
+  // with other browser tabs: a DRep X read when this tab opened, meeting a
+  // record for X → Y landed and then X sent again in another tab, would
+  // otherwise drop that record everywhere while X is not on chain yet.
+  const staleReadShowsVote =
+    voteWatch.kind !== "none" &&
+    sentVoteDelegation !== null &&
+    currentReadAt !== null &&
+    currentReadAt <= sentVoteDelegation.sentAt &&
+    voteDelegationLanded(sentVoteDelegation, current);
+  const voteLandedByRead =
+    voteWatch.kind !== "none" &&
+    sentVoteDelegation !== null &&
+    currentReadAt !== null &&
+    currentReadAt > sentVoteDelegation.sentAt &&
+    voteDelegationLanded(sentVoteDelegation, current);
   const voteInFlight = voteWatch.kind !== "none" && !voteLandedByRead;
   // The DRep read shows the choice sent, in place of the one before: the
   // record can go now. Without this, the read turning `voteInFlight` false
@@ -535,12 +554,14 @@ function DelegateSection({
   const reloadCurrent = useCallback(() => {
     if (!rewardBech32) return () => {};
     let alive = true;
+    const readAt = Date.now();
     getVoteDelegationState(network, rewardBech32)
       // Not found = an account the chain has never seen: no DRep. A row
       // without the DRep field is not that — it throws, and stays "not read".
       .then((s) => {
         if (!alive) return;
         setCurrent(s.found ? s.delegatedDRep : null);
+        setCurrentReadAt(readAt);
         setCurrentFailed(false);
       })
       .catch(() => {
@@ -565,6 +586,16 @@ function DelegateSection({
 
   useEffect(() => reloadCurrent(), [reloadCurrent]);
 
+  // The held read is older than the record yet shows its choice: read once
+  // more, so a record that has really landed still ends promptly (see the
+  // Staking tab's twin). Once per record: a read started in the same
+  // millisecond leaves this true and does not loop.
+  useEffect(() => {
+    if (staleReadShowsVote) return reloadCurrent();
+    // The record is the parent's; its hash and the read's age are what move.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [staleReadShowsVote, sentVoteDelegation?.txHash]);
+
   // While one is in flight: move the clock (pending → unseen → window closed)
   // and re-read the current DRep, so a landed choice clears the line by itself.
   // The same tick looks the sent transaction up by hash (read through a ref,
@@ -587,12 +618,17 @@ function DelegateSection({
     let cancelled = false;
     let release: () => void = () => {};
     let releaseTx: () => void = () => {};
-    const confirmOnChain = (sent: SentVoteDelegation) =>
-      getVoteDelegationState(sent.network, sent.account).then((s) => {
+    const confirmOnChain = (sent: SentVoteDelegation) => {
+      const readAt = Date.now();
+      return getVoteDelegationState(sent.network, sent.account).then((s) => {
         const onChain = s.found ? s.delegatedDRep : null;
-        if (!cancelled) setCurrent(onChain);
+        if (!cancelled) {
+          setCurrent(onChain);
+          setCurrentReadAt(readAt);
+        }
         return !cancelled && voteDelegationConfirmed(sent, onChain);
       });
+    };
     const lookUpNow = () => {
       releaseTx();
       releaseTx = lookUpVoteTx(
