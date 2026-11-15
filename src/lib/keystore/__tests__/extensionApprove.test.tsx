@@ -797,3 +797,80 @@ describe("a summary read late lands only on the request it was read for", () => 
     }
   });
 });
+
+describe("signTx with a withdrawal from a script account that is not this wallet's", () => {
+  // An ordinary spend of this wallet's coin, with one line slipped in: a
+  // 0-lovelace withdrawal from a script reward account carrying a `reward`
+  // redeemer, next to a script input. A contract that counts "a withdrawal for
+  // my credential, signed by these keys" as a vote takes this signature as one.
+  const SCRIPT_REWARD = "f0" + "5c".repeat(28);
+  const injected = () =>
+    Encoder.encode([
+      new Map<number, unknown>([
+        [0, [[Buffer.from("77".repeat(32), "hex"), 1], [Buffer.from("aa".repeat(32), "hex"), 0]]],
+        [1, [[Buffer.from((tyUtils.getAddressFromString(OUTSIDER) as tyTypes.ShelleyAddress).getHex(), "hex"), 2_000_000]]],
+        [2, 300_000],
+        [5, new Map([[Buffer.from(SCRIPT_REWARD, "hex"), 0]])],
+      ]),
+      new Map<number, unknown>([
+        [
+          5,
+          new Map<unknown, unknown>([
+            [[0, 1], [0, [1000, 100000]]],
+            [[3, 0], [0, [1000, 100000]]],
+          ]),
+        ],
+      ]),
+      true,
+      null,
+    ]).toString("hex");
+  const stakeAddress = bech32.encode("stake_test", bech32.toWords(Buffer.from(SCRIPT_REWARD, "hex")), 1000);
+  const ticks = async () => {
+    for (let i = 0; i < 5; i++) await act(async () => void (await new Promise((r) => setTimeout(r, 0))));
+  };
+
+  it("names the withdrawal and its redeemer, keeps Sign locked, and signs only after that entry is ticked", async () => {
+    mocks.fetchUtxos.mockResolvedValue(ourInputs());
+    const { port, view } = await unlocked();
+    act(() => port.deliver({ type: "request", id: "fw1", origin: ORIGIN, method: "signTx", params: [injected(), true] }));
+    await view.findByText(en.cip30_foreign_actions_heading);
+    expect(view.container.textContent).toContain(stakeAddress);
+    expect(view.container.textContent).toContain(en.cip30_withdrawal_redeemer);
+    expect(view.container.textContent).toContain(`${"aa".repeat(32)}#0`);
+    expect(view.container.textContent).toContain(en.cip30_input_redeemer);
+    const approve = view.getByText(en.cip30_approve) as HTMLButtonElement;
+    // The summary is on screen and nothing else holds the button: the lock is
+    // the unconfirmed withdrawal, and it holds.
+    await ticks();
+    expect(approve.disabled).toBe(true);
+    expect(view.getByTestId("sign-locked")).toBeTruthy();
+    fireEvent.click(approve);
+    expect(port.sent.find((m) => m.id === "fw1")).toBeUndefined();
+
+    fireEvent.click(view.getByTestId(`confirm-${SCRIPT_REWARD}`));
+    await waitFor(() => expect(approve.disabled).toBe(false));
+    fireEvent.click(approve);
+    await waitFor(() => expect(port.sent.find((m) => m.id === "fw1")).toBeDefined());
+    const res = port.sent.find((m) => m.id === "fw1")!.result!;
+    expect(res.ok).toBe(true);
+    const ws = Decoder.decode(Buffer.from(res.value as string, "hex")).value as Map<number, [Buffer, Buffer][]>;
+    expect(Array.from(ws.get(0)!).map(([pub]) => Buffer.from(blake2b224(pub)).toString("hex"))).toEqual([
+      acct1.external[0]!.keyHashHex,
+    ]);
+  });
+
+  it("a new request starts with nothing confirmed", async () => {
+    mocks.fetchUtxos.mockResolvedValue(ourInputs());
+    const { port, view } = await unlocked();
+    act(() => port.deliver({ type: "request", id: "fw2", origin: ORIGIN, method: "signTx", params: [injected(), true] }));
+    await view.findByText(en.cip30_foreign_actions_heading);
+    fireEvent.click(view.getByTestId(`confirm-${SCRIPT_REWARD}`));
+    fireEvent.click(view.getByText(en.cip30_reject));
+    await waitFor(() => expect(port.sent.find((m) => m.id === "fw2")).toBeDefined());
+    act(() => port.deliver({ type: "request", id: "fw3", origin: ORIGIN, method: "signTx", params: [injected(), true] }));
+    await view.findByText(en.cip30_foreign_actions_heading);
+    await ticks();
+    expect((view.getByText(en.cip30_approve) as HTMLButtonElement).disabled).toBe(true);
+    expect((view.getByTestId(`confirm-${SCRIPT_REWARD}`) as HTMLInputElement).checked).toBe(false);
+  });
+});

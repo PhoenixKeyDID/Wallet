@@ -218,7 +218,7 @@ describe("drip-pot claim with one thing added: both layers refuse", () => {
     {
       name: "field 20: a governance proposal",
       opts: { extra: (b) => b.set(20, []) },
-      signer: /sign_foreign_undescribable: .*field 20/,
+      signer: /sign_foreign_proposal: .*field 20/,
       screen: /field 20/,
     },
     {

@@ -8,7 +8,7 @@
  * left every helper test green before this file existed.
  */
 import { describe, it, expect, afterEach } from "vitest";
-import { render, cleanup } from "@testing-library/react";
+import { render, cleanup, fireEvent } from "@testing-library/react";
 import i18next from "i18next";
 import { I18nextProvider, initReactI18next } from "react-i18next";
 import { Buffer } from "buffer";
@@ -56,6 +56,9 @@ function shown(overrides: Partial<TxSummary> = {}) {
     foreignWithdrawals: 0,
     ownRewardKeyHashes: [],
     withdrawalLovelace: BigInt(0),
+    foreignInputList: [],
+    foreignWithdrawalList: [],
+    redeemers: [],
     ...overrides,
   };
   const { container } = render(
@@ -64,6 +67,61 @@ function shown(overrides: Partial<TxSummary> = {}) {
     </I18nextProvider>,
   );
   return container.textContent ?? "";
+}
+
+const SCRIPT_REWARD = "f0" + "5c".repeat(28);
+const KEY_REWARD = "e0" + "01".repeat(28);
+const foreignWd = (rewardAccountHex: string, redeemer: boolean, lovelace = BigInt(0)) => ({
+  rewardAccountHex,
+  stakeAddress: `stake_test1-${rewardAccountHex.slice(0, 6)}`,
+  credential: rewardAccountHex.startsWith("f") ? ("script" as const) : ("key" as const),
+  credentialHashHex: rewardAccountHex.slice(2),
+  lovelace,
+  redeemer,
+});
+
+/** Render with live confirmation state, as the approval window wires it. */
+function withBoxes(summaryOverrides: Partial<TxSummary>, wired = true) {
+  const summary = {
+    net: [],
+    toOthers: [],
+    toSelfWithDatum: [],
+    fee: BigInt(170_000),
+    ownInputs: 1,
+    totalInputs: 2,
+    foreignInputs: 1,
+    burns: [],
+    collateral: null,
+    withdrawals: 0,
+    foreignWithdrawals: 0,
+    ownRewardKeyHashes: [],
+    withdrawalLovelace: BigInt(0),
+    foreignInputList: [],
+    foreignWithdrawalList: [],
+    redeemers: [],
+    ...summaryOverrides,
+  } satisfies TxSummary;
+  const confirmed = new Set<string>();
+  const calls: [string, boolean][] = [];
+  const ui = (set: ReadonlySet<string>) => (
+    <I18nextProvider i18n={i18n}>
+      <TxSummaryView
+        summary={summary}
+        confirmed={set}
+        onConfirm={
+          wired
+            ? (k, on) => {
+                calls.push([k, on]);
+                if (on) confirmed.add(k);
+                else confirmed.delete(k);
+              }
+            : undefined
+        }
+      />
+    </I18nextProvider>
+  );
+  const r = render(ui(new Set(confirmed)));
+  return { ...r, calls, rerenderNow: () => r.rerender(ui(new Set(confirmed))) };
 }
 
 describe("TxSummaryView — what the approval window shows", () => {
@@ -154,5 +212,74 @@ describe("TxSummaryView — what the approval window shows", () => {
     const none = shown();
     expect(none).not.toContain(en.cip30_extra_actions);
     expect(none).not.toContain(en.cip30_foreign_withdrawal);
+  });
+});
+
+describe("TxSummaryView — foreign actions are named one by one and lock signing", () => {
+  it("prints each foreign input by txid#index, saying whether a script runs for it", () => {
+    const text = shown({
+      foreignInputs: 2,
+      totalInputs: 3,
+      foreignInputList: [
+        { txId: "aa".repeat(32), index: 0, redeemer: true },
+        { txId: "bb".repeat(32), index: 3, redeemer: false },
+      ],
+    });
+    expect(text).toContain(en.cip30_foreign_inputs_heading);
+    expect(text).toContain(`${"aa".repeat(32)}#0`);
+    expect(text).toContain(`${"bb".repeat(32)}#3`);
+    expect(text).toContain(en.cip30_input_redeemer);
+    expect(text).toContain(en.cip30_input_no_redeemer);
+  });
+
+  it("prints each foreign withdrawal: stake address, amount, credential kind and the reward redeemer", () => {
+    const text = shown({
+      withdrawals: 2,
+      foreignWithdrawals: 2,
+      foreignWithdrawalList: [foreignWd(SCRIPT_REWARD, true), foreignWd(KEY_REWARD, false, BigInt(1_000_000))],
+    });
+    expect(text).toContain(en.cip30_foreign_actions_heading);
+    expect(text).toContain("stake_test1-f05c5c");
+    expect(text).toContain("stake_test1-e00101");
+    expect(text).toContain(en.cip30_withdrawal_script);
+    expect(text).toContain(en.cip30_withdrawal_key);
+    expect(text).toContain("1 ADA");
+    // The redeemer line appears once: only the script withdrawal carries one.
+    expect(text.split(en.cip30_withdrawal_redeemer).length - 1).toBe(1);
+    expect(text).toContain(en.cip30_sign_locked);
+  });
+
+  it("each box records its own account; the lock note stays until every box is ticked", () => {
+    const { getByTestId, queryByTestId, calls, rerenderNow } = withBoxes({
+      withdrawals: 2,
+      foreignWithdrawals: 2,
+      foreignWithdrawalList: [foreignWd(SCRIPT_REWARD, true), foreignWd(KEY_REWARD, false)],
+    });
+    expect(getByTestId("sign-locked")).toBeTruthy();
+    fireEvent.click(getByTestId(`confirm-${SCRIPT_REWARD}`));
+    expect(calls).toEqual([[SCRIPT_REWARD, true]]);
+    rerenderNow();
+    // One of two confirmed: still locked.
+    expect(queryByTestId("sign-locked")).not.toBeNull();
+    fireEvent.click(getByTestId(`confirm-${KEY_REWARD}`));
+    rerenderNow();
+    expect(queryByTestId("sign-locked")).toBeNull();
+    // Unticking one locks again.
+    fireEvent.click(getByTestId(`confirm-${KEY_REWARD}`));
+    expect(calls.at(-1)).toEqual([KEY_REWARD, false]);
+    rerenderNow();
+    expect(queryByTestId("sign-locked")).not.toBeNull();
+  });
+
+  it("with no handler wired the boxes cannot be ticked, so nothing unlocks", () => {
+    const { getByTestId } = withBoxes({ foreignWithdrawals: 1, withdrawals: 1, foreignWithdrawalList: [foreignWd(SCRIPT_REWARD, true)] }, false);
+    expect((getByTestId(`confirm-${SCRIPT_REWARD}`) as HTMLInputElement).disabled).toBe(true);
+    expect(getByTestId("sign-locked")).toBeTruthy();
+  });
+
+  it("no foreign withdrawal: no list, no lock note", () => {
+    const text = shown({ withdrawals: 1, withdrawalLovelace: BigInt(5_000_000) });
+    expect(text).not.toContain(en.cip30_foreign_actions_heading);
+    expect(text).not.toContain(en.cip30_sign_locked);
   });
 });
