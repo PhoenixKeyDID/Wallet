@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import type { TxSummary } from "../../src/lib/cardano/txSummary";
+import { unconfirmedForeignActions, type TxSummary } from "../../src/lib/cardano/txSummary";
 import { assetLabel, formatAda } from "../../src/lib/cardano/provider";
 
 /**
@@ -16,8 +16,30 @@ import { assetLabel, formatAda } from "../../src/lib/cardano/provider";
  * the website also chose every name this block prints; a name with no policy
  * id beside it is whatever the website wanted it to say.
  */
-export function TxSummaryView({ summary }: { summary: TxSummary }) {
+export function TxSummaryView({
+  summary,
+  confirmed = new Set<string>(),
+  onConfirm,
+  locks = true,
+}: {
+  summary: TxSummary;
+  /**
+   * Whether this screen is about to put a signature on the transaction. False
+   * for `submitTx`: nothing is signed there, so the per-withdrawal boxes and
+   * the "signing stays locked" note would describe a lock that does not exist.
+   * The list itself is still shown.
+   */
+  locks?: boolean;
+  /** Foreign withdrawals the person has confirmed, by reward account (hex). */
+  confirmed?: ReadonlySet<string>;
+  /**
+   * Record one confirmation. Absent: the boxes are shown but cannot be ticked,
+   * so a screen that forgets to wire this can never unlock signing.
+   */
+  onConfirm?: (rewardAccountHex: string, checked: boolean) => void;
+}) {
   const { t } = useTranslation("wallet");
+  const awaiting = unconfirmedForeignActions(summary, confirmed);
   return (
     <div className="approve-summary">
       <p className="approve-heading">{t("cip30_leaves_wallet")}</p>
@@ -56,6 +78,30 @@ export function TxSummaryView({ summary }: { summary: TxSummary }) {
         <p className="approve-error" data-testid="foreign-inputs">
           {t("cip30_foreign_inputs", { n: summary.foreignInputs })}
         </p>
+      )}
+      {/* Each of them by name, and whether a Plutus script runs for it. */}
+      {summary.foreignInputList.length > 0 && (
+        <>
+          <p className="approve-heading">{t("cip30_foreign_inputs_heading")}</p>
+          <ul data-testid="foreign-input-list">
+            {summary.foreignInputList.map((f) => (
+              <li key={`${f.txId}#${f.index}`}>
+                <span className="mono approve-addr">{`${f.txId}#${f.index}`}</span>
+                <span className="approve-note">
+                  {/* The redeemers come from the page, outside what is
+                      signed. "No redeemer" is a fact only when the body
+                      commits to no script data; otherwise the page can add
+                      one after the signature. */}
+                  {f.redeemer
+                    ? t("cip30_input_redeemer")
+                    : summary.scriptDataCommitted
+                      ? t("cip30_input_redeemer_unknown")
+                      : t("cip30_input_no_redeemer")}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </>
       )}
       {summary.toOthers.length > 0 && (
         <>
@@ -120,6 +166,47 @@ export function TxSummaryView({ summary }: { summary: TxSummary }) {
         <p className="approve-error">{t("cip30_extra_actions")}</p>
       )}
       {summary.foreignWithdrawals > 0 && <p className="approve-error">{t("cip30_foreign_withdrawal")}</p>}
+      {/* Every withdrawal that is not this wallet's, one by one, each with its
+          own box. Signing stays locked until every box is ticked: a script
+          account runs its script for the withdrawal, and a contract can count
+          that run as a vote carried by this signature. */}
+      {summary.foreignWithdrawalList.length > 0 && (
+        <>
+          <p className="approve-heading">{t("cip30_foreign_actions_heading")}</p>
+          <ul data-testid="foreign-withdrawal-list">
+            {summary.foreignWithdrawalList.map((w) => (
+              <li key={w.rewardAccountHex} className="approve-payout">
+                <b>{formatAda(w.lovelace)} ADA</b>
+                <span className="mono approve-addr">{w.stakeAddress}</span>
+                <span className="approve-note">
+                  {w.credential === "script" ? t("cip30_withdrawal_script") : t("cip30_withdrawal_key")}
+                </span>
+                {w.redeemer && <span className="approve-error">{t("cip30_withdrawal_redeemer")}</span>}
+                {!w.redeemer && w.credential === "script" && summary.scriptDataCommitted && (
+                  <span className="approve-error">{t("cip30_withdrawal_redeemer_unknown")}</span>
+                )}
+                {locks && (
+                <label>
+                  <input
+                    type="checkbox"
+                    data-testid={`confirm-${w.rewardAccountHex}`}
+                    checked={confirmed.has(w.rewardAccountHex)}
+                    disabled={!onConfirm}
+                    onChange={(e) => onConfirm?.(w.rewardAccountHex, e.currentTarget.checked)}
+                  />
+                  {t("cip30_withdrawal_confirm")}
+                </label>
+                )}
+              </li>
+            ))}
+          </ul>
+          {locks && awaiting.length > 0 && (
+            <p className="approve-error" role="alert" data-testid="sign-locked">
+              {t("cip30_sign_locked")}
+            </p>
+          )}
+        </>
+      )}
     </div>
   );
 }

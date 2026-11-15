@@ -31,6 +31,7 @@
 import "../node-globals";
 import { Buffer } from "buffer";
 import { Decoder } from "@stricahq/cbors";
+import { bech32 } from "bech32";
 import { utils as tyUtils } from "@stricahq/typhonjs";
 import { assertNoDuplicateMapKeys, DuplicateMapKeyError } from "./cborDupKeys";
 import { walletOwnsOutput } from "./ownUtxo";
@@ -87,6 +88,49 @@ export type CollateralRisk = {
   inputs: number;
 };
 
+/**
+ * Why a script runs, as a redeemer names it. The ledger's tags, in order:
+ * `0` spend, `1` mint, `2` cert, `3` reward, `4` vote, `5` propose.
+ */
+export type RedeemerPurpose = "spend" | "mint" | "cert" | "reward" | "vote" | "propose";
+
+/** One redeemer the transaction carries: which script runs, and for which item. */
+export type RedeemerUse = { purpose: RedeemerPurpose; index: number };
+
+/**
+ * One input this wallet does not hold, named in full so the screen can print
+ * it instead of a count. `redeemer` is true when the request's witness set
+ * carries a `spend` redeemer for it. False does not mean "no script": a native
+ * script leaves no redeemer, and the witness set is the page's to send — it
+ * sits outside what the signature covers. When the body commits to script
+ * data (`TxSummary.scriptDataCommitted`) the page can attach the redeemers
+ * after signing, so false then only means "not in this request".
+ */
+export type ForeignInput = { txId: string; index: number; redeemer: boolean };
+
+/**
+ * One withdrawal from a reward account this wallet does not count as its own.
+ *
+ * Listed one by one, because a withdrawal is not only money. A script reward
+ * account runs its script for every withdrawal from it — even of 0 lovelace —
+ * and some contracts count that run as a vote or an approval. Hidden behind a
+ * count, a page can slip one into an ordinary transaction and have this
+ * wallet's signature carry it.
+ */
+export type ForeignWithdrawal = {
+  /** The 29-byte reward account, hex. The key a person's confirmation is recorded under. */
+  rewardAccountHex: string;
+  /** The same account as a bech32 stake address (`stake1…` / `stake_test1…`). */
+  stakeAddress: string;
+  /** Whether the credential is a script hash or a key hash. */
+  credential: "script" | "key";
+  /** The 28-byte credential hash, hex. */
+  credentialHashHex: string;
+  lovelace: bigint;
+  /** A `reward` redeemer points at this withdrawal: a Plutus script runs for it. */
+  redeemer: boolean;
+};
+
 export type TxSummary = {
   /** What each asset costs this wallet, fee included for ADA. */
   net: NetChange[];
@@ -122,6 +166,8 @@ export type TxSummary = {
    * script input exactly this way, and that is the point of the claim.
    */
   foreignInputs: number;
+  /** The inputs counted in `foreignInputs`, each by `txid#index`, in body order. */
+  foreignInputList: ForeignInput[];
   withdrawals: number;
   /**
    * How many of `withdrawals` take rewards out of a reward account that is not
@@ -129,6 +175,24 @@ export type TxSummary = {
    * somebody else's, and "this withdraws your staking rewards" would be false.
    */
   foreignWithdrawals: number;
+  /**
+   * The withdrawals counted in `foreignWithdrawals`, one entry each, in body
+   * order. Each one blocks the signature until the person confirms that very
+   * entry (`unconfirmedForeignActions`); the signer enforces the same rule.
+   */
+  foreignWithdrawalList: ForeignWithdrawal[];
+  /** Every redeemer the transaction carries, as purpose + pointer index. */
+  redeemers: RedeemerUse[];
+  /**
+   * The body has a `script_data_hash` (field 11). That hash commits to the
+   * redeemers the ledger will run, but the redeemers themselves travel in the
+   * witness set, which the signature does not cover and the page may send
+   * incomplete. With this set, an item without a redeemer in `redeemers` may
+   * still run a Plutus script once the page attaches the real ones. Without
+   * it, no Plutus script runs in this transaction at all: the ledger refuses
+   * redeemers that no `script_data_hash` commits to.
+   */
+  scriptDataCommitted: boolean;
   /**
    * The stake key hashes (hex) of the withdrawals counted as this wallet's —
    * the ones whose rewards are in `withdrawalLovelace`. The signer adds a
@@ -469,6 +533,97 @@ export function isKeyRewardAccountOn(raw: Uint8Array, networkId: number): boolea
   return raw.length === 29 && raw[0] >> 4 === 0xe && (raw[0] & 0x0f) === networkId;
 }
 
+const REDEEMER_TAGS: readonly RedeemerPurpose[] = ["spend", "mint", "cert", "reward", "vote", "propose"];
+
+function redeemerPointer(tag: unknown, index: unknown): RedeemerUse {
+  if (typeof tag !== "number" || !Number.isInteger(tag) || tag < 0 || tag >= REDEEMER_TAGS.length) {
+    bad("this transaction runs a script for a purpose this wallet cannot name");
+  }
+  if (typeof index !== "number" || !Number.isSafeInteger(index) || index < 0) {
+    bad("this transaction runs a script for an item this wallet cannot find");
+  }
+  return { purpose: REDEEMER_TAGS[tag], index };
+}
+
+/**
+ * The redeemers in a witness set, as purpose + pointer, in either encoding the
+ * ledger accepts: the Alonzo array `[tag, index, data, ex_units]*` or the
+ * Conway map `{[tag, index]: [data, ex_units]}`. A shape outside those two is
+ * refused: a redeemer the screen cannot place is a script running for a
+ * reason the person was not told.
+ */
+function readRedeemers(witnessSet: unknown): RedeemerUse[] {
+  if (witnessSet === undefined || witnessSet === null) return [];
+  if (!(witnessSet instanceof Map)) bad("this transaction's witnesses have a shape this wallet cannot read");
+  const raw = (witnessSet as Map<unknown, unknown>).get(5);
+  if (raw === undefined) return [];
+  const out: RedeemerUse[] = [];
+  if (Array.isArray(raw)) {
+    for (const r of raw) {
+      if (!Array.isArray(r) || r.length !== 4) bad("a redeemer in this transaction has a shape this wallet cannot read");
+      out.push(redeemerPointer(r[0], r[1]));
+    }
+  } else if (raw instanceof Map) {
+    for (const [k, v] of raw as Map<unknown, unknown>) {
+      if (!Array.isArray(k) || k.length !== 2 || !Array.isArray(v) || v.length !== 2) {
+        bad("a redeemer in this transaction has a shape this wallet cannot read");
+      }
+      out.push(redeemerPointer(k[0], k[1]));
+    }
+  } else {
+    bad("this transaction's redeemers have a shape this wallet cannot read");
+  }
+  // The array form can name one pointer twice; the ledger counts one. Two
+  // copies are a description that cannot say which one runs.
+  const seen = new Set<string>();
+  for (const r of out) {
+    const k = `${r.purpose}#${r.index}`;
+    if (seen.has(k)) bad("this transaction gives the same script two redeemers");
+    seen.add(k);
+  }
+  return out;
+}
+
+/** Ledger order of inputs (`TxIn`): transaction id bytes, then output index. */
+function compareInputRefs(a: string, b: string): number {
+  const [ta, ia] = a.split("#");
+  const [tb, ib] = b.split("#");
+  if (ta !== tb) return ta < tb ? -1 : 1;
+  return Number(ia) - Number(ib);
+}
+
+/**
+ * Ledger order of reward accounts, which a `reward` redeemer index counts in:
+ * network first (testnet before mainnet), then the credential — a script hash
+ * sorts before a key hash (`ScriptHashObj` is declared first) — then the hash
+ * bytes. Raw byte order would put key accounts (`0xE_`) first and point a
+ * redeemer at the wrong withdrawal.
+ */
+function compareRewardAccounts(a: string, b: string): number {
+  const ha = parseInt(a.slice(0, 2), 16);
+  const hb = parseInt(b.slice(0, 2), 16);
+  const na = ha & 0x0f;
+  const nb = hb & 0x0f;
+  if (na !== nb) return na - nb;
+  const ka = ha >> 4 === 0xf ? 0 : 1;
+  const kb = hb >> 4 === 0xf ? 0 : 1;
+  if (ka !== kb) return ka - kb;
+  const ra = a.slice(2);
+  const rb = b.slice(2);
+  return ra < rb ? -1 : ra > rb ? 1 : 0;
+}
+
+/**
+ * The foreign actions in `summary` the person has not yet confirmed, by the key
+ * each confirmation is recorded under (the reward account, hex). Signing stays
+ * blocked while this is non-empty — the approval screen disables its Sign
+ * button on it, and `signForeignTx` refuses on the same list
+ * (`sign_foreign_withdrawal_unconfirmed`).
+ */
+export function unconfirmedForeignActions(summary: TxSummary, confirmed: ReadonlySet<string>): string[] {
+  return summary.foreignWithdrawalList.map((w) => w.rewardAccountHex).filter((k) => !confirmed.has(k));
+}
+
 /**
  * Describe a signed-or-unsigned transaction from the wallet's point of view.
  *
@@ -533,6 +688,17 @@ export function summariseTx(
     // `b.get(4)` looks up the integer 4 and never sees it, so a certificate (or
     // any field) hidden under a string key sails through the allow-list and is
     // then invisible to every reader below.
+    //
+    // Votes (19) and governance proposals (20) are refused by the same
+    // allow-list, under a reason of their own: a page cannot have started
+    // either on this wallet's behalf, and "a feature this wallet cannot
+    // describe" would tell the person nothing about what was attempted.
+    if (key === 19) {
+      bad("this transaction casts a governance vote (field 19) — this wallet does not sign those for a website", "sign_foreign_vote");
+    }
+    if (key === 20) {
+      bad("this transaction submits a governance proposal (field 20) — this wallet does not sign those for a website", "sign_foreign_proposal");
+    }
     if (typeof key !== "number" || !KNOWN_BODY_KEYS.has(key))
       bad(`this transaction uses a feature this wallet cannot describe (field ${String(key)})`);
   }
@@ -565,7 +731,7 @@ export function summariseTx(
   const rawCerts = b.get(4);
   if (rawCerts !== undefined) {
     const n = rawCerts instanceof Set ? rawCerts.size : Array.isArray(rawCerts) ? rawCerts.length : -1;
-    if (n !== 0) bad("this transaction carries a certificate (staking, voting or registration) — this wallet does not sign those for a website");
+    if (n !== 0) bad("this transaction carries a certificate (staking, voting or registration) — this wallet does not sign those for a website", "sign_foreign_certificate");
   }
 
   const own = new Set<string>();
@@ -583,9 +749,13 @@ export function summariseTx(
   // line below would count this wallet's coin twice — reporting a cost the
   // transaction does not have, which is the wrong number the person agrees to.
   const seenInputs = new Set<string>();
+  const foreignInputList: ForeignInput[] = [];
   for (const i of inputList) {
     if (!Array.isArray(i) || i.length < 2) bad("an input has an unexpected shape");
-    const ref = `${Buffer.from(i[0] as Buffer).toString("hex")}#${Number(i[1])}`;
+    const txIdHex = Buffer.from(i[0] as Buffer).toString("hex");
+    const ix = Number(i[1]);
+    if (!/^[0-9a-f]{64}$/.test(txIdHex) || !Number.isSafeInteger(ix) || ix < 0) bad("an input has an unexpected shape");
+    const ref = `${txIdHex}#${ix}`;
     if (seenInputs.has(ref)) bad("this transaction names the same input twice");
     seenInputs.add(ref);
     // A UTxO this wallet owns that carries a reference script: the readers keep
@@ -596,7 +766,12 @@ export function summariseTx(
       bad("this transaction spends a coin of yours that publishes a script", "sign_foreign_own_script_input");
     }
     const held = ownInputs.get(ref);
-    if (!held) continue; // someone else's input; it costs this wallet nothing
+    if (!held) {
+      // Someone else's input; it costs this wallet nothing — but this
+      // wallet's signature may be what unlocks it, so it is named in full.
+      foreignInputList.push({ txId: txIdHex, index: ix, redeemer: false });
+      continue;
+    }
     mineCount += 1;
     spentLovelace += held.lovelace;
     for (const [unit, qty] of held.assets) {
@@ -671,22 +846,81 @@ export function summariseTx(
   }
   let withdrawnLovelace = BigInt(0);
   let foreignWithdrawals = 0;
+  const foreignWithdrawalList: ForeignWithdrawal[] = [];
   const ownRewardKeyHashes: string[] = [];
+  // Every reward account in the body, for the redeemer pointers below.
+  const rewardAccountsHex: string[] = [];
   const rawWithdrawals = b.get(5);
   if (rawWithdrawals !== undefined) {
     if (!(rawWithdrawals instanceof Map)) bad("this transaction withdraws in a shape this wallet cannot read");
     for (const [rewardAccount, amount] of rawWithdrawals as Map<unknown, unknown>) {
-      const raw = Buffer.from(rewardAccount as Buffer);
-      if (raw.length !== 29) bad("this transaction withdraws from an account this wallet cannot read");
+      if (!(rewardAccount instanceof Uint8Array)) bad("this transaction withdraws from an account this wallet cannot read");
+      const raw = Buffer.from(rewardAccount);
+      // A reward account is one header byte (0xE_ key, 0xF_ script) and a
+      // 28-byte hash. Any other header is not an account the screen can name.
+      if (raw.length !== 29 || (raw[0] >> 4 !== 0xe && raw[0] >> 4 !== 0xf)) {
+        bad("this transaction withdraws from an account this wallet cannot read");
+      }
+      // The low nibble is the network: 0 testnet, 1 mainnet. Any other value is
+      // no network this screen can name, and would be printed under a guessed
+      // prefix as if it were one.
+      if ((raw[0] & 0x0f) > 1) {
+        bad("this transaction withdraws from an account this wallet cannot read");
+      }
+      const lovelace = asBigInt(amount, "a withdrawal amount");
+      const rewardAccountHex = raw.toString("hex");
+      rewardAccountsHex.push(rewardAccountHex);
       // Somebody else's rewards are somebody else's money; they neither arrive
-      // here nor leave here.
+      // here nor leave here. They are still part of what this signature
+      // carries — a script account runs its script for the withdrawal, and
+      // some count that run as a vote — so each one is named, not counted.
       const stakeHash = raw.subarray(1).toString("hex");
       if (!isKeyRewardAccountOn(raw, networkId) || !ownStakeHashes.has(stakeHash)) {
         foreignWithdrawals += 1;
+        foreignWithdrawalList.push({
+          rewardAccountHex,
+          stakeAddress: bech32.encode((raw[0] & 0x0f) === 1 ? "stake" : "stake_test", bech32.toWords(raw), 1000),
+          credential: raw[0] >> 4 === 0xf ? "script" : "key",
+          credentialHashHex: stakeHash,
+          lovelace,
+          redeemer: false,
+        });
         continue;
       }
-      withdrawnLovelace += asBigInt(amount, "a withdrawal amount");
+      withdrawnLovelace += lovelace;
       ownRewardKeyHashes.push(stakeHash);
+    }
+  }
+
+  // ── redeemers ─────────────────────────────────────────────────────────────
+  // Which script runs, and for what. The redeemers sit in the witness set, not
+  // the body, so a page could swap them after signing; that does not change
+  // what the body asks for (the input or the withdrawal is there either way),
+  // which is why the items themselves, not the redeemers, are what blocks the
+  // signature. The redeemers say which of those items run a Plutus script as
+  // far as this request shows; with field 11 in the body the page can still
+  // add some after signing (`scriptDataCommitted`).
+  const redeemers = readRedeemers(decoded.length >= 2 ? decoded[1] : undefined);
+  const sortedInputs = [...seenInputs].sort(compareInputRefs);
+  const sortedRewardAccounts = [...rewardAccountsHex].sort(compareRewardAccounts);
+  const mintPolicies = b.get(9) instanceof Map ? (b.get(9) as Map<unknown, unknown>).size : 0;
+  for (const r of redeemers) {
+    if (r.purpose === "spend") {
+      const ref = sortedInputs[r.index];
+      if (ref === undefined) bad("a script in this transaction points at an input it does not have");
+      const hit = foreignInputList.find((f) => `${f.txId}#${f.index}` === ref);
+      if (hit) hit.redeemer = true;
+    } else if (r.purpose === "reward") {
+      const acct = sortedRewardAccounts[r.index];
+      if (acct === undefined) bad("a script in this transaction points at a withdrawal it does not have");
+      const hit = foreignWithdrawalList.find((f) => f.rewardAccountHex === acct);
+      if (hit) hit.redeemer = true;
+    } else if (r.purpose === "mint") {
+      if (r.index >= mintPolicies) bad("a script in this transaction points at a mint it does not have");
+    } else {
+      // cert, vote, propose: the body has none — certificates, votes and
+      // proposals are refused above — so the pointer names nothing.
+      bad(`a script in this transaction runs for a ${r.purpose} this transaction does not have`);
     }
   }
 
@@ -723,8 +957,12 @@ export function summariseTx(
     ownInputs: mineCount,
     totalInputs: inputList.length,
     foreignInputs,
+    foreignInputList,
     withdrawals: countOf(b.get(5)),
     foreignWithdrawals,
+    foreignWithdrawalList,
+    redeemers,
+    scriptDataCommitted: b.has(11),
     ownRewardKeyHashes,
     burns: readBurns(b.get(9)),
     collateral: readCollateral(b, own, ownInputs, networkId),
