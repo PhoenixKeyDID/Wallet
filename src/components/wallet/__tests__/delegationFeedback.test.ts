@@ -268,9 +268,23 @@ describe("voteDelegationConfirmed — the sent target, not any vote delegation",
 });
 
 describe("clock time of a vote delegation", () => {
-  it("formats local HH:MM, zero-padded", () => {
-    expect(clockTime(new Date(2026, 10, 13, 7, 5).getTime())).toBe("07:05");
-    expect(clockTime(new Date(2026, 10, 13, 23, 59).getTime())).toBe("23:59");
+  it("formats local HH:MM, zero-padded, when it falls on the reader's day", () => {
+    const now = new Date(2026, 10, 13, 12, 0).getTime();
+    expect(clockTime(new Date(2026, 10, 13, 7, 5).getTime(), now)).toBe("07:05");
+    expect(clockTime(new Date(2026, 10, 13, 23, 59).getTime(), now)).toBe("23:59");
+  });
+
+  it("puts the date in front when the moment falls on another local day", () => {
+    // Sent at 23:30: the window closes at 01:30 the next day. "until 01:30"
+    // alone reads as a time already gone.
+    const sentAt = new Date(2026, 10, 13, 23, 30).getTime();
+    expect(clockTime(sentAt + VOTE_DELEGATION_WATCH_LIMIT_MS, sentAt)).toBe("2026-11-14 01:30");
+    // Read the next morning, the evening before is not "today" either.
+    expect(clockTime(sentAt, new Date(2026, 10, 14, 0, 10).getTime())).toBe("2026-11-13 23:30");
+    // Same day and month, another year.
+    expect(clockTime(new Date(2025, 10, 13, 8, 0).getTime(), new Date(2026, 10, 13, 8, 0).getTime())).toBe(
+      "2025-11-13 08:00",
+    );
   });
 
   it("expires at sentAt plus the watch limit", () => {

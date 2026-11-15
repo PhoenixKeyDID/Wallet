@@ -40,6 +40,7 @@ import { Buffer } from "buffer";
 import { Decoder, Encoder } from "@stricahq/cbors";
 import { utils as tyUtils } from "@stricahq/typhonjs";
 import { assertNoDuplicateMapKeys, DuplicateMapKeyError } from "../cardano/cborDupKeys";
+import { CborSetError, readCborSet } from "../cardano/cborSet";
 import { blake2b256, toHex } from "../cardano/hash";
 import { isKeyRewardAccountOn, summariseTx, UndescribableTxError, type TxSummary } from "../cardano/txSummary";
 import { LocalSignError, type Account } from "./index";
@@ -143,6 +144,12 @@ export type RequiredKeys = {
   keyHashes: string[];
   /** blake2b-256 of the body exactly as it was serialised. */
   bodyHashHex: string;
+  /**
+   * The reward accounts (hex) of every withdrawal the summary counted as not
+   * this wallet's. `signForeignTx` signs only when the person confirmed each
+   * one on the screen, by this same key.
+   */
+  foreignRewardAccounts: string[];
 };
 
 /**
@@ -193,12 +200,19 @@ function bodyBytes(txBytes: Buffer): Buffer {
   return Buffer.from(rest.subarray(0, found));
 }
 
-/** How many entries a CBOR list/set/map holds; anything else is not a transaction. */
-function countOf(v: unknown): number {
-  if (v === undefined) return 0;
-  if (Array.isArray(v)) return v.length;
-  if (v instanceof Set || v instanceof Map) return v.size;
-  throw new LocalSignError("sign_foreign_not_a_tx");
+/**
+ * The elements of a set-typed body field, plain array or tag 258
+ * (`readCborSet`). Anything else is not a transaction — never an empty set.
+ * Duplicates are left to `summariseTx`, which this signer runs over the same
+ * bytes and which names that refusal.
+ */
+function setOf(v: unknown): unknown[] {
+  try {
+    return readCborSet(v);
+  } catch (e) {
+    if (e instanceof CborSetError) throw new LocalSignError("sign_foreign_not_a_tx");
+    throw e;
+  }
 }
 
 /** A mint quantity below zero — a burn. Zero and anything positive are not. */
@@ -300,7 +314,8 @@ export function requiredKeysFor(
   // hands over a standing right — the stake to a pool, the vote to a DRep —
   // and this wallet cannot yet show the person whom it goes to. Until it can,
   // no certificate from a website is signed, of any kind, aimed at anyone.
-  if (countOf(b.get(4)) > 0) throw new LocalSignError("sign_foreign_certificate");
+  const certs = b.get(4);
+  if (certs !== undefined && setOf(certs).length > 0) throw new LocalSignError("sign_foreign_certificate");
 
   // Minting. A burn takes tokens out of existence and is shown on the screen;
   // creating tokens is a policy saying yes, and a policy that wants this
@@ -335,10 +350,7 @@ export function requiredKeysFor(
     return Buffer.from(hash).toString("hex");
   };
 
-  const rawInputs = b.get(0);
-  const inputList = rawInputs instanceof Set ? [...rawInputs] : rawInputs;
-  if (!Array.isArray(inputList)) throw new LocalSignError("sign_foreign_not_a_tx");
-  for (const i of inputList) {
+  for (const i of setOf(b.get(0))) {
     const k = keyOfOwnInput(i, "input");
     if (k) add(k);
   }
@@ -349,9 +361,7 @@ export function requiredKeysFor(
   // is the ordinary case, not an edge one.
   const rawCollateral = b.get(13);
   if (rawCollateral !== undefined) {
-    const list = rawCollateral instanceof Set ? [...rawCollateral] : rawCollateral;
-    if (!Array.isArray(list)) throw new LocalSignError("sign_foreign_not_a_tx");
-    for (const i of list) {
+    for (const i of setOf(rawCollateral)) {
       const k = keyOfOwnInput(i, "collateral");
       if (k) add(k);
     }
@@ -429,10 +439,13 @@ export function requiredKeysFor(
   // but cannot explain is a refusal, not a signature. A hash it does not hold is
   // left alone, because that one is a genuine "another wallet must also sign",
   // which is what `partialSign` exists to answer.
+  //
+  // The field is read in either set encoding, and a shape that is neither is a
+  // refusal: a check that skips what it does not recognise would let a key
+  // named under an unfamiliar wrapper pass unmatched.
   const signers = b.get(14);
-  const signerList = signers instanceof Set ? [...signers] : signers;
-  if (Array.isArray(signerList)) {
-    for (const s of signerList) {
+  if (signers !== undefined) {
+    for (const s of setOf(signers)) {
       const hashHex = Buffer.from(s as Buffer).toString("hex");
       if (!justified.has(hashHex) && account.keyByHash.has(hashHex)) {
         throw new LocalSignError("sign_unjustified_signer", hashHex);
@@ -441,7 +454,7 @@ export function requiredKeysFor(
     }
   }
 
-  return { keyHashes: need, bodyHashHex };
+  return { keyHashes: need, bodyHashHex, foreignRewardAccounts: summary.foreignWithdrawalList.map((w) => w.rewardAccountHex) };
 }
 
 /**
@@ -456,8 +469,19 @@ export function signForeignTx(
   account: Account,
   view: WalletView,
   partialSign: boolean,
+  /**
+   * The foreign withdrawals the person confirmed on the screen, one by one, by
+   * reward account (hex). Empty by default, and empty refuses any transaction
+   * that carries one: a withdrawal from an account that is not this wallet's
+   * is somebody else's action riding on this signature — a script account runs
+   * its script for it, and a contract can count that run as a vote — so it is
+   * signed only after the person has seen and confirmed that very entry.
+   */
+  confirmed: ReadonlySet<string> = new Set(),
 ): string {
-  const { keyHashes, bodyHashHex } = requiredKeysFor(txCborHex, account, view);
+  const { keyHashes, bodyHashHex, foreignRewardAccounts } = requiredKeysFor(txCborHex, account, view);
+  const unconfirmed = foreignRewardAccounts.filter((k) => !confirmed.has(k));
+  if (unconfirmed.length > 0) throw new LocalSignError("sign_foreign_withdrawal_unconfirmed", unconfirmed.join(","));
 
   const bodyHash = Buffer.from(bodyHashHex, "hex");
   if (bodyHash.length !== 32) throw new LocalSignError("sign_bad_body_hash");

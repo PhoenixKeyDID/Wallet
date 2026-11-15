@@ -452,3 +452,27 @@ describe("WalletTabs: the waiting line survives a trip to another tab", () => {
     expect(screen.queryByText(en.not_delegated)).toBeNull();
   });
 });
+
+describe("#58: the pool-delegation re-read does not swallow a failure", () => {
+  it("says the re-read failed, keeps the waiting line, and drops the warning on the next good read", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    const good = { registered: true, delegatedPoolId: null, rewardsAvailable: BigInt(0) };
+    renderPanel({ sentDelegation: sentNow() });
+    await screen.findByText(pendingText());
+    expect(screen.queryByText(en.stake_reread_failed)).toBeNull();
+
+    m.getStakeAccountState.mockRejectedValue(new Error("koios down"));
+    await act(async () => {
+      vi.advanceTimersByTime(20_000);
+    });
+    expect(await screen.findByText(en.stake_reread_failed)).toBeTruthy();
+    expect(screen.getByText(pendingText())).toBeTruthy();
+
+    m.getStakeAccountState.mockResolvedValue(good);
+    await act(async () => {
+      vi.advanceTimersByTime(20_000);
+    });
+    await waitFor(() => expect(screen.queryByText(en.stake_reread_failed)).toBeNull());
+    expect(screen.getByText(pendingText())).toBeTruthy();
+  });
+});

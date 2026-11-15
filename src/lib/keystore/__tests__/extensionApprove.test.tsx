@@ -27,7 +27,7 @@ import { verifyCip8 } from "./vendor/lamp-drip-pot/cip8";
 import { formatAda } from "@/lib/cardano/provider";
 import { blake2b224, blake2b256 } from "@/lib/cardano/hash";
 import { dripClaimTxHex, AUTH_NAME } from "./fixtures/dripPotClaim";
-import { SubmitRejectedError } from "@/lib/cardano/submitError";
+import { PROVIDER_REFUSED_REASON, SubmitRejectedError } from "@/lib/cardano/submitError";
 import { txIdOf } from "@/lib/keystore/signForeign";
 
 const mocks = vi.hoisted(() => ({
@@ -35,7 +35,24 @@ const mocks = vi.hoisted(() => ({
   fetchUtxos: vi.fn(),
   fetchOwnedUtxos: vi.fn(async () => ({ spendable: [], refScript: [] })),
   submitTx: vi.fn(),
+  /** Every account `accountFromEntropy` built, in order, with `wipe` spied on. */
+  accounts: [] as Array<Awaited<ReturnType<typeof import("@/lib/keystore").accountFromEntropy>>>,
 }));
+
+// Pass-through: the window builds its account exactly as before. The test only
+// keeps a handle on it, to look at the key bytes after an idle lock.
+vi.mock("@/lib/keystore", async (orig) => {
+  const real = await orig<typeof import("@/lib/keystore")>();
+  return {
+    ...real,
+    accountFromEntropy: async (...args: Parameters<typeof real.accountFromEntropy>) => {
+      const a = await real.accountFromEntropy(...args);
+      a.wipe = vi.fn(a.wipe);
+      mocks.accounts.push(a);
+      return a;
+    },
+  };
+});
 
 vi.mock("@/lib/keystore/storage", async (orig) => ({
   ...(await orig<typeof import("@/lib/keystore/storage")>()),
@@ -401,7 +418,26 @@ describe("submitTx is described, then sent — or refused with TxSendError.Refus
       ok: false,
       error: { code: 2, info: expect.stringContaining("BadInputsUTxO") },
     });
+    // The node's reason, not which provider the wallet sent it through.
+    expect(port.sent.find((m) => m.id === "s3")!.result!.error!.info).not.toContain("Koios");
     // A definite no leaves nothing on chain: no "look it up" alarm.
+    expect(view.queryByRole("alert")).toBeNull();
+  });
+
+  it("a 403 from the provider is a Failure with a fixed reason: the body about the person's account stays in the wallet", async () => {
+    mocks.fetchUtxos.mockResolvedValue(ourInputs());
+    mocks.submitTx.mockRejectedValue(
+      new SubmitRejectedError(403, '{"status_code":403,"message":"Invalid project token."}', "Chain endpoint /tx/submit"),
+    );
+    const { port, view } = await unlocked();
+    act(() => port.deliver({ type: "request", id: "s403", origin: ORIGIN, method: "submitTx", params: [SIGNED_TX] }));
+    const send = await view.findByText(en.cip30_submit_cta);
+    await waitFor(() => expect((send as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(send);
+    await waitFor(() => expect(port.sent.find((m) => m.id === "s403")).toBeDefined());
+    const result = port.sent.find((m) => m.id === "s403")!.result!;
+    // Still a definite rejection: TxSendError.Failure, and no "look it up" alarm.
+    expect(result).toEqual({ ok: false, error: { code: 2, info: PROVIDER_REFUSED_REASON } });
     expect(view.queryByRole("alert")).toBeNull();
   });
 
@@ -476,6 +512,81 @@ describe("submitTx is described, then sent — or refused with TxSendError.Refus
     await act(async () => settle("ab".repeat(32)));
     await waitFor(() => expect(port.sent.find((m) => m.id === "s8")).toBeDefined());
     expect(port.sent.find((m) => m.id === "s8")!.result).toEqual({ ok: true, value: "ab".repeat(32) });
+  });
+
+  it("the idle deadline during a send wipes the keys at once; the port waits for the answer, then the window locks", async () => {
+    mocks.fetchUtxos.mockResolvedValue(ourInputs());
+    let settle!: (hash: string) => void;
+    mocks.submitTx.mockImplementationOnce(() => new Promise<string>((res) => (settle = res)));
+    const { port, view } = await unlocked();
+    const acct = mocks.accounts.at(-1)!;
+    // `toBytes()` hands back the live buffer, so these are the key bytes
+    // themselves, not copies.
+    const keyBytes = [...acct.keyByHash.values()].map((k) => k.toBytes());
+    expect(keyBytes.length).toBeGreaterThan(0);
+    expect(keyBytes.every((b) => b.some((x) => x !== 0))).toBe(true);
+    act(() => port.deliver({ type: "request", id: "h1", origin: ORIGIN, method: "submitTx", params: [SIGNED_TX] }));
+    const send = await view.findByText(en.cip30_submit_cta);
+    await waitFor(() => expect((send as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(send);
+    await view.findByText(en.cip30_submitting);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      fireEvent.mouseDown(window);
+      act(() => void vi.advanceTimersByTime(DEFAULT_LOCK_TIMEOUT_MS + 1));
+    } finally {
+      vi.useRealTimers();
+    }
+    // The send is still out, and the keys are already gone: the account's
+    // wipe ran (it also zeroes the account key and the root), the key map is
+    // empty, and every key buffer the window held is zero.
+    expect(acct.wipe).toHaveBeenCalledTimes(1);
+    expect(acct.keyByHash.size).toBe(0);
+    expect(keyBytes.every((b) => b.every((x) => x === 0))).toBe(true);
+    // What the pending answer needs is still there: the port, and the screen
+    // that owns the request.
+    expect(port.disconnected).toBe(false);
+    expect(view.queryByPlaceholderText(en.local_password)).toBeNull();
+    // A read arriving right after the deadline, before anything re-renders,
+    // is already refused: `relock` itself cut the account away from the port
+    // listener, not the next render.
+    const readsBefore = mocks.fetchUtxos.mock.calls.length;
+    const early = await ask(port, "h0", "getUtxos", []);
+    expect(early.result).toMatchObject({ ok: false, error: { code: -3, info: en.cip30_window_locked } });
+    expect(mocks.fetchUtxos.mock.calls.length).toBe(readsBefore);
+    // A re-render during the hold (here, a language switch) must not hand the
+    // account back to the port listener.
+    try {
+      await act(async () => {
+        await i18n.changeLanguage("vi");
+      });
+      await view.findByText(vi_.cip30_submitting);
+    } finally {
+      await act(async () => {
+        await i18n.changeLanguage("en");
+      });
+    }
+    await view.findByText(en.cip30_submitting);
+    // Anything else arriving now finds the window locked.
+    const reads = mocks.fetchUtxos.mock.calls.length;
+    const res = await ask(port, "h2", "getUtxos", []);
+    expect(res.result).toMatchObject({ ok: false, error: { code: -3, info: en.cip30_window_locked } });
+    expect(mocks.fetchUtxos.mock.calls.length).toBe(reads);
+    // More activity during the hold does not wipe twice or reopen anything.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      fireEvent.mouseDown(window);
+      act(() => void vi.advanceTimersByTime(DEFAULT_LOCK_TIMEOUT_MS + 1));
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(acct.wipe).toHaveBeenCalledTimes(1);
+    // The node answers: the site hears it, and only then does the window lock.
+    await act(async () => settle("ab".repeat(32)));
+    await waitFor(() => expect(port.sent.find((m) => m.id === "h1")).toBeDefined());
+    expect(port.sent.find((m) => m.id === "h1")!.result).toEqual({ ok: true, value: "ab".repeat(32) });
+    await view.findByPlaceholderText(en.local_password);
+    expect(port.disconnected).toBe(true);
   });
 });
 
@@ -795,5 +906,118 @@ describe("a summary read late lands only on the request it was read for", () => 
         await i18n.changeLanguage("en");
       });
     }
+  });
+});
+
+describe("signTx with a withdrawal from a script account that is not this wallet's", () => {
+  // An ordinary spend of this wallet's coin, with one line slipped in: a
+  // 0-lovelace withdrawal from a script reward account carrying a `reward`
+  // redeemer, next to a script input. A contract that counts "a withdrawal for
+  // my credential, signed by these keys" as a vote takes this signature as one.
+  const SCRIPT_REWARD = "f0" + "5c".repeat(28);
+  const injected = () =>
+    Encoder.encode([
+      new Map<number, unknown>([
+        [0, [[Buffer.from("77".repeat(32), "hex"), 1], [Buffer.from("aa".repeat(32), "hex"), 0]]],
+        [1, [[Buffer.from((tyUtils.getAddressFromString(OUTSIDER) as tyTypes.ShelleyAddress).getHex(), "hex"), 2_000_000]]],
+        [2, 300_000],
+        [5, new Map([[Buffer.from(SCRIPT_REWARD, "hex"), 0]])],
+      ]),
+      new Map<number, unknown>([
+        [
+          5,
+          new Map<unknown, unknown>([
+            [[0, 1], [0, [1000, 100000]]],
+            [[3, 0], [0, [1000, 100000]]],
+          ]),
+        ],
+      ]),
+      true,
+      null,
+    ]).toString("hex");
+  const stakeAddress = bech32.encode("stake_test", bech32.toWords(Buffer.from(SCRIPT_REWARD, "hex")), 1000);
+  const ticks = async () => {
+    for (let i = 0; i < 5; i++) await act(async () => void (await new Promise((r) => setTimeout(r, 0))));
+  };
+
+  it("names the withdrawal and its redeemer, keeps Sign locked, and signs only after that entry is ticked", async () => {
+    mocks.fetchUtxos.mockResolvedValue(ourInputs());
+    const { port, view } = await unlocked();
+    act(() => port.deliver({ type: "request", id: "fw1", origin: ORIGIN, method: "signTx", params: [injected(), true] }));
+    await view.findByText(en.cip30_foreign_actions_heading);
+    expect(view.container.textContent).toContain(stakeAddress);
+    expect(view.container.textContent).toContain(en.cip30_withdrawal_redeemer);
+    expect(view.container.textContent).toContain(`${"aa".repeat(32)}#0`);
+    expect(view.container.textContent).toContain(en.cip30_input_redeemer);
+    const approve = view.getByText(en.cip30_approve) as HTMLButtonElement;
+    // The summary is on screen and nothing else holds the button: the lock is
+    // the unconfirmed withdrawal, and it holds.
+    await ticks();
+    expect(approve.disabled).toBe(true);
+    expect(view.getByTestId("sign-locked")).toBeTruthy();
+    fireEvent.click(approve);
+    expect(port.sent.find((m) => m.id === "fw1")).toBeUndefined();
+
+    fireEvent.click(view.getByTestId(`confirm-${SCRIPT_REWARD}`));
+    await waitFor(() => expect(approve.disabled).toBe(false));
+    fireEvent.click(approve);
+    await waitFor(() => expect(port.sent.find((m) => m.id === "fw1")).toBeDefined());
+    const res = port.sent.find((m) => m.id === "fw1")!.result!;
+    expect(res.ok).toBe(true);
+    const ws = Decoder.decode(Buffer.from(res.value as string, "hex")).value as Map<number, [Buffer, Buffer][]>;
+    expect(Array.from(ws.get(0)!).map(([pub]) => Buffer.from(blake2b224(pub)).toString("hex"))).toEqual([
+      acct1.external[0]!.keyHashHex,
+    ]);
+  });
+
+  it("unticking the entry locks Sign again, and a click then sends nothing", async () => {
+    mocks.fetchUtxos.mockResolvedValue(ourInputs());
+    const { port, view } = await unlocked();
+    act(() => port.deliver({ type: "request", id: "fw4", origin: ORIGIN, method: "signTx", params: [injected(), true] }));
+    await view.findByText(en.cip30_foreign_actions_heading);
+    const approve = view.getByText(en.cip30_approve) as HTMLButtonElement;
+    await ticks();
+    const box = view.getByTestId(`confirm-${SCRIPT_REWARD}`) as HTMLInputElement;
+    fireEvent.click(box);
+    await waitFor(() => expect(approve.disabled).toBe(false));
+    fireEvent.click(box);
+    await waitFor(() => expect(approve.disabled).toBe(true));
+    expect(box.checked).toBe(false);
+    expect(view.getByTestId("sign-locked")).toBeTruthy();
+    fireEvent.click(approve);
+    await ticks();
+    expect(port.sent.find((m) => m.id === "fw4")).toBeUndefined();
+  });
+
+  it("a new request starts with nothing confirmed", async () => {
+    mocks.fetchUtxos.mockResolvedValue(ourInputs());
+    const { port, view } = await unlocked();
+    act(() => port.deliver({ type: "request", id: "fw2", origin: ORIGIN, method: "signTx", params: [injected(), true] }));
+    await view.findByText(en.cip30_foreign_actions_heading);
+    fireEvent.click(view.getByTestId(`confirm-${SCRIPT_REWARD}`));
+    fireEvent.click(view.getByText(en.cip30_reject));
+    await waitFor(() => expect(port.sent.find((m) => m.id === "fw2")).toBeDefined());
+    act(() => port.deliver({ type: "request", id: "fw3", origin: ORIGIN, method: "signTx", params: [injected(), true] }));
+    await view.findByText(en.cip30_foreign_actions_heading);
+    await ticks();
+    expect((view.getByText(en.cip30_approve) as HTMLButtonElement).disabled).toBe(true);
+    expect((view.getByTestId(`confirm-${SCRIPT_REWARD}`) as HTMLInputElement).checked).toBe(false);
+  });
+
+  // submitTx signs nothing. The withdrawal is still named, but a lock note and
+  // boxes nobody can tick, beside a Send button that works, would teach the
+  // person that this note means nothing.
+  it("submitTx names the same withdrawal without boxes or a lock note, and Send works", async () => {
+    mocks.fetchUtxos.mockResolvedValue(ourInputs());
+    const { port, view } = await unlocked();
+    act(() => port.deliver({ type: "request", id: "fw4", origin: ORIGIN, method: "submitTx", params: [injected()] }));
+    await view.findByText(en.cip30_foreign_actions_heading);
+    expect(view.container.textContent).toContain(stakeAddress);
+    expect(view.container.textContent).toContain(en.cip30_withdrawal_redeemer);
+    await ticks();
+    expect(view.queryByTestId("sign-locked")).toBeNull();
+    expect(view.queryByTestId(`confirm-${SCRIPT_REWARD}`)).toBeNull();
+    const send = view.getByText(en.cip30_submit_cta) as HTMLButtonElement;
+    await waitFor(() => expect(send.disabled).toBe(false));
   });
 });

@@ -1,7 +1,12 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { submitTx } from "./provider";
 import { bfSubmitTx } from "./blockfrost";
-import { SubmitRejectedError, isDefiniteRejection } from "./submitError";
+import {
+  PROVIDER_REFUSED_REASON,
+  SubmitRejectedError,
+  isDefiniteRejection,
+  rejectionReasonForSite,
+} from "./submitError";
 
 /**
  * Both submit doors report a rejection as a *type*, not as a sentence.
@@ -78,5 +83,49 @@ describe("submit > isDefiniteRejection says no to everything else", () => {
     expect(isDefiniteRejection(new TypeError("Failed to fetch"))).toBe(false);
     expect(isDefiniteRejection(undefined)).toBe(false);
     expect(isDefiniteRejection(null)).toBe(false);
+  });
+});
+
+/**
+ * What a website is told about a rejection (issue #59, point 10).
+ *
+ * Driven through both doors with a real reply body, so the test sees the error
+ * exactly as the approval window receives it. The site used to get `message`
+ * whole: `<endpoint label> → HTTP <status>: <body>`.
+ */
+describe("submit > the reason a site receives for a rejection", () => {
+  it("a 400 carries the node's reason, without the label that names the provider", async () => {
+    for (const [door, call] of DOORS) {
+      stub(400, "BadInputsUTxO (spent)");
+      const err = await call().catch((e: unknown) => e);
+      expect(isDefiniteRejection(err), door).toBe(true);
+      const reason = rejectionReasonForSite(err as SubmitRejectedError);
+      expect(reason, door).toBe("HTTP 400: BadInputsUTxO (spent)");
+      expect(reason, door).not.toMatch(/koios|chain endpoint|submittx|tx\/submit/i);
+    }
+  });
+
+  it.each([401, 402, 403, 429])(
+    "a %i is about the person's provider account: the site gets a fixed reason, not the body",
+    async (status) => {
+      const body = '{"status_code":403,"error":"Forbidden","message":"Invalid project token."}';
+      for (const [door, call] of DOORS) {
+        stub(status, body);
+        const err = await call().catch((e: unknown) => e);
+        // The classification is untouched: still a definite rejection.
+        expect(isDefiniteRejection(err), door).toBe(true);
+        // The wallet's own copy still has everything.
+        expect((err as Error).message, door).toContain("Invalid project token");
+        const reason = rejectionReasonForSite(err as SubmitRejectedError);
+        expect(reason, door).toBe(PROVIDER_REFUSED_REASON);
+        expect(reason, door).not.toContain("project token");
+        expect(reason, door).not.toContain(String(status));
+        expect(reason, door).not.toMatch(/koios|chain endpoint|blockfrost/i);
+      }
+    },
+  );
+
+  it("a 400 with an empty body still says 400, and nothing else", () => {
+    expect(rejectionReasonForSite(new SubmitRejectedError(400, "", "Koios /submittx"))).toBe("HTTP 400");
   });
 });

@@ -210,7 +210,10 @@ describe("summariseTx — what it refuses", () => {
       [0, [[Buffer.from(TXID, "hex"), 0]]],
       [1, [outputTo(PAYEE, 3_000_000)]],
       [2, 170_000],
-      [19, new Map()], // voting_procedures — deliberately not in the allow-list
+      // A key past every field the ledger defines today (Conway ends at 22).
+      // Field 19 (votes) used to stand in here; it now has its own refusal,
+      // pinned in foreignActions.test.ts.
+      [30, new Map()],
     ]);
     expect(() => summariseTx(cbor, own.addresses, own.inputs, 0)).toThrow(/cannot describe/);
   });

@@ -75,8 +75,12 @@ const SIGN_FOREIGN = "src/lib/keystore/signForeign.ts";
 // collapses: revert any branch to raw bytes and a non-canonical duplicate the
 // decoder folds slips past, which the dup-key suite must catch.
 const CBOR_DUP = "src/lib/cardano/cborDupKeys.ts";
+// The one helper both the screen and the signer read a Conway set through
+// (issue #60): a plain array or the same array under tag 258, nothing else.
+const CBOR_SET = "src/lib/cardano/cborSet.ts";
 const UTXO_CBOR = "src/lib/cardano/utxoCbor.ts";
 const APPROVE = "extension/src/approve.tsx";
+const SUBMIT_ERROR = "src/lib/cardano/submitError.ts";
 const UTXO_SELECT = "src/lib/cardano/utxoSelect.ts";
 const SIGN_DATA = "src/lib/keystore/signData.ts";
 const WORKER = "extension/background/worker.ts";
@@ -122,6 +126,10 @@ const TESTS = [
   "src/lib/cardano/__tests__/blockfrost.test.ts",
   "src/lib/cardano/__tests__/e2e-journey.test.ts",
   "src/lib/keystore/__tests__/signForeign.test.ts",
+  // Clear signing of foreign withdrawals, votes, proposals and script inputs.
+  "src/lib/keystore/__tests__/foreignActions.test.ts",
+  // Conway sets read bare or under tag 258, on the screen and in the signer.
+  "src/lib/keystore/__tests__/tag258Sets.test.ts",
   "extension/background/__tests__/worker.test.ts",
   "extension/src/__tests__/DataSignView.test.tsx",
   "scripts/__tests__/classifyRun.test.ts",
@@ -2366,6 +2374,394 @@ const MUTANTS = [
     file: STAKING,
     from: '    if (withdrawal === "released" && sentWithdrawal !== null) onWithdrawalSettled(sentWithdrawal.txHash);\n',
     to: "    /* MUT57-SETTLE */\n",
+  },
+  // ── Issue #58 (MUT58-*): a read showing the sent choice ends the record; an
+  // open Abstain review refuses once another choice is in flight; a failed
+  // re-read is said; an expiry on another day carries its date ──
+  {
+    name: "MUT58-LANDEDSTAKING: the Staking tab's read showing the sent choice leaves the record in place",
+    file: STAKING,
+    from: "    if (voteLandedByRead && sentVoteDelegation !== null) onVoteDelegationLanded(sentVoteDelegation.txHash);\n",
+    to: "    /* MUT58-LANDEDSTAKING */\n",
+  },
+  {
+    name: "MUT58-LANDEDGOV: the Governance tab's read showing the sent choice leaves the record in place",
+    file: GOV,
+    from: "    if (voteLandedByRead && sentVoteDelegation !== null) onVoteDelegationLanded(sentVoteDelegation.txHash);\n",
+    to: "    /* MUT58-LANDEDGOV */\n",
+  },
+  {
+    name: "MUT58-ANYDREP: the Staking tab ends the record on any DRep read, not the one sent",
+    file: STAKING,
+    from: "    accountReadAt > sentVoteDelegation.sentAt &&\n    voteDelegationLanded(sentVoteDelegation, accountState.delegatedDRep);\n",
+    to: "    accountReadAt > sentVoteDelegation.sentAt &&\n    accountState.delegatedDRep !== null; /* MUT58-ANYDREP */\n",
+  },
+  {
+    name: "MUT58-ABSTAINPENDING: an open Abstain review signs over a choice already in flight",
+    file: STAKING,
+    from: "    if (voteDelegationPending(sentVoteDelegation, rewardAddressBech32, network, Date.now())) {\n",
+    to: "    if (false /* MUT58-ABSTAINPENDING */) {\n",
+  },
+  {
+    name: "MUT58-REREADPOOL: a failed pool-delegation re-read is swallowed",
+    file: STAKING,
+    from: "        .catch(() => {\n          if (!cancelled) setRereadFailed(true);\n        });\n    }, PENDING_POLL_MS);",
+    to: "        .catch(() => {} /* MUT58-REREADPOOL */);\n    }, PENDING_POLL_MS);",
+  },
+  {
+    name: "MUT58-REREADVOTE: a failed vote-delegation re-read is swallowed",
+    file: STAKING,
+    from: "        .catch(() => {\n          if (!cancelled) setRereadFailed(true);\n        });\n      lookUpNow();",
+    to: "        .catch(() => {} /* MUT58-REREADVOTE */);\n      lookUpNow();",
+  },
+  {
+    name: "MUT58-DATE: a time on another day is printed without its date",
+    file: FEEDBACK,
+    from: "  if (sameDay) return time;\n",
+    to: "  if (sameDay || true /* MUT58-DATE */) return time;\n",
+  },
+  {
+    name: "MUT58-GOVINFLIGHT: a Governance delegation review signs over a choice that arrived after it opened",
+    file: GOV,
+    from: "      pending.voteInFlightAtReview !== undefined &&\n",
+    to: "      false /* MUT58-GOVINFLIGHT */ &&\n",
+  },
+  {
+    name: "MUT58-GOVPENDING: a choice that arrived during a Governance review blocks signing after its window has closed",
+    file: GOV,
+    from: "      voteDelegationPending(sentVote, rewardBech32 || null, network, Date.now())\n",
+    to: "      true /* MUT58-GOVPENDING */\n",
+    marker: "MUT58-GOVPENDING",
+  },
+  {
+    name: "MUT58-REREADGATE: the 're-read failed' line outlives the waiting it was about",
+    file: STAKING,
+    from: "        {rereadFailed && (waiting || voteInFlight) && (\n",
+    to: "        {rereadFailed && true /* MUT58-REREADGATE */ && (\n",
+    marker: "MUT58-REREADGATE",
+  },
+  // PR #62 review: a read only speaks for a record sent before it started; a
+  // record newer than the held read gets one fresh read.
+  {
+    name: "MUT58-STALESTAKING: the Staking tab ends a record on a read started before it was sent",
+    file: STAKING,
+    from: "    accountReadAt > sentVoteDelegation.sentAt &&\n",
+    to: "    /* MUT58-STALESTAKING */\n",
+    marker: "MUT58-STALESTAKING",
+  },
+  {
+    name: "MUT58-STALEGOV: the Governance tab ends a record on a DRep read started before it was sent",
+    file: GOV,
+    from: "    currentReadAt > sentVoteDelegation.sentAt &&\n",
+    to: "    /* MUT58-STALEGOV */\n",
+    marker: "MUT58-STALEGOV",
+  },
+  {
+    name: "MUT58-FRESHSTAKING: the Staking tab does not re-read when a record newer than its read arrives",
+    file: STAKING,
+    from: "    if (!staleReadShowsVote || !rewardAddressBech32) return;\n",
+    to: "    if (true /* MUT58-FRESHSTAKING */) return;\n",
+    marker: "MUT58-FRESHSTAKING",
+  },
+  {
+    name: "MUT58-FRESHGOV: the Governance tab does not re-read when a record newer than its read arrives",
+    file: GOV,
+    from: "    if (staleReadShowsVote) return reloadCurrent();\n",
+    to: "    if (false /* MUT58-FRESHGOV */) return reloadCurrent();\n",
+    marker: "MUT58-FRESHGOV",
+  },
+  // Clear signing: every action a website adds that is not this wallet's is
+  // named, and a foreign withdrawal blocks signing until confirmed by entry.
+  {
+    name: "MUTCS-WD-LIST: a foreign withdrawal is counted but not listed",
+    file: TX_SUMMARY,
+    from: "        foreignWithdrawalList.push({",
+    to: "        if (false /* MUTCS-WD-LIST */) foreignWithdrawalList.push({",
+    marker: "MUTCS-WD-LIST",
+  },
+  {
+    name: "MUTCS-INPUT-LIST: a foreign input is counted but not named",
+    file: TX_SUMMARY,
+    from: "      foreignInputList.push({ txId: txIdHex, index: ix, redeemer: false });",
+    to: "      /* MUTCS-INPUT-LIST */",
+    marker: "MUTCS-INPUT-LIST",
+  },
+  {
+    name: "MUTCS-ORDER: a reward redeemer is placed by raw byte order, not ledger order",
+    file: TX_SUMMARY,
+    from: "[...rewardAccountsHex].sort(compareRewardAccounts)",
+    to: "[...rewardAccountsHex].sort() /* MUTCS-ORDER */",
+    marker: "MUTCS-ORDER",
+  },
+  {
+    name: "MUTCS-WD-REDEEMER: a reward redeemer does not mark its withdrawal",
+    file: TX_SUMMARY,
+    from: "const hit = foreignWithdrawalList.find((f) => f.rewardAccountHex === acct);\n      if (hit) hit.redeemer = true;",
+    to: "const hit = foreignWithdrawalList.find((f) => f.rewardAccountHex === acct);\n      void hit; /* MUTCS-WD-REDEEMER */",
+    marker: "MUTCS-WD-REDEEMER",
+  },
+  {
+    name: "MUTCS-PTR-NONE: a cert/vote/propose redeemer pointing at nothing is accepted",
+    file: TX_SUMMARY,
+    from: "bad(`a script in this transaction runs for a ${r.purpose} this transaction does not have`);",
+    to: "void 0; /* MUTCS-PTR-NONE */",
+    marker: "MUTCS-PTR-NONE",
+  },
+  {
+    name: "MUTCS-HEADER: a reward account with an unknown header is read as foreign instead of refused",
+    file: TX_SUMMARY,
+    from: "if (raw.length !== 29 || (raw[0] >> 4 !== 0xe && raw[0] >> 4 !== 0xf)) {",
+    to: "if (raw.length !== 29 /* MUTCS-HEADER */) {",
+    marker: "MUTCS-HEADER",
+  },
+  {
+    name: "MUTCS-VOTE: a governance vote is refused without its own reason",
+    file: TX_SUMMARY,
+    from: "    if (key === 19) {",
+    to: "    if (false /* MUTCS-VOTE */) {",
+    marker: "MUTCS-VOTE",
+  },
+  {
+    name: "MUTCS-PROPOSAL: a governance proposal is refused without its own reason",
+    file: TX_SUMMARY,
+    from: "    if (key === 20) {",
+    to: "    if (false /* MUTCS-PROPOSAL */) {",
+    marker: "MUTCS-PROPOSAL",
+  },
+  {
+    name: "MUTCS-HELPER: the confirmation check calls every foreign withdrawal confirmed",
+    file: TX_SUMMARY,
+    from: ".filter((k) => !confirmed.has(k));",
+    to: ".filter((k) => !confirmed.has(k) && false /* MUTCS-HELPER */);",
+    marker: "MUTCS-HELPER",
+  },
+  {
+    name: "MUTCS-SIGN-GATE: the signer signs a foreign withdrawal nobody confirmed",
+    file: SIGN_FOREIGN,
+    from: "if (unconfirmed.length > 0) throw new LocalSignError(",
+    to: "if (false /* MUTCS-SIGN-GATE */) throw new LocalSignError(",
+    marker: "MUTCS-SIGN-GATE",
+  },
+  {
+    name: "MUTCS-UI-LOCK: the Sign button ignores unconfirmed foreign withdrawals",
+    file: APPROVE,
+    from: "disabled={busy || signLocked ||",
+    to: "disabled={busy || false /* MUTCS-UI-LOCK */ ||",
+    marker: "MUTCS-UI-LOCK",
+  },
+  {
+    name: "MUTCS-UI-PASS: the window does not hand the ticked confirmations to the signer",
+    file: APPROVE,
+    from: "signForeignTx(cbor, account, phase.view, partial, phase.confirmed ?? new Set())",
+    to: "signForeignTx(cbor, account, phase.view, partial /* MUTCS-UI-PASS */)",
+    marker: "MUTCS-UI-PASS",
+  },
+  {
+    name: "MUTCS-VIEW-LIST: the screen does not list foreign withdrawals",
+    file: TX_SUMMARY_VIEW,
+    from: "{summary.foreignWithdrawalList.length > 0 && (",
+    to: "{false /* MUTCS-VIEW-LIST */ && (",
+    marker: "MUTCS-VIEW-LIST",
+  },
+  {
+    name: "MUTCS-VIEW-LOCK: the screen drops the 'signing is locked' note",
+    file: TX_SUMMARY_VIEW,
+    from: "{locks && awaiting.length > 0 && (",
+    to: "{false /* MUTCS-VIEW-LOCK */ && (",
+    marker: "MUTCS-VIEW-LOCK",
+  },
+  {
+    name: "MUTCS-VIEW-SUBMIT: a screen that signs nothing still says signing is locked",
+    file: TX_SUMMARY_VIEW,
+    from: "{locks && awaiting.length > 0 && (",
+    to: "{/* MUTCS-VIEW-SUBMIT */ awaiting.length > 0 && (",
+    marker: "MUTCS-VIEW-SUBMIT",
+  },
+  {
+    name: "MUTCS-VIEW-UNKNOWN: an input with no redeemer is called key-locked though the body commits to script data",
+    file: TX_SUMMARY_VIEW,
+    from: "                    : summary.scriptDataCommitted\n",
+    to: "                    : false /* MUTCS-VIEW-UNKNOWN */\n",
+    marker: "MUTCS-VIEW-UNKNOWN",
+  },
+  {
+    name: "MUTCS-APPROVE-LOCKS: the approval window tells the summary it signs, for submitTx too",
+    file: APPROVE,
+    from: "            locks={req.method === \"signTx\"}\n",
+    to: "            locks={true /* MUTCS-APPROVE-LOCKS */}\n",
+    marker: "MUTCS-APPROVE-LOCKS",
+  },
+  {
+    name: "MUTCS-APPROVE-UNTICK: unticking a foreign withdrawal leaves it confirmed",
+    file: APPROVE,
+    from: "        else next.delete(rewardAccountHex);\n",
+    to: "        else void 0 /* MUTCS-APPROVE-UNTICK */;\n",
+    marker: "MUTCS-APPROVE-UNTICK",
+  },
+  {
+    name: "MUTCS-SDH: the summary never reports a script_data_hash in the body",
+    file: TX_SUMMARY,
+    from: "    scriptDataCommitted: b.has(11),\n",
+    to: "    scriptDataCommitted: false /* MUTCS-SDH */,\n",
+    marker: "MUTCS-SDH",
+  },
+  {
+    name: "MUTCS-INPUT-ORDER: inputs sorted by output index as text, so #10 comes before #2",
+    file: TX_SUMMARY,
+    from: "  return Number(ia) - Number(ib);\n",
+    to: "  return ia < ib ? -1 : ia > ib ? 1 : 0; /* MUTCS-INPUT-ORDER */\n",
+    marker: "MUTCS-INPUT-ORDER",
+  },
+  {
+    name: "MUTCS-HASH-ORDER: reward accounts of the same kind sorted by hash in reverse",
+    file: TX_SUMMARY,
+    from: "  return ra < rb ? -1 : ra > rb ? 1 : 0;\n",
+    to: "  return ra > rb ? -1 : ra < rb ? 1 : 0; /* MUTCS-HASH-ORDER */\n",
+    marker: "MUTCS-HASH-ORDER",
+  },
+  {
+    name: "MUTCS-MINT-BOUND: a mint redeemer pointing past the last policy is accepted",
+    file: TX_SUMMARY,
+    from: "if (r.index >= mintPolicies) bad(",
+    to: "if (false /* MUTCS-MINT-BOUND */) bad(",
+    marker: "MUTCS-MINT-BOUND",
+  },
+  {
+    name: "MUTCS-TXID-LEN: an input with a transaction id of any length is read",
+    file: TX_SUMMARY,
+    from: "if (!/^[0-9a-f]{64}$/.test(txIdHex) ||",
+    to: "if (!/^[0-9a-f]+$/.test(txIdHex) /* MUTCS-TXID-LEN */ ||",
+    marker: "MUTCS-TXID-LEN",
+  },
+  {
+    name: "MUTCS-NETWORK: a reward account on an unknown network is named under a guessed prefix",
+    file: TX_SUMMARY,
+    from: "      if ((raw[0] & 0x0f) > 1) {\n",
+    to: "      if (false /* MUTCS-NETWORK */) {\n",
+    marker: "MUTCS-NETWORK",
+  },
+  // Issue #60: Conway set encodings. Each one puts back a way the readers
+  // treated tag 258 before the fix, or opens the helper's refusal.
+  {
+    name: "MUT60-SCREEN-INPUTS: the screen reads inputs only as a plain array, refusing tag 258",
+    file: TX_SUMMARY,
+    from: '  const inputList = setOr(b.get(0), "this transaction has no inputs this wallet can read");\n',
+    to: '  const inputList = (Array.isArray(b.get(0)) ? b.get(0) : bad("this transaction has no inputs this wallet can read")) as unknown[]; /* MUT60-SCREEN-INPUTS */\n',
+    marker: "MUT60-SCREEN-INPUTS",
+  },
+  {
+    name: "MUT60-SIGNER-INPUTS: the signer reads inputs only as a plain array, refusing tag 258",
+    file: SIGN_FOREIGN,
+    from: "  for (const i of setOf(b.get(0))) {\n",
+    to: "  for (const i of (Array.isArray(b.get(0)) ? b.get(0) : setOf(new Map())) as unknown[] /* MUT60-SIGNER-INPUTS */) {\n",
+    marker: "MUT60-SIGNER-INPUTS",
+  },
+  {
+    name: "MUT60-SIGNERS: the signer skips a required_signers field that is not a plain array",
+    file: SIGN_FOREIGN,
+    from: "    for (const s of setOf(signers)) {\n",
+    to: "    for (const s of (Array.isArray(signers) ? signers : []) as unknown[] /* MUT60-SIGNERS */) {\n",
+    marker: "MUT60-SIGNERS",
+  },
+  {
+    name: "MUT60-SIGNER-LEN: a required signer of any length is accepted",
+    file: TX_SUMMARY,
+    from: "      if (!(k instanceof Uint8Array) || k.length !== 28) {\n",
+    to: "      if (!(k instanceof Uint8Array) /* MUT60-SIGNER-LEN */) {\n",
+    marker: "MUT60-SIGNER-LEN",
+  },
+  {
+    name: "MUT60-HELPER-UNWRAP: the helper no longer unwraps tag 258",
+    file: CBOR_SET,
+    from: "v instanceof CborTag && v.tag === CBOR_SET_TAG && Array.isArray(v.value)",
+    to: "v instanceof CborTag && v.tag === -1 /* MUT60-HELPER-UNWRAP */ && Array.isArray(v.value)",
+    marker: "MUT60-HELPER-UNWRAP",
+  },
+  {
+    name: "MUT60-UNKNOWN-TAG: a tag other than 258 around an array is read as a set",
+    file: CBOR_SET,
+    from: "v instanceof CborTag && v.tag === CBOR_SET_TAG && Array.isArray(v.value)",
+    to: "v instanceof CborTag && true /* MUT60-UNKNOWN-TAG */ && Array.isArray(v.value)",
+    marker: "MUT60-UNKNOWN-TAG",
+  },
+  {
+    name: "MUT60-TAG-NONARRAY: tag 258 around anything is spread as a set",
+    file: CBOR_SET,
+    from: "v instanceof CborTag && v.tag === CBOR_SET_TAG && Array.isArray(v.value)) list = v.value;",
+    to: "v instanceof CborTag && v.tag === CBOR_SET_TAG /* MUT60-TAG-NONARRAY */) list = [...(v.value as Iterable<unknown>)];",
+    marker: "MUT60-TAG-NONARRAY",
+  },
+  {
+    name: "MUT60-UNIQUE: the same element twice in a set is accepted",
+    file: CBOR_SET,
+    from: "      if (seen.has(key)) throw",
+    to: "      if (false /* MUT60-UNIQUE */) throw",
+    marker: "MUT60-UNIQUE",
+  },
+  // Issue #59, points 10 and 11: what a site is told about a rejection, and
+  // the keys at the idle deadline while a send is out.
+  {
+    name: "MUT59-SITE-STATUS: every 4xx forwards the provider's reply body to the site",
+    file: SUBMIT_ERROR,
+    from: "  if (err.status !== 400) return PROVIDER_REFUSED_REASON;\n",
+    to: "  if (false /* MUT59-SITE-STATUS */) return PROVIDER_REFUSED_REASON;\n",
+    marker: "MUT59-SITE-STATUS",
+  },
+  {
+    name: "MUT59-SITE-LABEL: a 400 reaches the site with the endpoint label that names the provider",
+    file: SUBMIT_ERROR,
+    from: '  return err.detail ? `HTTP 400: ${err.detail}` : "HTTP 400";\n',
+    to: "  return err.message; /* MUT59-SITE-LABEL */\n",
+    marker: "MUT59-SITE-LABEL",
+  },
+  {
+    name: "MUT59-APPROVE-REASON: the window sends the whole error message to the site again",
+    file: APPROVE,
+    from: "answer({ ok: false, error: sendFailed(rejectionReasonForSite(e)) }, req);",
+    to: "answer({ ok: false, error: sendFailed(e.message || rejectionReasonForSite(e)) }, req); /* MUT59-APPROVE-REASON */",
+    marker: "MUT59-APPROVE-REASON",
+  },
+  {
+    name: "MUT59-HELD-WIPE: the idle deadline during a send leaves the keys in memory",
+    file: APPROVE,
+    from: "      account.wipe();\n",
+    to: "      if (!busyRef.current) account.wipe(); /* MUT59-HELD-WIPE */\n",
+    marker: "MUT59-HELD-WIPE",
+  },
+  {
+    name: "MUT59-HELD-PORT: the idle deadline during a send closes the port the answer needs",
+    file: APPROVE,
+    from: "      if (busyRef.current) {\n",
+    to: "      if (false /* MUT59-HELD-PORT */) {\n",
+    marker: "MUT59-HELD-PORT",
+  },
+  {
+    name: "MUT59-HELD-REF: a re-render during the hold hands the wiped account back to the port listener",
+    file: APPROVE,
+    from: "  accountRef.current = heldLockRef.current ? null : account;\n",
+    to: "  accountRef.current = account; /* MUT59-HELD-REF */\n",
+    marker: "MUT59-HELD-REF",
+  },
+  {
+    name: "MUT59-HELD-CUT: the deadline during a send leaves the account with the port listener until the next render",
+    file: APPROVE,
+    from: "      accountRef.current = null;\n      account.wipe();\n",
+    to: "      if (!busyRef.current) accountRef.current = null; /* MUT59-HELD-CUT */\n      account.wipe();\n",
+    marker: "MUT59-HELD-CUT",
+  },
+  {
+    name: "MUT59-HELD-FINISH: the window never finishes the lock once the held send settles",
+    file: APPROVE,
+    from: "    if (busy || !heldLockRef.current) return;\n",
+    to: "    if (true /* MUT59-HELD-FINISH */) return;\n",
+    marker: "MUT59-HELD-FINISH",
+  },
+  {
+    name: "MUT59-HELD-ONCE: activity during the hold runs the lock again",
+    file: APPROVE,
+    from: "      if (heldLockRef.current) return;\n",
+    to: "      if (false /* MUT59-HELD-ONCE */) return;\n",
+    marker: "MUT59-HELD-ONCE",
   },
 ];
 

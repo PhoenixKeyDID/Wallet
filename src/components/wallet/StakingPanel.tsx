@@ -42,6 +42,8 @@ import {
   lookUpVoteTx,
   voteDelegationConfirmed,
   voteDelegationExpiresAt,
+  voteDelegationLanded,
+  voteDelegationPending,
   voteDelegationWatch,
   withdrawalWatch,
   type SentDelegation,
@@ -134,10 +136,20 @@ export function StakingPanel({
   const [rewardAddressHex, setRewardAddressHex] = useState<string | null>(null);
   const [rewardAddressBech32, setRewardAddressBech32] = useState<string | null>(null);
   const [accountState, setAccountState] = useState<StakeAccountState | null>(null);
+  // When the read behind `accountState` was STARTED (taken before the request).
+  // A read only says something about a vote delegation sent before it began:
+  // one started earlier can show the very DRep a later record targets without
+  // that record having landed (see `voteLandedByRead`).
+  const [accountReadAt, setAccountReadAt] = useState<number | null>(null);
   const [loadingAccount, setLoadingAccount] = useState(true);
   // Distinguish "couldn't read stake status" from a genuine "not delegated / 0
   // rewards" — an indexer hiccup must not masquerade as lost stake.
   const [loadError, setLoadError] = useState(false);
+  // The last timed re-read (while a delegation or vote delegation is in
+  // flight) failed. Kept apart from `loadError`: the screen keeps the last
+  // good read and its waiting line, and says that read may be stale, rather
+  // than swallowing the failure or replacing the screen with an error box.
+  const [rereadFailed, setRereadFailed] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
 
   const netLabel = network === 1 ? t("net_mainnet") : network === 2 ? t("net_preview") : t("net_preprod");
@@ -179,14 +191,19 @@ export function StakingPanel({
       // from the old network is dropped by `cancelled` below.
       setAccountState(null);
       setLoadError(false);
+      setRereadFailed(false);
       try {
         const hex = await port.getRewardAddressHex();
         const bech32Addr = rewardAddressFromHex(hex).getBech32();
         if (cancelled) return;
         setRewardAddressHex(hex);
         setRewardAddressBech32(bech32Addr);
+        const readAt = Date.now();
         const state = await getStakeAccountState(network, bech32Addr);
-        if (!cancelled) setAccountState(state);
+        if (!cancelled) {
+          setAccountState(state);
+          setAccountReadAt(readAt);
+        }
       } catch (err) {
         if (!cancelled) {
           setLoadError(true);
@@ -214,10 +231,13 @@ export function StakingPanel({
     if (!rewardAddressBech32) return;
     const readOn = network;
     try {
+      const readAt = Date.now();
       const state = await getStakeAccountState(readOn, rewardAddressBech32);
       if (networkRef.current !== readOn) return; // switched while reading: not this screen's answer
       setAccountState(state);
+      setAccountReadAt(readAt);
       setLoadError(false);
+      setRereadFailed(false);
     } catch (err) {
       if (networkRef.current !== readOn) return;
       setLoadError(true);
@@ -278,14 +298,19 @@ export function StakingPanel({
     if (!rereading || !rewardAddressBech32) return;
     let cancelled = false;
     const timer = setInterval(() => {
-      setNow(Date.now());
+      const readAt = Date.now();
+      setNow(readAt);
       getStakeAccountState(network, rewardAddressBech32)
         .then((state) => {
           if (cancelled) return;
           setAccountState(state);
+          setAccountReadAt(readAt);
           setLoadError(false);
+          setRereadFailed(false);
         })
-        .catch(() => {});
+        .catch(() => {
+          if (!cancelled) setRereadFailed(true);
+        });
     }, PENDING_POLL_MS);
     return () => {
       cancelled = true;
@@ -306,6 +331,64 @@ export function StakingPanel({
   // a failed read, or the next press sends a second one.
   const voteWatch = voteDelegationWatch(sentVoteDelegation, rewardAddressBech32, network, now);
   const voteInFlight = voteWatch.kind !== "none" && accountState?.delegatedDRep == null;
+  // The account read itself shows the choice that was sent, in place of the
+  // one held before (`voteDelegationLanded`): the record can go now. The
+  // look-up by hash below needs two reads in a row, and this read turning
+  // `voteInFlight` false cancels it first — without this, the record stayed
+  // on disk until its watch ran out, and the waiting line flashed up each
+  // time the tab opened.
+  //
+  // Only a read STARTED after the record was sent counts. The record is shared
+  // with other browser tabs, and this tab stops re-reading once the account
+  // shows a DRep: a read of X from when the tab opened, meeting a record for
+  // X → Y landed and then X sent again in another tab, would otherwise drop
+  // that record everywhere while X is not on chain yet.
+  const staleReadShowsVote =
+    voteWatch.kind !== "none" &&
+    sentVoteDelegation !== null &&
+    accountState !== null &&
+    accountReadAt !== null &&
+    accountReadAt <= sentVoteDelegation.sentAt &&
+    voteDelegationLanded(sentVoteDelegation, accountState.delegatedDRep);
+  const voteLandedByRead =
+    voteWatch.kind !== "none" &&
+    sentVoteDelegation !== null &&
+    accountState !== null &&
+    accountReadAt !== null &&
+    accountReadAt > sentVoteDelegation.sentAt &&
+    voteDelegationLanded(sentVoteDelegation, accountState.delegatedDRep);
+  useEffect(() => {
+    if (voteLandedByRead && sentVoteDelegation !== null) onVoteDelegationLanded(sentVoteDelegation.txHash);
+    // The record and callback are the parent's; the read's answer is what moves.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [voteLandedByRead]);
+  // The held read is older than the record yet shows its choice: read once
+  // more, so a record that has really landed still ends promptly. Only then:
+  // an old read showing anything else is not what keeps the record, and the
+  // tab that just sent would only re-read what it has. Once per record: a read
+  // started in the same millisecond leaves this true and does not loop.
+  useEffect(() => {
+    if (!staleReadShowsVote || !rewardAddressBech32) return;
+    let cancelled = false;
+    const readOn = network;
+    const readAt = Date.now();
+    getStakeAccountState(readOn, rewardAddressBech32)
+      .then((state) => {
+        if (cancelled || networkRef.current !== readOn) return;
+        setAccountState(state);
+        setAccountReadAt(readAt);
+        setLoadError(false);
+        setRereadFailed(false);
+      })
+      .catch(() => {
+        if (!cancelled) setRereadFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // The record is the parent's; its hash and the read's age are what move.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [staleReadShowsVote, sentVoteDelegation?.txHash]);
   // Read through a ref so a new parent callback does not restart the timer.
   const voteTxRef = useRef({ sent: sentVoteDelegation, onLanded: onVoteDelegationLanded });
   voteTxRef.current = { sent: sentVoteDelegation, onLanded: onVoteDelegationLanded };
@@ -327,13 +410,17 @@ export function StakingPanel({
     if (!voteInFlight || !rewardAddressBech32) return;
     let cancelled = false;
     let releaseTx: () => void = () => {};
-    const confirmOnChain = (sent: SentVoteDelegation) =>
-      getStakeAccountState(sent.network, sent.account).then((state) => {
+    const confirmOnChain = (sent: SentVoteDelegation) => {
+      const readAt = Date.now();
+      return getStakeAccountState(sent.network, sent.account).then((state) => {
         if (cancelled || networkRef.current !== sent.network) return false;
         setAccountState(state);
+        setAccountReadAt(readAt);
         setLoadError(false);
+        setRereadFailed(false);
         return voteDelegationConfirmed(sent, state.delegatedDRep);
       });
+    };
     const lookUpNow = () => {
       releaseTx();
       releaseTx = lookUpVoteTx(
@@ -347,14 +434,19 @@ export function StakingPanel({
     // Once now, not one interval from now (see the Governance tab's twin).
     lookUpNow();
     const timer = setInterval(() => {
-      setNow(Date.now());
+      const readAt = Date.now();
+      setNow(readAt);
       getStakeAccountState(network, rewardAddressBech32)
         .then((state) => {
           if (cancelled) return;
           setAccountState(state);
+          setAccountReadAt(readAt);
           setLoadError(false);
+          setRereadFailed(false);
         })
-        .catch(() => {});
+        .catch(() => {
+          if (!cancelled) setRereadFailed(true);
+        });
       lookUpNow();
     }, PENDING_POLL_MS);
     return () => {
@@ -546,6 +638,16 @@ export function StakingPanel({
     if (!abstainReview) return;
     // A third way to sign on this screen, so it carries the same refusal.
     if (uncertainHash !== null) return toastError(t("uncertain_blocked"));
+    // A vote delegation went out after this review opened — from the
+    // Governance tab, or from this wallet in another browser tab (the record
+    // arrives through the `storage` event). Signing Abstain now would replace
+    // that choice and pay a second fee. Asked by the clock, not by the
+    // account read: the other choice is in flight whatever the read says.
+    if (voteDelegationPending(sentVoteDelegation, rewardAddressBech32, network, Date.now())) {
+      setAbstainReview(null);
+      setChecked(false);
+      return toastError(t("vote_delegation_inflight_blocked"));
+    }
     setBusy(true);
     try {
       // Lower-case, the form the indexer answers in: a CIP-30 wallet may
@@ -870,8 +972,14 @@ export function StakingPanel({
           sentVoteDelegation !== null &&
           lookedUp === sentVoteDelegation.txHash && (
           <p className="text-xs text-amber-brand">
-            {t("vote_delegation_unseen", { time: clockTime(voteDelegationExpiresAt(sentVoteDelegation)) })}
+            {t("vote_delegation_unseen", { time: clockTime(voteDelegationExpiresAt(sentVoteDelegation), now) })}
           </p>
+        )}
+        {/* The timed re-read behind the waiting lines failed: the lines stay
+            (they are still true), and the reader is told the numbers above
+            may be from an older read. */}
+        {rereadFailed && (waiting || voteInFlight) && (
+          <p className="text-xs text-amber-brand">{t("stake_reread_failed")}</p>
         )}
         {/* Ran out without the chain showing it, and the chain still shows no
             vote delegation: say so once, the Abstain offer below is real again. */}
@@ -882,7 +990,7 @@ export function StakingPanel({
           accountState !== null &&
           accountState.delegatedDRep === null && (
             <p className="text-xs text-amber-brand">
-              {t("vote_delegation_expired", { time: clockTime(expiredVoteDelegation.sentAt) })}
+              {t("vote_delegation_expired", { time: clockTime(expiredVoteDelegation.sentAt, now) })}
             </p>
           )}
         {/* The withdraw door is always on screen once the account is read.

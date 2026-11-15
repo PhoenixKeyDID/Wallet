@@ -414,7 +414,7 @@ describe("FIX-R3: the in-flight vote delegation survives a lock and a reload", (
     render(wrap(<WalletTabs port={makePort()} changeAddress={CHANGE_HEX} network={NETWORK} />));
     fireEvent.click(stakingTab());
     expect(
-      await screen.findByText(en.vote_delegation_expired.replace("{{time}}", clockTime(sentAt))),
+      await screen.findByText(en.vote_delegation_expired.replace("{{time}}", clockTime(sentAt, Date.now()))),
     ).toBeTruthy();
     expect(abstainButton()).toBeTruthy();
     expect(window.localStorage.getItem(storageKey())).toBeNull();
@@ -652,5 +652,283 @@ describe("A released withdrawal record is let go, not just looked past", () => {
       expect((screen.queryByRole("button", { name: en.withdraw_rewards }) as HTMLButtonElement | null)?.disabled).toBe(false),
     );
     expect(screen.queryByText(en.withdraw_sent_waiting)).toBeNull();
+  });
+});
+
+/**
+ * Issue #58. The account read answers in one request; the look-up by hash
+ * takes two in a row. A read that already shows the sent choice turned the
+ * waiting off and cancelled the look-up before it finished, so the record
+ * stayed on disk for its whole two-hour watch and the waiting line flashed up
+ * each time a tab opened. And an Abstain review left open while another
+ * browser tab sent a choice could still be signed over it.
+ */
+describe("#58: the in-flight vote delegation, ended by a read, guarded against another tab", () => {
+  const storageKey = () => voteDelegationKey(NETWORK, accountKeyFrom(CHANGE_HEX));
+  const fire = (key: string | null, newValue: string | null) =>
+    act(() => {
+      window.dispatchEvent(new StorageEvent("storage", { key, newValue }));
+    });
+  const OLD_DREP = "drep1olddrepidentifier000wxyz";
+  const stored = (over: Record<string, unknown>) =>
+    JSON.stringify({
+      account: ACCOUNT,
+      network: NETWORK,
+      sentAt: Date.now(),
+      txHash: "cd".repeat(32),
+      drepBefore: null,
+      target: "drep_always_abstain",
+      ...over,
+    });
+
+  it("Staking: an account read that shows the sent choice drops the stored record, with no hash hit", async () => {
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, "drep_always_abstain"));
+    // Sent a second ago: only a read started after the send speaks for it.
+    window.localStorage.setItem(storageKey(), stored({ sentAt: Date.now() - 1_000 }));
+    render(wrap(<WalletTabs port={makePort()} changeAddress={CHANGE_HEX} network={NETWORK} />));
+    fireEvent.click(stakingTab());
+    // `fetchTxSeen` answers "not in a block" (beforeEach): only the read can end it.
+    await waitFor(() => expect(window.localStorage.getItem(storageKey())).toBeNull());
+  });
+
+  it("Staking: a read still showing the DRep held before keeps the record", async () => {
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, OLD_DREP));
+    window.localStorage.setItem(storageKey(), stored({ drepBefore: OLD_DREP, target: DREP }));
+    render(wrap(<WalletTabs port={makePort()} changeAddress={CHANGE_HEX} network={NETWORK} />));
+    fireEvent.click(stakingTab());
+    // The read has landed: rewards and a DRep on it arm the withdraw button.
+    await screen.findByRole("button", { name: en.withdraw_rewards });
+    await act(async () => {});
+    expect(window.localStorage.getItem(storageKey())).not.toBeNull();
+  });
+
+  it("Governance: a DRep read that shows the sent choice drops the stored record, with no hash hit", async () => {
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, OLD_DREP));
+    m.getVoteDelegationState.mockResolvedValue({ found: true, status: "registered", delegatedDRep: DREP });
+    window.localStorage.setItem(
+      storageKey(),
+      stored({ sentAt: Date.now() - 1_000, drepBefore: OLD_DREP, target: DREP }),
+    );
+    render(wrap(<WalletTabs port={makePort()} changeAddress={CHANGE_HEX} network={NETWORK} />));
+    fireEvent.click(governanceTab());
+    await waitFor(() => expect(window.localStorage.getItem(storageKey())).toBeNull());
+  });
+
+  it("an open Abstain review is refused, not signed, once a choice sent in another tab arrives", async () => {
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, null));
+    const port = makePort();
+    render(wrap(<WalletTabs port={port} changeAddress={CHANGE_HEX} network={NETWORK} />));
+    fireEvent.click(stakingTab());
+    fireEvent.click(await screen.findByRole("button", { name: en.withdraw_abstain_button }));
+    await screen.findByText(en.withdraw_abstain_review_title);
+
+    // Tab B delegates to a real DRep while this review is open.
+    const record = stored({ target: DREP });
+    window.localStorage.setItem(storageKey(), record);
+    await fire(storageKey(), record);
+
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: en.withdraw_abstain_confirm }));
+    await waitFor(() => expect(m.toastError).toHaveBeenCalledWith(en.vote_delegation_inflight_blocked));
+    expect(port.signAndSubmit).not.toHaveBeenCalled();
+    expect(screen.queryByText(en.withdraw_abstain_review_title)).toBeNull();
+  });
+});
+
+/**
+ * A read only speaks for a record sent before the read began. The record is
+ * shared with other browser tabs, and a tab whose account already shows a DRep
+ * stops re-reading — so the read it holds can be from when it opened. Here:
+ * this tab reads X; another tab moves X → Y (landed), then sends X again. The
+ * record {drepBefore: Y, target: X} arrives here, and the old read of X must
+ * not end it while X is not on chain.
+ */
+describe("#62: an account read older than the record does not end it", () => {
+  const storageKey = () => voteDelegationKey(NETWORK, accountKeyFrom(CHANGE_HEX));
+  const fire = (key: string | null, newValue: string | null) =>
+    act(() => {
+      window.dispatchEvent(new StorageEvent("storage", { key, newValue }));
+    });
+  const OLD_DREP = "drep1olddrepidentifier000wxyz";
+  const drepState = (delegatedDRep: string | null) => ({ found: true, status: "registered", delegatedDRep });
+
+  /**
+   * Writes a record "sent" one minute after `t0` by another tab, then moves
+   * the clock one more second, so a read started from here on is strictly
+   * after the send and the read held from `t0` strictly before it.
+   */
+  function arriveFromOtherTab(t0: number, over: Record<string, unknown>) {
+    vi.setSystemTime(t0 + 60_000);
+    const record = JSON.stringify({
+      account: ACCOUNT,
+      network: NETWORK,
+      sentAt: Date.now(),
+      txHash: "cd".repeat(32),
+      ...over,
+    });
+    vi.setSystemTime(t0 + 61_000);
+    window.localStorage.setItem(storageKey(), record);
+    return fire(storageKey(), record);
+  }
+
+  it("Staking: the read of X from when the tab opened keeps a record for X sent after it; the warning stays", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const t0 = Date.now();
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, DREP));
+    m.getVoteDelegationState.mockResolvedValue(drepState(OLD_DREP));
+    render(wrap(<WalletTabs port={makePort()} changeAddress={CHANGE_HEX} network={NETWORK} />));
+    fireEvent.click(stakingTab());
+    await screen.findByRole("button", { name: en.withdraw_rewards });
+    const readsAtOpen = m.getStakeAccountState.mock.calls.length;
+
+    // The other tab: X → Y has landed, and X is sent again (not on chain yet).
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, OLD_DREP));
+    await arriveFromOtherTab(t0, { drepBefore: OLD_DREP, target: DREP });
+    expect(window.localStorage.getItem(storageKey())).not.toBeNull();
+
+    // One fresh read, which shows Y: still not landed.
+    await waitFor(() => expect(m.getStakeAccountState.mock.calls.length).toBe(readsAtOpen + 1));
+    await act(async () => {});
+    expect(window.localStorage.getItem(storageKey())).not.toBeNull();
+
+    // The Governance tab still says a choice is in flight, and warns before a second one.
+    fireEvent.click(governanceTab());
+    expect(await screen.findByText(en.gov_delegate_pending)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: en.gov_search }));
+    const row = (await screen.findByText(DREP)).parentElement!;
+    fireEvent.click(within(row).getByRole("button", { name: en.gov_delegate }));
+    expect(await screen.findByText(startsLike("gov_delegate_inflight_warn"))).toBeTruthy();
+  });
+
+  it("Staking: an older-format record (no target) is not ended by the old read either", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const t0 = Date.now();
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, DREP));
+    render(wrap(<WalletTabs port={makePort()} changeAddress={CHANGE_HEX} network={NETWORK} />));
+    fireEvent.click(stakingTab());
+    await screen.findByRole("button", { name: en.withdraw_rewards });
+    const readsAtOpen = m.getStakeAccountState.mock.calls.length;
+
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, OLD_DREP));
+    await arriveFromOtherTab(t0, { drepBefore: OLD_DREP });
+    expect(window.localStorage.getItem(storageKey())).not.toBeNull();
+    await waitFor(() => expect(m.getStakeAccountState.mock.calls.length).toBe(readsAtOpen + 1));
+    await act(async () => {});
+    expect(window.localStorage.getItem(storageKey())).not.toBeNull();
+  });
+
+  it("Governance: the DRep read of X from when the tab opened keeps a record for X sent after it", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const t0 = Date.now();
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, DREP));
+    m.getVoteDelegationState.mockResolvedValue(drepState(DREP));
+    render(wrap(<WalletTabs port={makePort()} changeAddress={CHANGE_HEX} network={NETWORK} />));
+    fireEvent.click(governanceTab());
+    await waitFor(() => expect(m.getVoteDelegationState).toHaveBeenCalled());
+    await act(async () => {});
+    const readsAtOpen = m.getVoteDelegationState.mock.calls.length;
+
+    m.getVoteDelegationState.mockResolvedValue(drepState(OLD_DREP));
+    await arriveFromOtherTab(t0, { drepBefore: OLD_DREP, target: DREP });
+    expect(window.localStorage.getItem(storageKey())).not.toBeNull();
+    expect(screen.getByText(en.gov_delegate_pending)).toBeTruthy();
+
+    await waitFor(() => expect(m.getVoteDelegationState.mock.calls.length).toBeGreaterThan(readsAtOpen));
+    await act(async () => {});
+    expect(window.localStorage.getItem(storageKey())).not.toBeNull();
+    expect(screen.getByText(en.gov_delegate_pending)).toBeTruthy();
+  });
+
+  it("Staking: a record newer than the read that has really landed still ends, after one fresh read", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const t0 = Date.now();
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, DREP));
+    render(wrap(<WalletTabs port={makePort()} changeAddress={CHANGE_HEX} network={NETWORK} />));
+    fireEvent.click(stakingTab());
+    await screen.findByRole("button", { name: en.withdraw_rewards });
+    const readsAtOpen = m.getStakeAccountState.mock.calls.length;
+
+    // The chain shows X: the record for X has landed. Only a fresh read may say so.
+    await arriveFromOtherTab(t0, { drepBefore: OLD_DREP, target: DREP });
+    await waitFor(() => expect(window.localStorage.getItem(storageKey())).toBeNull());
+    expect(m.getStakeAccountState.mock.calls.length).toBe(readsAtOpen + 1);
+    // `fetchTxSeen` answers "not in a block" (beforeEach): the read ended it.
+    expect(m.fetchTxSeen).not.toHaveBeenCalled();
+  });
+
+  it("Governance: a record newer than the read that has really landed still ends, after one fresh read", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const t0 = Date.now();
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, DREP));
+    m.getVoteDelegationState.mockResolvedValue(drepState(DREP));
+    render(wrap(<WalletTabs port={makePort()} changeAddress={CHANGE_HEX} network={NETWORK} />));
+    fireEvent.click(governanceTab());
+    await waitFor(() => expect(m.getVoteDelegationState).toHaveBeenCalled());
+    await act(async () => {});
+    const readsAtOpen = m.getVoteDelegationState.mock.calls.length;
+
+    await arriveFromOtherTab(t0, { drepBefore: OLD_DREP, target: DREP });
+    await waitFor(() => expect(window.localStorage.getItem(storageKey())).toBeNull());
+    expect(m.getVoteDelegationState.mock.calls.length).toBeGreaterThan(readsAtOpen);
+    await waitFor(() => expect(screen.queryByText(en.gov_delegate_pending)).toBeNull());
+  });
+
+  it("Governance: a choice that arrived during the review but can no longer land does not block signing", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const t0 = Date.now();
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, null));
+    const port = makePort();
+    render(wrap(<WalletTabs port={port} changeAddress={CHANGE_HEX} network={NETWORK} />));
+    fireEvent.click(governanceTab());
+    await waitFor(() => expect(m.getVoteDelegationState).toHaveBeenCalled());
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: en.gov_search }));
+    const row = (await screen.findByText(DREP)).parentElement!;
+    fireEvent.click(within(row).getByRole("button", { name: en.gov_delegate }));
+    fireEvent.click(await screen.findByLabelText(en.gov_verify_checkbox));
+
+    // An Abstain from another tab arrives while the review is open, and then
+    // its validity window closes (a sleeping laptop: the drop timer has not
+    // fired yet, so the record is still held).
+    await arriveFromOtherTab(t0, { drepBefore: null, target: "drep_always_abstain" });
+    vi.setSystemTime(t0 + 60_000 + VOTE_DELEGATION_WATCH_LIMIT_MS + 1_000);
+
+    const confirm = screen.getByRole("button", { name: en.gov_confirm }) as HTMLButtonElement;
+    await waitFor(() => expect(confirm.disabled).toBe(false));
+    fireEvent.click(confirm);
+    await waitFor(() => expect(port.signAndSubmit).toHaveBeenCalledTimes(1));
+    expect(m.toastError).not.toHaveBeenCalledWith(en.gov_delegate_inflight_arrived);
+  });
+
+  it("Staking: the 're-read failed' line goes with the waiting it was about", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, null));
+    render(wrap(<WalletTabs port={makePort()} changeAddress={CHANGE_HEX} network={NETWORK} />));
+    fireEvent.click(stakingTab());
+    expect(await screen.findByRole("button", { name: en.withdraw_abstain_button })).toBeTruthy();
+
+    const record = JSON.stringify({
+      account: ACCOUNT,
+      network: NETWORK,
+      sentAt: Date.now(),
+      txHash: "ab".repeat(32),
+      drepBefore: null,
+      target: "drep_always_abstain",
+    });
+    window.localStorage.setItem(storageKey(), record);
+    await fire(storageKey(), record);
+    expect(await screen.findByText(en.vote_delegation_pending)).toBeTruthy();
+
+    m.getStakeAccountState.mockRejectedValue(new Error("koios down"));
+    await act(async () => {
+      vi.advanceTimersByTime(20_000);
+    });
+    expect(await screen.findByText(en.stake_reread_failed)).toBeTruthy();
+
+    // Removed there (landed): nothing is waiting here, so nothing to be stale about.
+    window.localStorage.removeItem(storageKey());
+    await fire(storageKey(), null);
+    expect(await screen.findByRole("button", { name: en.withdraw_abstain_button })).toBeTruthy();
+    expect(screen.queryByText(en.stake_reread_failed)).toBeNull();
   });
 });
