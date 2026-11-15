@@ -34,6 +34,7 @@ import { Decoder } from "@stricahq/cbors";
 import { bech32 } from "bech32";
 import { utils as tyUtils } from "@stricahq/typhonjs";
 import { assertNoDuplicateMapKeys, DuplicateMapKeyError } from "./cborDupKeys";
+import { CborSetError, readCborSet } from "./cborSet";
 import { walletOwnsOutput } from "./ownUtxo";
 import { COLLATERAL_CAP_LOVELACE } from "./utxoSelect";
 
@@ -240,6 +241,26 @@ function bad(why: string, key?: string): never {
   throw new UndescribableTxError(why, key);
 }
 
+/** A set-typed body field as its elements (`readCborSet`), or a refusal saying `why`. */
+function setOr(v: unknown, why: string): unknown[] {
+  try {
+    return readCborSet(v);
+  } catch (e) {
+    if (e instanceof CborSetError) return bad(why);
+    throw e;
+  }
+}
+
+/** As `setOr`, refusing the same element twice under its own reason. */
+function uniqueSetOr(v: unknown, why: string, twice: string): unknown[] {
+  try {
+    return readCborSet(v, { unique: true });
+  } catch (e) {
+    if (e instanceof CborSetError) return bad(e.fault === "duplicate" ? twice : why);
+    throw e;
+  }
+}
+
 const ADA: NetChange = { unit: "", policyId: "", assetNameHex: "", amount: BigInt(0) };
 
 function asBigInt(v: unknown, what: string): bigint {
@@ -432,8 +453,9 @@ function readCollateral(
     if (b.has(16) || b.has(17)) bad("this transaction names a collateral return or total but no collateral");
     return null;
   }
-  const list = raw instanceof Set ? [...raw] : raw;
-  if (!Array.isArray(list) || list.length === 0) bad("this transaction's collateral has an unexpected shape");
+  // A set (13 is `nonempty_set`), plain or tag 258; an empty one is refused.
+  const list = setOr(raw, "this transaction's collateral has an unexpected shape");
+  if (list.length === 0) bad("this transaction's collateral has an unexpected shape");
 
   let inLovelace = BigInt(0);
   const inAssets = new Map<string, bigint>();
@@ -728,19 +750,47 @@ export function summariseTx(
   // show the person whom it goes to. Counting it under a general warning was
   // a summary that read "leaves the wallet: 0.2 ADA" for a transaction handing
   // the whole voting power to someone else. So none is signed, of any kind.
+  // A certificate list that is not a set at all (another tag, a map) is
+  // refused as a certificate too: it is something in field 4 the screen
+  // cannot read, and an empty set — plain or tag 258 — is the only "none".
   const rawCerts = b.get(4);
   if (rawCerts !== undefined) {
-    const n = rawCerts instanceof Set ? rawCerts.size : Array.isArray(rawCerts) ? rawCerts.length : -1;
+    let n = -1;
+    try {
+      n = readCborSet(rawCerts).length;
+    } catch (e) {
+      if (!(e instanceof CborSetError)) throw e;
+    }
     if (n !== 0) bad("this transaction carries a certificate (staking, voting or registration) — this wallet does not sign those for a website", "sign_foreign_certificate");
   }
 
   const own = new Set<string>();
   for (const hex of ownAddressesHex) own.add(hex.toLowerCase());
 
+  // ── required signers (14) and reference inputs (18) ──────────────────────
+  // Neither is described on the screen, but each must still be a set the
+  // wallet can read: a field in a shape this reader does not recognise is a
+  // field it would be passing over unread. The signer matches field 14
+  // against the keys it holds (`requiredKeysFor`), through the same helper.
+  if (b.has(14)) {
+    const signers = uniqueSetOr(b.get(14), "this transaction names its required signers in a shape this wallet cannot read",
+      "this transaction names the same required signer twice");
+    // `addr_keyhash` is 28 bytes; anything else names no key the signer could match.
+    for (const k of signers) {
+      if (!(k instanceof Uint8Array) || k.length !== 28) {
+        bad("this transaction names its required signers in a shape this wallet cannot read");
+      }
+    }
+  }
+  if (b.has(18)) {
+    uniqueSetOr(b.get(18), "this transaction names its reference inputs in a shape this wallet cannot read",
+      "this transaction names the same reference input twice");
+  }
+
   // ── inputs ────────────────────────────────────────────────────────────────
-  const rawInputs = b.get(0);
-  const inputList = rawInputs instanceof Set ? [...rawInputs] : rawInputs;
-  if (!Array.isArray(inputList)) bad("this transaction has no inputs this wallet can read");
+  // A set, plain or tag 258 (the Conway default, `cborSet.ts`). The same input
+  // twice is refused below, by reference, whichever encoding carried it.
+  const inputList = setOr(b.get(0), "this transaction has no inputs this wallet can read");
   let spentLovelace = BigInt(0);
   const spentAssets = new Map<string, bigint>();
   let mineCount = 0;
