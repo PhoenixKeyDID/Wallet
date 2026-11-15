@@ -809,6 +809,7 @@ export function Approve() {
             summary={summary}
             confirmed={confirmed}
             onConfirm={req.method === "signTx" ? setConfirmed : undefined}
+            locks={req.method === "signTx"}
           />
         )}
         {dataSign && <DataSignView plan={dataSign} />}

@@ -99,9 +99,12 @@ export type RedeemerUse = { purpose: RedeemerPurpose; index: number };
 
 /**
  * One input this wallet does not hold, named in full so the screen can print
- * it instead of a count. `redeemer` is true when a Plutus script runs to
- * unlock it (a `spend` redeemer points at it). False does not mean "no
- * script": a native script leaves no redeemer.
+ * it instead of a count. `redeemer` is true when the request's witness set
+ * carries a `spend` redeemer for it. False does not mean "no script": a native
+ * script leaves no redeemer, and the witness set is the page's to send — it
+ * sits outside what the signature covers. When the body commits to script
+ * data (`TxSummary.scriptDataCommitted`) the page can attach the redeemers
+ * after signing, so false then only means "not in this request".
  */
 export type ForeignInput = { txId: string; index: number; redeemer: boolean };
 
@@ -180,6 +183,16 @@ export type TxSummary = {
   foreignWithdrawalList: ForeignWithdrawal[];
   /** Every redeemer the transaction carries, as purpose + pointer index. */
   redeemers: RedeemerUse[];
+  /**
+   * The body has a `script_data_hash` (field 11). That hash commits to the
+   * redeemers the ledger will run, but the redeemers themselves travel in the
+   * witness set, which the signature does not cover and the page may send
+   * incomplete. With this set, an item without a redeemer in `redeemers` may
+   * still run a Plutus script once the page attaches the real ones. Without
+   * it, no Plutus script runs in this transaction at all: the ledger refuses
+   * redeemers that no `script_data_hash` commits to.
+   */
+  scriptDataCommitted: boolean;
   /**
    * The stake key hashes (hex) of the withdrawals counted as this wallet's —
    * the ones whose rewards are in `withdrawalLovelace`. The signer adds a
@@ -878,7 +891,9 @@ export function summariseTx(
   // the body, so a page could swap them after signing; that does not change
   // what the body asks for (the input or the withdrawal is there either way),
   // which is why the items themselves, not the redeemers, are what blocks the
-  // signature. The redeemers say which of those items run a Plutus script.
+  // signature. The redeemers say which of those items run a Plutus script as
+  // far as this request shows; with field 11 in the body the page can still
+  // add some after signing (`scriptDataCommitted`).
   const redeemers = readRedeemers(decoded.length >= 2 ? decoded[1] : undefined);
   const sortedInputs = [...seenInputs].sort(compareInputRefs);
   const sortedRewardAccounts = [...rewardAccountsHex].sort(compareRewardAccounts);
@@ -941,6 +956,7 @@ export function summariseTx(
     foreignWithdrawals,
     foreignWithdrawalList,
     redeemers,
+    scriptDataCommitted: b.has(11),
     ownRewardKeyHashes,
     burns: readBurns(b.get(9)),
     collateral: readCollateral(b, own, ownInputs, networkId),

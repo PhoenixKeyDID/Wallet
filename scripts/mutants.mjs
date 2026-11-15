@@ -2427,9 +2427,44 @@ const MUTANTS = [
   {
     name: "MUTCS-VIEW-LOCK: the screen drops the 'signing is locked' note",
     file: TX_SUMMARY_VIEW,
-    from: "{awaiting.length > 0 && (",
+    from: "{locks && awaiting.length > 0 && (",
     to: "{false /* MUTCS-VIEW-LOCK */ && (",
     marker: "MUTCS-VIEW-LOCK",
+  },
+  {
+    name: "MUTCS-VIEW-SUBMIT: a screen that signs nothing still says signing is locked",
+    file: TX_SUMMARY_VIEW,
+    from: "{locks && awaiting.length > 0 && (",
+    to: "{/* MUTCS-VIEW-SUBMIT */ awaiting.length > 0 && (",
+    marker: "MUTCS-VIEW-SUBMIT",
+  },
+  {
+    name: "MUTCS-VIEW-UNKNOWN: an input with no redeemer is called key-locked though the body commits to script data",
+    file: TX_SUMMARY_VIEW,
+    from: "                    : summary.scriptDataCommitted\n",
+    to: "                    : false /* MUTCS-VIEW-UNKNOWN */\n",
+    marker: "MUTCS-VIEW-UNKNOWN",
+  },
+  {
+    name: "MUTCS-APPROVE-LOCKS: the approval window tells the summary it signs, for submitTx too",
+    file: APPROVE,
+    from: "            locks={req.method === \"signTx\"}\n",
+    to: "            locks={true /* MUTCS-APPROVE-LOCKS */}\n",
+    marker: "MUTCS-APPROVE-LOCKS",
+  },
+  {
+    name: "MUTCS-SDH: the summary never reports a script_data_hash in the body",
+    file: TX_SUMMARY,
+    from: "    scriptDataCommitted: b.has(11),\n",
+    to: "    scriptDataCommitted: false /* MUTCS-SDH */,\n",
+    marker: "MUTCS-SDH",
+  },
+  {
+    name: "MUTCS-INPUT-ORDER: inputs sorted by output index as text, so #10 comes before #2",
+    file: TX_SUMMARY,
+    from: "  return Number(ia) - Number(ib);\n",
+    to: "  return ia < ib ? -1 : ia > ib ? 1 : 0; /* MUTCS-INPUT-ORDER */\n",
+    marker: "MUTCS-INPUT-ORDER",
   },
 ];
 

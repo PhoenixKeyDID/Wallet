@@ -59,6 +59,7 @@ function shown(overrides: Partial<TxSummary> = {}) {
     foreignInputList: [],
     foreignWithdrawalList: [],
     redeemers: [],
+    scriptDataCommitted: false,
     ...overrides,
   };
   const { container } = render(
@@ -99,6 +100,7 @@ function withBoxes(summaryOverrides: Partial<TxSummary>, wired = true) {
     foreignInputList: [],
     foreignWithdrawalList: [],
     redeemers: [],
+    scriptDataCommitted: false,
     ...summaryOverrides,
   } satisfies TxSummary;
   const confirmed = new Set<string>();
@@ -275,6 +277,69 @@ describe("TxSummaryView — foreign actions are named one by one and lock signin
     const { getByTestId } = withBoxes({ foreignWithdrawals: 1, withdrawals: 1, foreignWithdrawalList: [foreignWd(SCRIPT_REWARD, true)] }, false);
     expect((getByTestId(`confirm-${SCRIPT_REWARD}`) as HTMLInputElement).disabled).toBe(true);
     expect(getByTestId("sign-locked")).toBeTruthy();
+  });
+
+  it("a body that commits to script data: a missing redeemer is not called 'locked by a key'", () => {
+    const text = shown({
+      scriptDataCommitted: true,
+      foreignInputs: 1,
+      totalInputs: 2,
+      foreignInputList: [{ txId: "bb".repeat(32), index: 3, redeemer: false }],
+      withdrawals: 2,
+      foreignWithdrawals: 2,
+      foreignWithdrawalList: [foreignWd(SCRIPT_REWARD, false), foreignWd(KEY_REWARD, false)],
+    });
+    expect(text).toContain(en.cip30_input_redeemer_unknown);
+    expect(text).not.toContain(en.cip30_input_no_redeemer);
+    // Only the script account can run a script; a key account says nothing.
+    expect(text.split(en.cip30_withdrawal_redeemer_unknown).length - 1).toBe(1);
+  });
+
+  it("no script data in the body: 'no redeemer' stands, and no 'may attach' warning", () => {
+    const text = shown({
+      foreignInputs: 1,
+      totalInputs: 2,
+      foreignInputList: [{ txId: "bb".repeat(32), index: 3, redeemer: false }],
+      withdrawals: 1,
+      foreignWithdrawals: 1,
+      foreignWithdrawalList: [foreignWd(SCRIPT_REWARD, false)],
+    });
+    expect(text).toContain(en.cip30_input_no_redeemer);
+    expect(text).not.toContain(en.cip30_input_redeemer_unknown);
+    expect(text).not.toContain(en.cip30_withdrawal_redeemer_unknown);
+  });
+
+  it("a screen that signs nothing (submitTx) lists the withdrawals without boxes or a lock note", () => {
+    const summary: TxSummary = {
+      net: [],
+      toOthers: [],
+      toSelfWithDatum: [],
+      fee: BigInt(170_000),
+      ownInputs: 1,
+      totalInputs: 1,
+      foreignInputs: 0,
+      burns: [],
+      collateral: null,
+      withdrawals: 1,
+      foreignWithdrawals: 1,
+      ownRewardKeyHashes: [],
+      withdrawalLovelace: BigInt(0),
+      foreignInputList: [],
+      foreignWithdrawalList: [foreignWd(SCRIPT_REWARD, true)],
+      redeemers: [],
+      scriptDataCommitted: false,
+    };
+    const { container, queryByTestId } = render(
+      <I18nextProvider i18n={i18n}>
+        <TxSummaryView summary={summary} locks={false} />
+      </I18nextProvider>,
+    );
+    const text = container.textContent ?? "";
+    expect(text).toContain("stake_test1-f05c5c");
+    expect(text).toContain(en.cip30_withdrawal_redeemer);
+    expect(queryByTestId(`confirm-${SCRIPT_REWARD}`)).toBeNull();
+    expect(queryByTestId("sign-locked")).toBeNull();
+    expect(text).not.toContain(en.cip30_withdrawal_confirm);
   });
 
   it("no foreign withdrawal: no list, no lock note", () => {

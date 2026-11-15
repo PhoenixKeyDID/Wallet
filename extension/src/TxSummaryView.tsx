@@ -20,8 +20,16 @@ export function TxSummaryView({
   summary,
   confirmed = new Set<string>(),
   onConfirm,
+  locks = true,
 }: {
   summary: TxSummary;
+  /**
+   * Whether this screen is about to put a signature on the transaction. False
+   * for `submitTx`: nothing is signed there, so the per-withdrawal boxes and
+   * the "signing stays locked" note would describe a lock that does not exist.
+   * The list itself is still shown.
+   */
+  locks?: boolean;
   /** Foreign withdrawals the person has confirmed, by reward account (hex). */
   confirmed?: ReadonlySet<string>;
   /**
@@ -80,7 +88,15 @@ export function TxSummaryView({
               <li key={`${f.txId}#${f.index}`}>
                 <span className="mono approve-addr">{`${f.txId}#${f.index}`}</span>
                 <span className="approve-note">
-                  {f.redeemer ? t("cip30_input_redeemer") : t("cip30_input_no_redeemer")}
+                  {/* The redeemers come from the page, outside what is
+                      signed. "No redeemer" is a fact only when the body
+                      commits to no script data; otherwise the page can add
+                      one after the signature. */}
+                  {f.redeemer
+                    ? t("cip30_input_redeemer")
+                    : summary.scriptDataCommitted
+                      ? t("cip30_input_redeemer_unknown")
+                      : t("cip30_input_no_redeemer")}
                 </span>
               </li>
             ))}
@@ -166,6 +182,10 @@ export function TxSummaryView({
                   {w.credential === "script" ? t("cip30_withdrawal_script") : t("cip30_withdrawal_key")}
                 </span>
                 {w.redeemer && <span className="approve-error">{t("cip30_withdrawal_redeemer")}</span>}
+                {!w.redeemer && w.credential === "script" && summary.scriptDataCommitted && (
+                  <span className="approve-error">{t("cip30_withdrawal_redeemer_unknown")}</span>
+                )}
+                {locks && (
                 <label>
                   <input
                     type="checkbox"
@@ -176,10 +196,11 @@ export function TxSummaryView({
                   />
                   {t("cip30_withdrawal_confirm")}
                 </label>
+                )}
               </li>
             ))}
           </ul>
-          {awaiting.length > 0 && (
+          {locks && awaiting.length > 0 && (
             <p className="approve-error" role="alert" data-testid="sign-locked">
               {t("cip30_sign_locked")}
             </p>

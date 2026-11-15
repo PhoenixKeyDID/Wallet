@@ -119,6 +119,51 @@ describe("the summary names every foreign action", () => {
     expect(s.foreignWithdrawalList.map((w) => [w.rewardAccountHex, w.redeemer])).toEqual([[SCRIPT_REWARD, false]]);
     expect(s.foreignInputList).toEqual([{ txId: SCRIPT_TXID, index: 0, redeemer: false }]);
     expect(s.redeemers).toEqual([]);
+    expect(s.scriptDataCommitted).toBe(false);
+  });
+
+  // The redeemers are the page's to send and sit outside the signature. A body
+  // with a script_data_hash commits to redeemers the request may not show, so
+  // "no redeemer here" stops being a statement about what will run.
+  it("a body committing to script data is flagged, so a missing redeemer is not read as 'no script'", async () => {
+    const a = await acct();
+    const v = viewOf(a);
+    const s = summariseTx(
+      tx({ withdrawals: [[SCRIPT_REWARD, 0]], extra: [[11, Buffer.alloc(32, 9)]] }),
+      v.ownAddressesHex,
+      v.held,
+      0,
+    );
+    expect(s.scriptDataCommitted).toBe(true);
+    expect(s.redeemers).toEqual([]);
+    expect(s.foreignInputList).toEqual([{ txId: SCRIPT_TXID, index: 0, redeemer: false }]);
+    expect(s.foreignWithdrawalList[0]!.redeemer).toBe(false);
+  });
+
+  // A `spend` index counts inputs in ledger order: txid bytes, then the output
+  // index as a NUMBER. As text, "#10" sorts before "#2" and the redeemer would
+  // land on the wrong line.
+  it("points a spend redeemer at the input the ledger would run it for (#2 before #10)", async () => {
+    const a = await acct();
+    const v = viewOf(a);
+    const cbor = tx({
+      extra: [
+        [
+          0,
+          [
+            [Buffer.from(OWN_TXID, "hex"), 1],
+            [Buffer.from(SCRIPT_TXID, "hex"), 10],
+            [Buffer.from(SCRIPT_TXID, "hex"), 2],
+          ],
+        ],
+      ],
+      // Ledger order: 77…#1 (0), aa…#2 (1), aa…#10 (2).
+      redeemers: conway([0, 1]),
+    });
+    const s = summariseTx(cbor, v.ownAddressesHex, v.held, 0);
+    const byRef = new Map(s.foreignInputList.map((f) => [`${f.txId}#${f.index}`, f.redeemer]));
+    expect(byRef.get(`${SCRIPT_TXID}#2`)).toBe(true);
+    expect(byRef.get(`${SCRIPT_TXID}#10`)).toBe(false);
   });
 
   // A `reward` index counts withdrawals in LEDGER order, where a script

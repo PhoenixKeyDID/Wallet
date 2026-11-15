@@ -873,4 +873,21 @@ describe("signTx with a withdrawal from a script account that is not this wallet
     expect((view.getByText(en.cip30_approve) as HTMLButtonElement).disabled).toBe(true);
     expect((view.getByTestId(`confirm-${SCRIPT_REWARD}`) as HTMLInputElement).checked).toBe(false);
   });
+
+  // submitTx signs nothing. The withdrawal is still named, but a lock note and
+  // boxes nobody can tick, beside a Send button that works, would teach the
+  // person that this note means nothing.
+  it("submitTx names the same withdrawal without boxes or a lock note, and Send works", async () => {
+    mocks.fetchUtxos.mockResolvedValue(ourInputs());
+    const { port, view } = await unlocked();
+    act(() => port.deliver({ type: "request", id: "fw4", origin: ORIGIN, method: "submitTx", params: [injected()] }));
+    await view.findByText(en.cip30_foreign_actions_heading);
+    expect(view.container.textContent).toContain(stakeAddress);
+    expect(view.container.textContent).toContain(en.cip30_withdrawal_redeemer);
+    await ticks();
+    expect(view.queryByTestId("sign-locked")).toBeNull();
+    expect(view.queryByTestId(`confirm-${SCRIPT_REWARD}`)).toBeNull();
+    const send = view.getByText(en.cip30_submit_cta) as HTMLButtonElement;
+    await waitFor(() => expect(send.disabled).toBe(false));
+  });
 });
