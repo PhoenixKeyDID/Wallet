@@ -2466,6 +2466,34 @@ const MUTANTS = [
     to: "  return ia < ib ? -1 : ia > ib ? 1 : 0; /* MUTCS-INPUT-ORDER */\n",
     marker: "MUTCS-INPUT-ORDER",
   },
+  {
+    name: "MUTCS-HASH-ORDER: reward accounts of the same kind sorted by hash in reverse",
+    file: TX_SUMMARY,
+    from: "  return ra < rb ? -1 : ra > rb ? 1 : 0;\n",
+    to: "  return ra > rb ? -1 : ra < rb ? 1 : 0; /* MUTCS-HASH-ORDER */\n",
+    marker: "MUTCS-HASH-ORDER",
+  },
+  {
+    name: "MUTCS-MINT-BOUND: a mint redeemer pointing past the last policy is accepted",
+    file: TX_SUMMARY,
+    from: "if (r.index >= mintPolicies) bad(",
+    to: "if (false /* MUTCS-MINT-BOUND */) bad(",
+    marker: "MUTCS-MINT-BOUND",
+  },
+  {
+    name: "MUTCS-TXID-LEN: an input with a transaction id of any length is read",
+    file: TX_SUMMARY,
+    from: "if (!/^[0-9a-f]{64}$/.test(txIdHex) ||",
+    to: "if (!/^[0-9a-f]+$/.test(txIdHex) /* MUTCS-TXID-LEN */ ||",
+    marker: "MUTCS-TXID-LEN",
+  },
+  {
+    name: "MUTCS-NETWORK: a reward account on an unknown network is named under a guessed prefix",
+    file: TX_SUMMARY,
+    from: "      if ((raw[0] & 0x0f) > 1) {\n",
+    to: "      if (false /* MUTCS-NETWORK */) {\n",
+    marker: "MUTCS-NETWORK",
+  },
 ];
 
 /**

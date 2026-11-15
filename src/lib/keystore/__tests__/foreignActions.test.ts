@@ -187,6 +187,65 @@ describe("the summary names every foreign action", () => {
     expect(byAcct.get(OTHER_KEY_REWARD)!.lovelace).toBe(BigInt(1_000_000));
   });
 
+  // Two script accounts and one key account: the redeemer index has to land on
+  // the right SCRIPT account, which only the hash comparison decides.
+  it("among two foreign script accounts, a reward redeemer lands on the one the ledger counts at that index", async () => {
+    const a = await acct();
+    const v = viewOf(a);
+    const scriptLow = "f0" + "11".repeat(28);
+    const scriptHigh = "f0" + "99".repeat(28);
+    const keyAcct = "e0" + "00".repeat(28);
+    const cbor = tx({
+      withdrawals: [
+        [keyAcct, 0],
+        [scriptHigh, 0],
+        [scriptLow, 0],
+      ],
+      // Ledger order: f011… (0), f099… (1), e000… (2).
+      redeemers: conway([3, 1]),
+    });
+    const s = summariseTx(cbor, v.ownAddressesHex, v.held, 0);
+    const byAcct = new Map(s.foreignWithdrawalList.map((w) => [w.rewardAccountHex, w.redeemer]));
+    expect(byAcct.get(scriptHigh)).toBe(true);
+    expect(byAcct.get(scriptLow)).toBe(false);
+    expect(byAcct.get(keyAcct)).toBe(false);
+  });
+
+  // A mint redeemer counts policies in field 9; one policy means index 0 only.
+  it("a mint redeemer is accepted for the one policy the body has, and refused one past it", async () => {
+    const a = await acct();
+    const v = viewOf(a);
+    const burn = new Map([[Buffer.from("3c".repeat(28), "hex"), new Map([[Buffer.from("aa", "hex"), -1]])]]);
+    const ok = tx({ extra: [[9, burn]], redeemers: conway([1, 0]) });
+    expect(summariseTx(ok, v.ownAddressesHex, v.held, 0).redeemers).toEqual([{ purpose: "mint", index: 0 }]);
+    const past = tx({ extra: [[9, burn]], redeemers: conway([1, 1]) });
+    expect(() => summariseTx(past, v.ownAddressesHex, v.held, 0)).toThrow(UndescribableTxError);
+  });
+
+  it("refuses an input whose transaction id is not 32 bytes", async () => {
+    const a = await acct();
+    const v = viewOf(a);
+    const cbor = tx({
+      extra: [
+        [
+          0,
+          [
+            [Buffer.from(OWN_TXID, "hex"), 1],
+            [Buffer.alloc(31, 0xaa), 0],
+          ],
+        ],
+      ],
+    });
+    expect(() => summariseTx(cbor, v.ownAddressesHex, v.held, 0)).toThrow(/an input has an unexpected shape/);
+  });
+
+  it("refuses a reward account whose network part is neither testnet nor mainnet", async () => {
+    const a = await acct();
+    const v = viewOf(a);
+    const cbor = tx({ withdrawals: [["f2" + "5c".repeat(28), 0]] });
+    expect(() => summariseTx(cbor, v.ownAddressesHex, v.held, 0)).toThrow(/withdraws from an account/);
+  });
+
   it.each([
     ["a reward redeemer pointing past the last withdrawal", conway([3, 1])],
     ["a spend redeemer pointing past the last input", conway([0, 2])],

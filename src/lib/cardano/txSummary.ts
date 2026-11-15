@@ -861,6 +861,12 @@ export function summariseTx(
       if (raw.length !== 29 || (raw[0] >> 4 !== 0xe && raw[0] >> 4 !== 0xf)) {
         bad("this transaction withdraws from an account this wallet cannot read");
       }
+      // The low nibble is the network: 0 testnet, 1 mainnet. Any other value is
+      // no network this screen can name, and would be printed under a guessed
+      // prefix as if it were one.
+      if ((raw[0] & 0x0f) > 1) {
+        bad("this transaction withdraws from an account this wallet cannot read");
+      }
       const lovelace = asBigInt(amount, "a withdrawal amount");
       const rewardAccountHex = raw.toString("hex");
       rewardAccountsHex.push(rewardAccountHex);
