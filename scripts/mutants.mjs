@@ -2337,6 +2337,101 @@ const MUTANTS = [
     from: "    // was closed is found as the tab opens.\n    lookUpNow();\n",
     to: "    // was closed is found as the tab opens.\n    /* MUT56R4-FIRST */\n",
   },
+  // ── Issue #58 (MUT58-*): a read showing the sent choice ends the record; an
+  // open Abstain review refuses once another choice is in flight; a failed
+  // re-read is said; an expiry on another day carries its date ──
+  {
+    name: "MUT58-LANDEDSTAKING: the Staking tab's read showing the sent choice leaves the record in place",
+    file: STAKING,
+    from: "    if (voteLandedByRead && sentVoteDelegation !== null) onVoteDelegationLanded(sentVoteDelegation.txHash);\n",
+    to: "    /* MUT58-LANDEDSTAKING */\n",
+  },
+  {
+    name: "MUT58-LANDEDGOV: the Governance tab's read showing the sent choice leaves the record in place",
+    file: GOV,
+    from: "    if (voteLandedByRead && sentVoteDelegation !== null) onVoteDelegationLanded(sentVoteDelegation.txHash);\n",
+    to: "    /* MUT58-LANDEDGOV */\n",
+  },
+  {
+    name: "MUT58-ANYDREP: the Staking tab ends the record on any DRep read, not the one sent",
+    file: STAKING,
+    from: "    accountReadAt > sentVoteDelegation.sentAt &&\n    voteDelegationLanded(sentVoteDelegation, accountState.delegatedDRep);\n",
+    to: "    accountReadAt > sentVoteDelegation.sentAt &&\n    accountState.delegatedDRep !== null; /* MUT58-ANYDREP */\n",
+  },
+  {
+    name: "MUT58-ABSTAINPENDING: an open Abstain review signs over a choice already in flight",
+    file: STAKING,
+    from: "    if (voteDelegationPending(sentVoteDelegation, rewardAddressBech32, network, Date.now())) {\n",
+    to: "    if (false /* MUT58-ABSTAINPENDING */) {\n",
+  },
+  {
+    name: "MUT58-REREADPOOL: a failed pool-delegation re-read is swallowed",
+    file: STAKING,
+    from: "        .catch(() => {\n          if (!cancelled) setRereadFailed(true);\n        });\n    }, PENDING_POLL_MS);",
+    to: "        .catch(() => {} /* MUT58-REREADPOOL */);\n    }, PENDING_POLL_MS);",
+  },
+  {
+    name: "MUT58-REREADVOTE: a failed vote-delegation re-read is swallowed",
+    file: STAKING,
+    from: "        .catch(() => {\n          if (!cancelled) setRereadFailed(true);\n        });\n      lookUpNow();",
+    to: "        .catch(() => {} /* MUT58-REREADVOTE */);\n      lookUpNow();",
+  },
+  {
+    name: "MUT58-DATE: a time on another day is printed without its date",
+    file: FEEDBACK,
+    from: "  if (sameDay) return time;\n",
+    to: "  if (sameDay || true /* MUT58-DATE */) return time;\n",
+  },
+  {
+    name: "MUT58-GOVINFLIGHT: a Governance delegation review signs over a choice that arrived after it opened",
+    file: GOV,
+    from: "      pending.voteInFlightAtReview !== undefined &&\n",
+    to: "      false /* MUT58-GOVINFLIGHT */ &&\n",
+  },
+  {
+    name: "MUT58-GOVPENDING: a choice that arrived during a Governance review blocks signing after its window has closed",
+    file: GOV,
+    from: "      voteDelegationPending(sentVote, rewardBech32 || null, network, Date.now())\n",
+    to: "      true /* MUT58-GOVPENDING */\n",
+    marker: "MUT58-GOVPENDING",
+  },
+  {
+    name: "MUT58-REREADGATE: the 're-read failed' line outlives the waiting it was about",
+    file: STAKING,
+    from: "        {rereadFailed && (waiting || voteInFlight) && (\n",
+    to: "        {rereadFailed && true /* MUT58-REREADGATE */ && (\n",
+    marker: "MUT58-REREADGATE",
+  },
+  // PR #62 review: a read only speaks for a record sent before it started; a
+  // record newer than the held read gets one fresh read.
+  {
+    name: "MUT58-STALESTAKING: the Staking tab ends a record on a read started before it was sent",
+    file: STAKING,
+    from: "    accountReadAt > sentVoteDelegation.sentAt &&\n",
+    to: "    /* MUT58-STALESTAKING */\n",
+    marker: "MUT58-STALESTAKING",
+  },
+  {
+    name: "MUT58-STALEGOV: the Governance tab ends a record on a DRep read started before it was sent",
+    file: GOV,
+    from: "    currentReadAt > sentVoteDelegation.sentAt &&\n",
+    to: "    /* MUT58-STALEGOV */\n",
+    marker: "MUT58-STALEGOV",
+  },
+  {
+    name: "MUT58-FRESHSTAKING: the Staking tab does not re-read when a record newer than its read arrives",
+    file: STAKING,
+    from: "    if (!staleReadShowsVote || !rewardAddressBech32) return;\n",
+    to: "    if (true /* MUT58-FRESHSTAKING */) return;\n",
+    marker: "MUT58-FRESHSTAKING",
+  },
+  {
+    name: "MUT58-FRESHGOV: the Governance tab does not re-read when a record newer than its read arrives",
+    file: GOV,
+    from: "    if (staleReadShowsVote) return reloadCurrent();\n",
+    to: "    if (false /* MUT58-FRESHGOV */) return reloadCurrent();\n",
+    marker: "MUT58-FRESHGOV",
+  },
   // Clear signing: every action a website adds that is not this wallet's is
   // named, and a foreign withdrawal blocks signing until confirmed by entry.
   {
