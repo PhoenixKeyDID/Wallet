@@ -26,6 +26,7 @@ import {
   importAttachMessage,
   listImportedWallets,
   newImportNonce,
+  samePaymentKeyAs,
   signImportProof,
   type DataSigner,
 } from "../../wallet";
@@ -115,6 +116,27 @@ describe("checkImportAddress", () => {
     expect(checkImportAddress("zz")).toEqual({ ok: false, reason: "not_an_address" });
     expect(checkImportAddress("00" + "11".repeat(10))).toEqual({ ok: false, reason: "not_an_address" });
   });
+
+  it("refuses an address whose length does not fit its type", () => {
+    const base = rawHex(acct.external[0]!.address); // 57 bytes, type 0
+    expect(checkImportAddress(base.slice(0, 58))).toEqual({ ok: false, reason: "not_an_address" }); // 29 bytes
+    expect(checkImportAddress(base + "00")).toEqual({ ok: false, reason: "not_an_address" });
+    const enterprise = "60" + base.slice(2, 58); // type 6, 29 bytes
+    expect(checkImportAddress(enterprise)).toMatchObject({ ok: true });
+    expect(checkImportAddress(enterprise + "00".repeat(40))).toEqual({ ok: false, reason: "not_an_address" });
+    const pointer = "40" + base.slice(2, 58); // type 4 without its pointer
+    expect(checkImportAddress(pointer)).toEqual({ ok: false, reason: "not_an_address" });
+    expect(checkImportAddress(pointer + "010203")).toMatchObject({ ok: true });
+  });
+});
+
+describe("IMPORT_PROOF_LIFETIME_SEC", () => {
+  it("stays within the server's ten-minute ceiling", () => {
+    // Above 600 s every proof is refused with 1389; the signing case compares
+    // against the constant itself, so only this pins the ceiling.
+    expect(IMPORT_PROOF_LIFETIME_SEC).toBeGreaterThan(0);
+    expect(IMPORT_PROOF_LIFETIME_SEC).toBeLessThanOrEqual(600);
+  });
 });
 
 describe("signImportProof — a proof the server's checks accept", () => {
@@ -179,6 +201,23 @@ describe("signImportProof — a proof the server's checks accept", () => {
     await expect(
       signImportProof(wallet, "did:x", rawHex(acct.external[0]!.address)),
     ).rejects.toThrow(/not hex/);
+  });
+});
+
+describe("samePaymentKeyAs", () => {
+  it("finds the attached address that shares the payment key, not one that only shares the stake", () => {
+    const a = acct.external[0]!.address;
+    const raw = Buffer.from(rawHex(a), "hex");
+    const otherStake = Buffer.from(raw);
+    otherStake.fill(0x42, 29); // same header + payment hash, another stake hash
+    const variant = bech32.encode("addr_test", bech32.toWords(otherStake), 1023);
+    const otherPay = Buffer.from(raw);
+    otherPay.fill(0x42, 1, 29);
+    const unrelated = bech32.encode("addr_test", bech32.toWords(otherPay), 1023);
+    expect(samePaymentKeyAs(variant, [unrelated, a])).toBe(a);
+    expect(samePaymentKeyAs(variant, [unrelated])).toBeNull();
+    expect(samePaymentKeyAs(a, [a])).toBeNull();
+    expect(samePaymentKeyAs("garbage", [a])).toBeNull();
   });
 });
 
@@ -264,11 +303,21 @@ describe("classifyImportError — read from the backend's integer code", () => {
     expect(classifyImportError(await failWith(200, 1388))).toBe("already_attached");
   });
 
+  it("maps 1390 (wrong network) and 1320 on 400, the status the server sends them with", async () => {
+    expect(classifyImportError(await failWith(400, 1390))).toBe("network_mismatch");
+    expect(classifyImportError(await failWith(400, 1320))).toBe("not_attached");
+  });
+
   it("falls back to the status when there is no known code", async () => {
     expect(classifyImportError(await failWith(401, 1001))).toBe("unauthorized");
-    expect(classifyImportError(await failWith(404, 1320))).toBe("not_found");
     expect(classifyImportError(await failWith(500, 9999))).toBe("other");
     expect(classifyImportError(new Error("x"))).toBe("other");
+  });
+
+  it("a 404 with no backend code is a missing route; a coded 404 is not", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("Not Found", { status: 404 })));
+    expect(classifyImportError(await listImportedWallets().catch((x: unknown) => x))).toBe("unavailable");
+    expect(classifyImportError(await failWith(404, 2002))).toBe("other");
   });
 
   it("a non-JSON error body still yields the status", async () => {

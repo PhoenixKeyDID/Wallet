@@ -109,6 +109,9 @@ export const IMPORT_ERROR = {
   proofInvalid: 1387,
   alreadyAttached: 1388,
   proofExpired: 1389,
+  networkMismatch: 1390,
+  /** Detach of an address this DID does not hold; the server answers 400, not 404. */
+  notAttached: 1320,
   nonceReused: 3006,
 } as const;
 
@@ -193,6 +196,13 @@ export function checkImportAddress(addressHex: string): ImportAddressCheck {
     return { ok: false, reason: "unsupported_type" };
   }
   if (net !== 0 && net !== 1) return { ok: false, reason: "unsupported_type" };
+  // Exact shape per type: base = header + payment hash + stake hash (57);
+  // enterprise = header + payment hash (29); pointer = 29 + three varints (≥ 32).
+  // A truncated or padded address would only come back from the server as 1387,
+  // whose sentence ("sign with the right account") would mislead.
+  const shapeOk =
+    type === 0 || type === 2 ? bytes.length === 57 : type === 6 ? bytes.length === 29 : bytes.length >= 32;
+  if (!shapeOk) return { ok: false, reason: "not_an_address" };
   const prefix = net === 1 ? "addr" : "addr_test";
   return { ok: true, bech32: bech32.encode(prefix, bech32.toWords(bytes), 1023), network: net };
 }
@@ -221,7 +231,13 @@ export type AttachProof = {
 
 /**
  * Ask the external wallet to sign the attach message for `addressHex`.
- * The wallet shows the user what it signs; nothing is sent to the server here.
+ * Nothing is sent to the server here.
+ *
+ * The message is NOT readable text: each field is framed by a 4-byte length, so
+ * it carries 0x00 bytes and wallets show it as hex. The user cannot check the
+ * DID it names in the wallet's popup, which is why the screen shows the address
+ * first and tells the user to approve only a request they started there. The
+ * framing is the server's; a readable form has to change on both sides.
  *
  * `addressHex` goes to `signData` as raw address hex, the form CIP-30 defines and
  * every wallet accepts; it also becomes the COSE `address` header the server
@@ -301,9 +317,11 @@ export type ImportFailure =
   | "proof_invalid"
   | "already_attached"
   | "proof_expired"
+  | "network_mismatch"
   | "nonce_reused"
+  | "not_attached"
   | "unauthorized"
-  | "not_found"
+  | "unavailable"
   | "other";
 
 export function classifyImportError(err: unknown): ImportFailure {
@@ -315,10 +333,37 @@ export function classifyImportError(err: unknown): ImportFailure {
       return "already_attached";
     case IMPORT_ERROR.proofExpired:
       return "proof_expired";
+    case IMPORT_ERROR.networkMismatch:
+      return "network_mismatch";
+    case IMPORT_ERROR.notAttached:
+      return "not_attached";
     case IMPORT_ERROR.nonceReused:
       return "nonce_reused";
   }
   if (err.status === 401 || err.status === 403) return "unauthorized";
-  if (err.status === 404) return "not_found";
+  // A 404 carrying no backend code is the route itself missing: this server does
+  // not have the imported-wallet endpoints yet. A coded 404 (e.g. DID not found)
+  // is not that, and gets the generic sentence.
+  if (err.status === 404 && err.rawCode === undefined) return "unavailable";
   return "other";
+}
+
+/**
+ * The bech32 address in `others` that has the same payment key as `address`, if
+ * any. The server keeps one row per payment key per DID: attaching a variant of
+ * an already-attached key (same payment part, another stake part) succeeds
+ * without adding a row, and the list then shows the earlier address instead.
+ */
+export function samePaymentKeyAs(address: string, others: string[]): string | null {
+  const key = (a: string): string | null => {
+    try {
+      const bytes = bech32.fromWords(bech32.decode(a, 1023).words);
+      return bytes.length >= 29 ? toHex(Uint8Array.from(bytes.slice(1, 29))) : null;
+    } catch {
+      return null;
+    }
+  };
+  const mine = key(address);
+  if (!mine) return null;
+  return others.find((o) => o !== address && key(o) === mine) ?? null;
 }
