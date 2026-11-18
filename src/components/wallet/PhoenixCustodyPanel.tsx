@@ -8,6 +8,7 @@ import { anchorAssetNameHex, type PhoenixNetwork } from "@/lib/cardano";
 import { ApiError } from "@/lib/api";
 import { getAllWallets, type WalletEntry } from "@/lib/wallet";
 import { BalanceView } from "./BalanceView";
+import { ImportedWalletsPanel } from "./ImportedWalletsPanel";
 import { CopyBtn } from "@/components/CopyBtn";
 
 /**
@@ -157,6 +158,8 @@ export function PhoenixCustodyPanel({ did }: Props) {
           <p className="text-xs text-text-hint px-1">{t("phoenix_no_backend")}</p>
         )
       )}
+
+      {sessionDid && <ImportedWalletsPanel did={sessionDid} />}
     </div>
   );
 }
