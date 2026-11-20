@@ -2893,6 +2893,13 @@ const MUTANTS = [
   // tried again; a choice sent back inside the indexer's lag (X → Y landed,
   // then X) is ended only by its hash, not by a read showing X ──
   {
+    name: "MUT66-LOOKUP: the Staking tab never looks up the hash of a send-back record",
+    file: STAKING,
+    from: "  const voteLookUp = voteInFlight || voteResendWatch;\n",
+    to: "  const voteLookUp = voteInFlight; void voteResendWatch; /* MUT66-LOOKUP */\n",
+    marker: "MUT66-LOOKUP",
+  },
+  {
     name: "MUT66-RETRY: a failed fresh read on the Staking tab is never tried again",
     file: STAKING,
     from: "      if (failed) readOnce();\n",

@@ -976,8 +976,28 @@ describe("#62: an account read older than the record does not end it", () => {
     await arriveFromOtherTab(t0, { drepBefore: OLD_DREP, target: DREP, resend: true });
     await act(async () => {});
     expect(window.localStorage.getItem(storageKey())).not.toBeNull();
-    // No fresh read either: none of them could end it.
+    // No fresh read either: none of them could end it. The hash is asked
+    // instead, and "not in a block" (beforeEach) keeps the record.
     expect(m.getStakeAccountState.mock.calls.length).toBe(readsAtOpen);
+    await waitFor(() => expect(m.fetchTxSeen).toHaveBeenCalledWith(NETWORK, "cd".repeat(32)));
+    expect(window.localStorage.getItem(storageKey())).not.toBeNull();
+  });
+
+  it("#66 Staking: a send-back record found in a block is ended on this tab, with nothing shown as waiting", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const t0 = Date.now();
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, DREP));
+    m.fetchTxSeen.mockResolvedValue(true);
+    render(wrap(<WalletTabs port={makePort()} changeAddress={CHANGE_HEX} network={NETWORK} />));
+    fireEvent.click(stakingTab());
+    await screen.findByRole("button", { name: en.withdraw_rewards });
+
+    // The account shows a DRep throughout, so `voteInFlight` is false: only
+    // the hash look-up can end this record, and it must run here too.
+    await arriveFromOtherTab(t0, { drepBefore: OLD_DREP, target: DREP, resend: true });
+    await waitFor(() => expect(m.fetchTxSeen).toHaveBeenCalledWith(NETWORK, "cd".repeat(32)));
+    await waitFor(() => expect(window.localStorage.getItem(storageKey())).toBeNull());
+    expect(screen.queryByText(en.vote_delegation_pending)).toBeNull();
   });
 
   it("Staking: the 're-read failed' line goes with the waiting it was about", async () => {

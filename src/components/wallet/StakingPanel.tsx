@@ -407,6 +407,12 @@ export function StakingPanel({
   // a failed read, or the next press sends a second one.
   const voteWatch = voteDelegationWatch(sentVoteDelegation, rewardAddressBech32, network, now);
   const voteInFlight = voteWatch.kind !== "none" && accountState?.delegatedDRep == null;
+  // A send-back (X → Y landed, then X: `SentVoteDelegation.resend`) is ended
+  // by its hash only, and the account always shows a DRep meanwhile (Y, or X
+  // once it lands), so `voteInFlight` stays false. The look-up below runs for
+  // it anyway; nothing waiting is shown, since the account has a DRep.
+  const voteResendWatch = voteWatch.kind !== "none" && sentVoteDelegation?.resend === true;
+  const voteLookUp = voteInFlight || voteResendWatch;
   // The account read itself shows the choice that was sent, in place of the
   // one held before (`voteDelegationLanded`): the record can go now. The
   // look-up by hash below needs two reads in a row, and this read turning
@@ -499,7 +505,7 @@ export function StakingPanel({
   // the one held before a Governance-tab change; otherwise the record stays
   // and the timer keeps going (`lookUpVoteTx`).
   useEffect(() => {
-    if (!voteInFlight || !rewardAddressBech32) return;
+    if (!voteLookUp || !rewardAddressBech32) return;
     let cancelled = false;
     let releaseTx: () => void = () => {};
     const confirmOnChain = (sent: SentVoteDelegation) => {
@@ -551,7 +557,7 @@ export function StakingPanel({
       clearInterval(timer);
       releaseTx();
     };
-  }, [voteInFlight, network, rewardAddressBech32]);
+  }, [voteLookUp, network, rewardAddressBech32]);
 
   const runSearch = async () => {
     setSearching(true);
