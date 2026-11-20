@@ -160,7 +160,7 @@ describe("submit > the reason a site receives for a rejection", () => {
     ],
     [
       '{"status_code":400,"error":"Bad Request","message":"\\"transaction submit error ShelleyTxValidationError ShelleyBasedEraConway (ApplyTxError (ConwayUtxowFailure (UtxoFailure (FeeTooSmallUTxO (Coin 170000) (Coin 168000))) :| []))\\""}',
-      "ShelleyTxValidationError ApplyTxError ConwayUtxowFailure FeeTooSmallUTxO",
+      "ShelleyTxValidationError ApplyTxError ConwayUtxowFailure UtxoFailure FeeTooSmallUTxO",
     ],
     ["BabbageOutputTooSmallUTxO [(addr, 900000)]", "BabbageOutputTooSmallUTxO"],
     // The inner names are what tells these three apart; the wrappers are the same.
@@ -170,18 +170,48 @@ describe("submit > the reason a site receives for a rejection", () => {
     ],
     [
       'transaction submit error ShelleyTxValidationError ShelleyBasedEraConway (ApplyTxError (ConwayUtxowFailure (UtxoFailure (UtxosFailure (ValidationTagMismatch (IsValid True) (FailedUnexpectedly (PlutusFailure "The machine terminated because of an error" :| [])))))) :| []))',
-      "ShelleyTxValidationError ApplyTxError ConwayUtxowFailure ValidationTagMismatch PlutusFailure",
+      "ShelleyTxValidationError ApplyTxError ConwayUtxowFailure UtxoFailure UtxosFailure ValidationTagMismatch PlutusFailure",
     ],
     [
       'ApplyTxError (ConwayCertsFailure (CertFailure (DelegFailure (StakeKeyNotRegisteredDELEG (KeyHashObj (KeyHash "ab"))))) :| [])',
-      "ApplyTxError ConwayCertsFailure StakeKeyNotRegisteredDELEG",
+      "ApplyTxError ConwayCertsFailure CertFailure DelegFailure StakeKeyNotRegisteredDELEG",
     ],
     // cardano-submit-api's JSON: the value type (MaryValue) is not a rule, and
     // TxValidationErrorInCardanoMode is a tag, not the TxValidationError wrapper.
     [
       '{"contents":{"contents":{"contents":{"era":"ShelleyBasedEraConway","error":["ConwayUtxowFailure (UtxoFailure (ValueNotConservedUTxO (MaryValue (Coin 1) (MultiAsset (fromList []))) (MaryValue (Coin 2) (MultiAsset (fromList [])))))"],"kind":"ShelleyTxValidationError"},"tag":"TxValidationErrorInCardanoMode"},"tag":"TxCmdTxSubmitValidationError"},"tag":"TxSubmitFail"}',
-      "ConwayUtxowFailure ValueNotConservedUTxO ShelleyTxValidationError",
+      "ConwayUtxowFailure UtxoFailure ValueNotConservedUTxO ShelleyTxValidationError",
     ],
+    // Failures with no era prefix and no rule suffix come from where the node
+    // puts them: the constructor right inside a wrapper.
+    [
+      "transaction submit error ShelleyTxValidationError ShelleyBasedEraConway (ApplyTxError (ConwayUtxowFailure (UtxoFailure (InsufficientCollateral (DeltaCoin 100) (Coin 200))) :| []))",
+      "ShelleyTxValidationError ApplyTxError ConwayUtxowFailure UtxoFailure InsufficientCollateral",
+    ],
+    [
+      "transaction submit error ShelleyTxValidationError ShelleyBasedEraConway (ApplyTxError (ConwayUtxowFailure (UtxoFailure (NoCollateralInputs)) :| []))",
+      "ShelleyTxValidationError ApplyTxError ConwayUtxowFailure UtxoFailure NoCollateralInputs",
+    ],
+    [
+      'transaction submit error ShelleyTxValidationError ShelleyBasedEraConway (ApplyTxError (ConwayUtxowFailure (PPViewHashesDontMatch (SJust (SafeHash "a")) SNothing) :| []))',
+      "ShelleyTxValidationError ApplyTxError ConwayUtxowFailure PPViewHashesDontMatch",
+    ],
+    [
+      "transaction submit error ShelleyTxValidationError ShelleyBasedEraConway (ApplyTxError (ConwayUtxowFailure (UtxoFailure (WrongNetwork Testnet (fromList [addr]))) :| []))",
+      "ShelleyTxValidationError ApplyTxError ConwayUtxowFailure UtxoFailure WrongNetwork",
+    ],
+    [
+      "transaction submit error ShelleyTxValidationError ShelleyBasedEraConway (ApplyTxError (ConwayUtxowFailure (MissingRequiredDatums (fromList []) (fromList [])) :| []))",
+      "ShelleyTxValidationError ApplyTxError ConwayUtxowFailure MissingRequiredDatums",
+    ],
+    // A redeemer's purpose tag (ConwaySpending) is the transaction's own data,
+    // not a rule; the rule is MissingRedeemers.
+    [
+      'transaction submit error ShelleyTxValidationError ShelleyBasedEraConway (ApplyTxError (ConwayUtxowFailure (MissingRedeemers [(ConwaySpending (AsIx 0),ScriptHash "ab")]) :| []))',
+      "ShelleyTxValidationError ApplyTxError ConwayUtxowFailure MissingRedeemers",
+    ],
+    // A rule-suffixed name stands on its own, with no wrapper before it.
+    ["MissingVKeyWitnessesUTXOW (fromList [KeyHash {unKeyHash = \"abc\"}])", "MissingVKeyWitnessesUTXOW"],
     // Two failures of the same rule: each name once.
     [
       "ApplyTxError (ConwayUtxowFailure (BadInputsUTxO a) :| [ConwayUtxowFailure (BadInputsUTxO b)])",
@@ -220,6 +250,25 @@ describe("submit > the reason a site receives for a rejection", () => {
     const reason = rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"));
     expect(reason).toBe(PROVIDER_REFUSED_REASON);
     expect(reason).not.toContain("/ipc/");
+  });
+
+  // A word glued to a host name or a path is part of it, not a name of its own.
+  it.each([
+    "ConwayRelay01_internal.eu-west-1 refused",
+    "connection to /var/run/ShelleyHostSecret refused",
+    "ConwayMempoolFailure.eu-west-1.koios.internal unreachable",
+    "dial tcp ConwayRelay-03: no route to host",
+  ])("a 400 whose rule-shaped word is part of a host or a path gets the fixed reason: %s", (detail) => {
+    expect(rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"))).toBe(PROVIDER_REFUSED_REASON);
+  });
+
+  // The wrapper-and-constructor shape alone is not the ledger: with no ledger
+  // wrapper before it, a provider's own `…Failure (` gives nothing.
+  it.each([
+    "UpstreamFailure (Connection refused to 10.0.0.3)",
+    "ConwaySpending (AsIx 0)",
+  ])("a 400 with a wrapper shape but no ledger wrapper gets the fixed reason: %s", (detail) => {
+    expect(rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"))).toBe(PROVIDER_REFUSED_REASON);
   });
 
   // Only the site's reason is asserted: nothing here says this body never

@@ -90,19 +90,55 @@ export const PROVIDER_REFUSED_REASON = "the wallet's chain provider refused the 
  *
  * The era prefix does not count when an era *type tag* follows or is part of
  * the word (`ConwayEra`, `ShelleyBasedEraConway`, `ShelleyToBabbageEraBabbage`,
- * `ConwayEraOnwardsConway`), nor for an era's value type (`MaryValue`): tags
- * travel inside provider errors that also carry internal paths (`connection to
- * /ipc/node.socket refused`), and neither names a rule. The fixed names match
- * only as whole words, so `TxValidationErrorInCardanoMode` gives nothing.
+ * `ConwayEraOnwardsConway`), nor for an era's value type (`MaryValue`) or a
+ * redeemer's purpose tag (`ConwaySpending`, `ConwayMinting`…): tags travel
+ * inside provider errors that also carry internal paths (`connection to
+ * /ipc/node.socket refused`), and none of them names a rule.
+ *
+ * Every name must stand as a token of its own: a word glued to a letter,
+ * digit, `_`, `.`, `/` or `-` is part of a host name or a path
+ * (`ConwayRelay01_internal`, `/var/run/ShelleyHost/x`) and gives nothing, and
+ * so does `TxValidationErrorInCardanoMode`.
  *
  * The match is on the *shape* of a name, not on a list of the ledger's rules:
- * `ConwayNodeUnavailable` or `LedgerUTxO` would pass too. That is why only the
- * matched names reach the site (`rejectionReasonForSite`), never the text
- * around them: a provider message that happens to hold a rule-shaped word next
- * to an internal address or path gives the site that word and nothing else.
+ * `ConwayNodeUnavailable` or `LedgerUTxO` standing alone would pass too. That
+ * is why only the matched names reach the site (`rejectionReasonForSite`),
+ * never the text around them: a provider message that happens to hold a
+ * rule-shaped word gives the site that one word, never the address or path
+ * next to it.
  */
 const LEDGER_REASON =
-  /\b(?:Shelley|Allegra|Mary|Alonzo|Babbage|Conway)(?![A-Za-z]*Era|[A-Za-z]*Value\b)[A-Z][A-Za-z]+|\b[A-Z][A-Za-z]*UTxO\b|\b[A-Z][A-Za-z]*[a-z](?:UTXOW|UTXOS|UTXO|DELEGS|DELEG|DELPL|POOL|GOVCERT|CERTS|CERT|GOV|LEDGERS|LEDGER|PPUP|MIR)\b|\b(?:ApplyTxError|TxValidationError|ValidationTagMismatch|PlutusFailure)\b/g;
+  /(?<![\w./-])(?:(?:Shelley|Allegra|Mary|Alonzo|Babbage|Conway)(?!(?:Spending|Minting|Certifying|Rewarding|Voting|Proposing)\b)(?![A-Za-z]*Era|[A-Za-z]*Value\b)[A-Z][A-Za-z]+|[A-Z][A-Za-z]*UTxO|[A-Z][A-Za-z]*[a-z](?:UTXOW|UTXOS|UTXO|DELEGS|DELEG|DELPL|POOL|GOVCERT|CERTS|CERT|GOV|LEDGERS|LEDGER|PPUP|MIR)|ApplyTxError|TxValidationError|ValidationTagMismatch|PlutusFailure)(?![\w./-])/g;
+
+/**
+ * The failure a ledger rule raised, read from where the node puts it rather
+ * than from its spelling: inside `ApplyTxError (…)`, the constructor right
+ * after `…Failure (` or `ApplyTxError (`. `InsufficientCollateral`,
+ * `WrongNetwork`, `PPViewHashesDontMatch`, `MissingRedeemers` carry no era
+ * prefix and no rule suffix, and they are what tells one rejection from
+ * another. Nesting wrappers (`UtxoFailure`, `CertFailure`) are names too and
+ * come through.
+ *
+ * Read this way only from the first wrapper `LEDGER_REASON` already accepted
+ * (`ApplyTxError`, or a `…Failure` such as `ConwayUtxowFailure`, which is where
+ * cardano-submit-api's JSON starts), so a provider message of the same shape
+ * with no ledger wrapper before it (`UpstreamFailure (Connection refused …)`)
+ * gives nothing.
+ */
+const INNER_RULE = /(?<=(?:Failure|ApplyTxError) \()[A-Z][A-Za-z0-9]*(?![\w./-])/g;
+
+/** Ledger rule names in `detail`, each once, in the order they appear. */
+function ledgerNames(detail: string): string[] {
+  const found: Array<[number, string]> = [];
+  for (const m of detail.matchAll(LEDGER_REASON)) found.push([m.index, m[0]]);
+  const wrapper = found.find(([, name]) => name === "ApplyTxError" || name.endsWith("Failure"));
+  if (wrapper) {
+    const start = wrapper[0];
+    for (const m of detail.slice(start).matchAll(INNER_RULE)) found.push([start + m.index, m[0]]);
+  }
+  found.sort((a, b) => a[0] - b[0]);
+  return [...new Set(found.map(([, name]) => name))];
+}
 
 /**
  * The reason a website receives for a definite rejection.
@@ -138,7 +174,7 @@ const LEDGER_REASON =
  */
 export function rejectionReasonForSite(err: SubmitRejectedError): string {
   if (err.status !== 400) return PROVIDER_REFUSED_REASON;
-  const names = [...new Set(err.detail.match(LEDGER_REASON) ?? [])];
+  const names = ledgerNames(err.detail);
   if (names.length === 0) return PROVIDER_REFUSED_REASON;
   return `HTTP 400: ${names.join(" ")}`;
 }
