@@ -2895,16 +2895,16 @@ const MUTANTS = [
   {
     name: "MUT66-LOOKUP: the Staking tab never looks up the hash of a send-back record",
     file: STAKING,
-    from: "  const voteLookUp = voteInFlight || voteResendWatch;\n",
-    to: "  const voteLookUp = voteInFlight; void voteResendWatch; /* MUT66-LOOKUP */\n",
+    from: "  const voteLookUp = voteWatch.kind !== \"none\";\n",
+    to: "  const voteLookUp = voteInFlight || (voteWatch.kind !== \"none\" && sentVoteDelegation?.resend !== true && false) /* MUT66-LOOKUP */;\n",
     marker: "MUT66-LOOKUP",
   },
   {
-    name: "MUT66-RETRY: a failed fresh read on the Staking tab is never tried again",
+    name: "MUT66-LAGREAD: the Staking tab stops looking a record up once a fresh read shows a DRep that is not its target",
     file: STAKING,
-    from: "      if (failed) readOnce();\n",
-    to: "      if (false /* MUT66-RETRY */) readOnce();\n",
-    marker: "MUT66-RETRY",
+    from: "  const voteLookUp = voteWatch.kind !== \"none\";\n",
+    to: "  const voteLookUp = voteInFlight || (voteWatch.kind !== \"none\" && sentVoteDelegation?.resend === true) /* MUT66-LAGREAD */;\n",
+    marker: "MUT66-LAGREAD",
   },
   {
     name: "MUT66-SHOW: a failed fresh read on the Staking tab is not said",

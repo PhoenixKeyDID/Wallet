@@ -362,6 +362,12 @@ export function WalletTabs({
 
   // The record ends when its transaction can no longer land, whether or not a
   // tab is mounted to notice: drop it from disk and say it ran out.
+  //
+  // No send-back memory is written here (`rememberLeftVote`): an expiry cannot
+  // tell "never landed" from "landed but no read ever showed it". In the
+  // second case — every read lagging for the whole watch — a later send of
+  // `drepBefore` is not marked `resend`, and a lagging read of it can end that
+  // record early, as before send-backs were marked.
   useEffect(() => {
     const live = voteSlot.live;
     if (live === null) return;

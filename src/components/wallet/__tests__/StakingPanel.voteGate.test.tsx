@@ -889,7 +889,6 @@ describe("#62: an account read older than the record does not end it", () => {
     await waitFor(() => expect(window.localStorage.getItem(storageKey())).toBeNull());
     expect(m.getStakeAccountState.mock.calls.length).toBe(readsAtOpen + 1);
     // `fetchTxSeen` answers "not in a block" (beforeEach): the read ended it.
-    expect(m.fetchTxSeen).not.toHaveBeenCalled();
   });
 
   it("Governance: a record newer than the read that has really landed still ends, after one fresh read", async () => {
@@ -960,7 +959,7 @@ describe("#62: an account read older than the record does not end it", () => {
     await waitFor(() => expect(window.localStorage.getItem(storageKey())).toBeNull());
     expect(m.getStakeAccountState.mock.calls.length).toBe(readsAtOpen + 2);
     expect(screen.queryByText(en.stake_reread_failed)).toBeNull();
-    expect(m.fetchTxSeen).not.toHaveBeenCalled();
+    // `fetchTxSeen` answers "not in a block" (beforeEach): the read ended it.
   });
 
   it("#66 Staking: a send-back record is not ended by a fresh read showing its target", async () => {
@@ -997,6 +996,32 @@ describe("#62: an account read older than the record does not end it", () => {
     await arriveFromOtherTab(t0, { drepBefore: OLD_DREP, target: DREP, resend: true });
     await waitFor(() => expect(m.fetchTxSeen).toHaveBeenCalledWith(NETWORK, "cd".repeat(32)));
     await waitFor(() => expect(window.localStorage.getItem(storageKey())).toBeNull());
+    expect(screen.queryByText(en.vote_delegation_pending)).toBeNull();
+  });
+
+  it("#66 Staking: a fresh read from a lagging instance still showing X keeps the tab looking; the record ends once Y is read", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    const t0 = Date.now();
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, DREP));
+    render(wrap(<WalletTabs port={makePort()} changeAddress={CHANGE_HEX} network={NETWORK} />));
+    fireEvent.click(stakingTab());
+    await screen.findByRole("button", { name: en.withdraw_rewards });
+    const readsAtOpen = m.getStakeAccountState.mock.calls.length;
+
+    // X → Y sent in another tab; the fresh read comes from an instance still at X.
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, OLD_DREP));
+    await arriveFromOtherTab(t0, { drepBefore: OLD_DREP, target: DREP });
+    await waitFor(() => expect(m.getStakeAccountState.mock.calls.length).toBe(readsAtOpen + 1));
+    expect(window.localStorage.getItem(storageKey())).not.toBeNull();
+
+    // The indexer catches up. Something must still be asking: the hash, and
+    // the re-read on the same tick, which now shows Y and ends the record.
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, DREP));
+    await act(async () => {
+      vi.advanceTimersByTime(20_000);
+    });
+    await waitFor(() => expect(window.localStorage.getItem(storageKey())).toBeNull());
+    expect(m.fetchTxSeen).toHaveBeenCalledWith(NETWORK, "cd".repeat(32));
     expect(screen.queryByText(en.vote_delegation_pending)).toBeNull();
   });
 
