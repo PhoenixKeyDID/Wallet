@@ -43,6 +43,11 @@ import {
  * address wait stops on its own after the connect timeout, and the sign wait when
  * the proof it would produce has expired anyway. Once a wait is cancelled no
  * further call goes to the wallet.
+ *
+ * The server, too, may never answer. That wait has no Cancel button — a request
+ * already on its way cannot be unsent — but it does not outlive the proof: at
+ * expires_at the wait ends, and the screen says the outcome is unknown and the
+ * list is the next thing to read.
  */
 type Props = {
   /** DID of the signed-in user, supplied by the host session. */
@@ -262,9 +267,31 @@ function ImportedWalletsForDid({ did }: Props) {
       }
       setPhase("send");
       setSlow(false);
+      // The proof is the only clock left: the server refuses it after
+      // expires_at, so no answer that arrives later is worth its spinner. The
+      // request itself cannot be recalled — it may already be on the wire and
+      // may still be taken — so this ends the wait, not the send, and the
+      // sentence says the outcome is unknown, never that nothing was attached.
       try {
-        await attachImportedWallet(proof);
+        await untilStopped(
+          attachImportedWallet(proof),
+          ac.signal,
+          proof.expires_at * 1000 - Date.now(),
+          () => setSlow(true),
+        );
       } catch (err) {
+        if (err instanceof SignWaitStopped) {
+          // The send wait has no Cancel button of its own, so "cancelled" here
+          // is only the screen going away, which says nothing.
+          if (err.reason === "timeout") {
+            setNotice({
+              kind: "error",
+              key: "imported_err_send_unknown",
+              values: { address: short(proof.address) },
+            });
+          }
+          return;
+        }
         setNotice(failureNotice(err, proof.address));
         return;
       }

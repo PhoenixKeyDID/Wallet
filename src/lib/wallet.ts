@@ -189,6 +189,27 @@ export type ImportAddressCheck =
   | { ok: false; reason: "not_an_address" | "script_payment" | "unsupported_type" };
 
 /**
+ * The stake pointer of a type-4/5 address: three variable-length integers
+ * (slot number, transaction index, certificate index — CIP-19's `POINTER`
+ * grammar), each a run of bytes with the high bit set closed by one without it,
+ * starting right after the payment hash. `true` only when the third integer's
+ * closing byte is the address's last byte: a byte after the pointer belongs to
+ * nothing, and before this check it passed as a pointer with a byte to spare.
+ */
+function pointerEndsAtLastByte(bytes: Uint8Array): boolean {
+  let i = 29; // past the header byte and the payment hash
+  for (let n = 0; n < 3; n++) {
+    if (i >= bytes.length) return false; // fewer than three integers
+    while (bytes[i] & 0x80) {
+      i++;
+      if (i >= bytes.length) return false; // an integer that runs past the end
+    }
+    i++; // its closing byte, the one without the high bit
+  }
+  return i === bytes.length;
+}
+
+/**
  * Read a CIP-30 address (hex of the raw address bytes) and decide whether the
  * server could accept a proof for it, before asking the user to sign anything.
  *
@@ -215,11 +236,16 @@ export function checkImportAddress(addressHex: string): ImportAddressCheck {
   }
   if (net !== 0 && net !== 1) return { ok: false, reason: "unsupported_type" };
   // Exact shape per type: base = header + payment hash + stake hash (57);
-  // enterprise = header + payment hash (29); pointer = 29 + three varints (≥ 32).
-  // A truncated or padded address would only come back from the server as 1387,
-  // whose sentence ("sign with the right account") would mislead.
+  // enterprise = header + payment hash (29); pointer = header + payment hash +
+  // the stake pointer's three integers, which must end at the address's last
+  // byte. A truncated or padded address would only come back from the server as
+  // 1387, whose sentence ("sign with the right account") would mislead.
   const shapeOk =
-    type === 0 || type === 2 ? bytes.length === 57 : type === 6 ? bytes.length === 29 : bytes.length >= 32;
+    type === 0 || type === 2
+      ? bytes.length === 57
+      : type === 6
+        ? bytes.length === 29
+        : pointerEndsAtLastByte(bytes);
   if (!shapeOk) return { ok: false, reason: "not_an_address" };
   const prefix = net === 1 ? "addr" : "addr_test";
   return { ok: true, bech32: bech32.encode(prefix, bech32.toWords(bytes), 1023), network: net };
@@ -331,7 +357,10 @@ export async function detachImportedWallet(address: string): Promise<void> {
 /**
  * GET /wallet/imported — the session DID's attached wallets, oldest first.
  * A body that is not `{wallets: [...]}` throws: an empty list and a broken read
- * must not look the same.
+ * must not look the same. So does a row whose kind is anything but "imported":
+ * the kind is read from the response, never assumed, and this screen offers
+ * Detach for what it lists — a kind it has never heard of is refused rather
+ * than shown with a button that may not mean for it what it means here.
  */
 export async function listImportedWallets(): Promise<ImportedWallet[]> {
   const res = await apiFetch<{ wallets?: unknown }>("/wallet/imported", { method: "GET" });
@@ -343,7 +372,10 @@ export async function listImportedWallets(): Promise<ImportedWallet[]> {
     if (typeof e?.address !== "string" || typeof e?.attached_at !== "string") {
       throw new Error("GET /wallet/imported returned an entry without address/attached_at");
     }
-    return { address: e.address, kind: "imported", attached_at: e.attached_at };
+    if (e.kind !== "imported") {
+      throw new Error(`GET /wallet/imported returned an entry whose kind is not "imported": ${String(e.kind)}`);
+    }
+    return { address: e.address, kind: e.kind, attached_at: e.attached_at };
   });
 }
 
