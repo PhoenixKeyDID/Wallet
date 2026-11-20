@@ -85,19 +85,26 @@ export const PROVIDER_REFUSED_REASON = "the wallet's chain provider refused the 
  * follows is an era *type tag* (`ConwayEra`, `ShelleyBasedEraConway`,
  * `AnyCardanoEra`): those travel inside provider errors that also carry
  * internal paths (`connection to /ipc/node.socket refused`), and they name no
- * rule. An allowlist, not a blocklist: a provider
- * can invent any new infrastructure message, and the one that is not listed
- * must fall to the fixed sentence, not through to the site.
+ * rule.
+ *
+ * The match is on the *shape* of a name, not on a list of the ledger's rules:
+ * `ConwayNodeUnavailable` or `LedgerUTxO` would pass too. That is why only the
+ * matched names reach the site (`rejectionReasonForSite`), never the text
+ * around them: a provider message that happens to hold a rule-shaped word next
+ * to an internal address or path gives the site that word and nothing else.
  */
 const LEDGER_REASON =
-  /\b(?:Shelley|Allegra|Mary|Alonzo|Babbage|Conway)(?!Era|BasedEra)[A-Z][A-Za-z]+|\b[A-Z][A-Za-z]*UTxO\b|ApplyTxError|TxValidationError/;
+  /\b(?:Shelley|Allegra|Mary|Alonzo|Babbage|Conway)(?!Era|BasedEra)[A-Z][A-Za-z]+|\b[A-Z][A-Za-z]*UTxO\b|ApplyTxError|TxValidationError/g;
 
 /**
  * The reason a website receives for a definite rejection.
  *
- * The site gets the reply body only when the body is the **ledger** refusing
- * the transaction — the one thing the site's developer can act on. Anything
- * else gets a fixed sentence:
+ * When the body names **ledger** rules, the site gets those names, in the
+ * order the node nested them (`ShelleyTxValidationError ApplyTxError
+ * ConwayUtxowFailure FeeTooSmallUTxO`) — the one thing its developer can act
+ * on — and none of the text between them: the arguments are this transaction's
+ * own data, which the site already has, and any other words in the body are the
+ * provider's. A body with no such name gets a fixed sentence, as does:
  *
  * - 401/403 an invalid or revoked project token, 402 a plan limit, 429 a rate
  *   limit. That body describes the person's account with the provider, not the
@@ -123,6 +130,7 @@ const LEDGER_REASON =
  */
 export function rejectionReasonForSite(err: SubmitRejectedError): string {
   if (err.status !== 400) return PROVIDER_REFUSED_REASON;
-  if (!LEDGER_REASON.test(err.detail)) return PROVIDER_REFUSED_REASON;
-  return `HTTP 400: ${err.detail}`;
+  const names = err.detail.match(LEDGER_REASON) ?? [];
+  if (names.length === 0) return PROVIDER_REFUSED_REASON;
+  return `HTTP 400: ${names.join(" ")}`;
 }

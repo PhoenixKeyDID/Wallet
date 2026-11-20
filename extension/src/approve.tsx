@@ -654,8 +654,8 @@ export function Approve() {
    * No key is touched here: `submitTx` hands over bytes that were signed
    * elsewhere, usually by this same window a moment earlier. It goes out
    * through the same provider the wallet's own Send tab uses, and the answer is
-   * the hash the node reported — or `TxSendError.Failure` with the node's own
-   * reason on a 400 that names a ledger rule, which is the one thing a
+   * the hash the node reported — or `TxSendError.Failure` with the ledger rule
+   * names on a 400 whose body has them, which is the one thing a
    * developer can act on, and a fixed reason on any other 4xx, or a 400 whose
    * body names no ledger rule (`rejectionReasonForSite`).
    *
@@ -690,9 +690,9 @@ export function Approve() {
     } catch (e) {
       if (isDefiniteRejection(e) && !resend) {
         // A 4xx: this transaction did not get in. What the site hears depends
-        // on the body (`rejectionReasonForSite`): a 400 forwards the node's
-        // reason only when it names a ledger rule, the one thing the site's
-        // developer can act on; anything else gets a fixed reason, because a
+        // on the body (`rejectionReasonForSite`): a 400 forwards the ledger
+        // rule names in it and nothing else of the body, the one thing the
+        // site's developer can act on; anything else gets a fixed reason, because a
         // 401/402/403/429 body is about the person's provider account, other
         // 400 bodies can describe the provider's internals, and the endpoint
         // label names the provider.

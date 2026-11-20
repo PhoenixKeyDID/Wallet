@@ -100,7 +100,7 @@ describe("submit > the reason a site receives for a rejection", () => {
       const err = await call().catch((e: unknown) => e);
       expect(isDefiniteRejection(err), door).toBe(true);
       const reason = rejectionReasonForSite(err as SubmitRejectedError);
-      expect(reason, door).toBe("HTTP 400: BadInputsUTxO (spent)");
+      expect(reason, door).toBe("HTTP 400: BadInputsUTxO");
       expect(reason, door).not.toMatch(/koios|chain endpoint|submittx|tx\/submit/i);
     }
   });
@@ -150,12 +150,38 @@ describe("submit > the reason a site receives for a rejection", () => {
   });
 
   it.each([
-    'ConwayIncompleteWithdrawals (NonEmptyMap (fromList [(AccountAddress {aaNetworkId = Testnet}, Mismatch (RelEQ) {supplied: Coin 15486, expected: Coin 0})]))',
-    'ConwayMempoolFailure "All inputs are spent. Transaction has probably already been included"',
-    '{"status_code":400,"error":"Bad Request","message":"\\"transaction submit error ShelleyTxValidationError ShelleyBasedEraConway (ApplyTxError (ConwayUtxowFailure (UtxoFailure (FeeTooSmallUTxO (Coin 170000) (Coin 168000))) :| []))\\""}',
-    "BabbageOutputTooSmallUTxO [(addr, 900000)]",
-  ])("a 400 the ledger wrote reaches the site as it was written: %s", (detail) => {
-    expect(rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"))).toBe(`HTTP 400: ${detail}`);
+    [
+      'ConwayIncompleteWithdrawals (NonEmptyMap (fromList [(AccountAddress {aaNetworkId = Testnet}, Mismatch (RelEQ) {supplied: Coin 15486, expected: Coin 0})]))',
+      "ConwayIncompleteWithdrawals",
+    ],
+    [
+      'ConwayMempoolFailure "All inputs are spent. Transaction has probably already been included"',
+      "ConwayMempoolFailure",
+    ],
+    [
+      '{"status_code":400,"error":"Bad Request","message":"\\"transaction submit error ShelleyTxValidationError ShelleyBasedEraConway (ApplyTxError (ConwayUtxowFailure (UtxoFailure (FeeTooSmallUTxO (Coin 170000) (Coin 168000))) :| []))\\""}',
+      "ShelleyTxValidationError ApplyTxError ConwayUtxowFailure FeeTooSmallUTxO",
+    ],
+    ["BabbageOutputTooSmallUTxO [(addr, 900000)]", "BabbageOutputTooSmallUTxO"],
+  ])("a 400 the ledger wrote reaches the site as the rule names in it: %s", (detail, names) => {
+    expect(rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"))).toBe(`HTTP 400: ${names}`);
+  });
+
+  // The match is on the shape of a name, so a provider message can hold a
+  // rule-shaped word next to an internal address. Only that word travels.
+  it.each([
+    ["ConwayNodeUnavailable: dial tcp 10.1.2.3:3001: connect: connection refused", "ConwayNodeUnavailable", "10.1.2.3"],
+    ["Error querying LedgerUTxO from db-sync at postgres://db:5432/cexplorer", "LedgerUTxO", "postgres://"],
+    [
+      "TxSubmitFail ShelleyBasedEraConway: connection to /ipc/node.socket refused; last ApplyTxError cached at 10.0.3.7:3001",
+      "ApplyTxError",
+      "/ipc/",
+    ],
+  ])("a 400 that mixes a rule-shaped word with provider text gives the site only the word: %s", (detail, names, leak) => {
+    const reason = rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"));
+    expect(reason).toBe(`HTTP 400: ${names}`);
+    expect(reason).not.toContain(leak);
+    expect(reason).not.toMatch(/\d+\.\d+\.\d+\.\d+/);
   });
 
   // Era type tags travel inside provider errors that carry internal paths and
