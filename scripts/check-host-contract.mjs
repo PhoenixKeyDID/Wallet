@@ -114,7 +114,7 @@ for (const file of walk(SRC)) {
   const self = stripExt(relative(REPO, file).split(sep).join("/"));
   if (fromHostFiles.has(self)) continue;
   const text = readFileSync(file, "utf8");
-  for (const m of text.matchAll(/(?:from\s+|import\s*\(\s*|require\s*\(\s*)["'](\.{1,2}\/[^"']+)["']/g)) {
+  for (const m of text.matchAll(/(?:from\s+|import\s+|import\s*\(\s*|require\s*\(\s*)["'`](\.{1,2}\/[^"'`$]+)["'`]/g)) {
     const target = stripExt(relative(REPO, join(dirname(file), m[1])).split(sep).join("/"));
     const alias = fromHostFiles.get(target);
     if (alias) {

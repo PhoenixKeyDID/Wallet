@@ -504,11 +504,12 @@
   "imported_detached": "Đã gỡ {{address}}.",
   "imported_err_proof_invalid": "Máy chủ không nhận chữ ký của ví. Trong ví, hãy kiểm tra đang chọn đúng tài khoản muốn gắn và khớp với {{address}}, rồi thử lại.",
   "imported_err_already_attached": "Địa chỉ này đã gắn với một danh tính Phoenix khác. Hãy gỡ nó ở đó trước.",
-  "imported_err_proof_expired": "Chữ ký tới máy chủ quá muộn (chỉ có hiệu lực 5 phút). Hãy thử lại và duyệt ngay trong ví. Nếu vẫn bị, hãy kiểm tra đồng hồ của thiết bị.",
+  "imported_err_proof_expired": "Máy chủ không nhận khung thời gian của chữ ký. Hãy kiểm tra đồng hồ của thiết bị đang để tự động, rồi thử lại và duyệt ngay trong ví.",
   "imported_err_retry": "Yêu cầu này đã được dùng. Hãy thử lại.",
   "imported_err_unauthorized": "Bạn đã bị đăng xuất, hoặc đang đăng nhập bằng một khoá không được phép đổi ví. Hãy đăng nhập lại bằng khoá sở hữu DID này.",
   "imported_err_not_attached": "Ví này không còn gắn với DID của bạn (có thể đã gỡ ở nơi khác).",
   "imported_err_generic": "Có lỗi khi liên lạc với máy chủ Phoenix. Hãy thử lại sau.",
+  "imported_err_local": "Không chuẩn bị được yêu cầu trên thiết bị này nên ví chưa được hỏi ký. Chưa có gì được gắn. Hãy tải lại trang và thử lại.",
   "imported_err_connect": "Không kết nối được {{name}}.",
   "imported_err_sign": "{{name}} không ký được thông điệp.",
   "imported_err_declined": "Bạn đã từ chối ký trong ví. Chưa có gì được gắn.",
@@ -521,5 +522,5 @@
   "imported_attached_missing": "Máy chủ đã nhận ví, nhưng {{address}} không có trong danh sách. Bấm “Xem các ví đã gắn” để kiểm tra lại.",
   "imported_err_network": "Ví này đang ở mạng Cardano khác với máy chủ Phoenix. Hãy đổi mạng trong ví rồi thử lại.",
   "imported_err_unavailable": "Máy chủ Phoenix này chưa hỗ trợ gắn ví ngoài.",
-  "imported_err_sign_timeout": "Ví không ký trong 5 phút nên yêu cầu đã hết hạn. Chưa có gì được gắn. Hãy thử lại."
+  "imported_err_sign_timeout": "Ví không ký kịp nên yêu cầu đã hết hạn. Chưa có gì được gắn. Hãy thử lại."
 }

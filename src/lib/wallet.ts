@@ -260,17 +260,39 @@ export type AttachProof = {
  * every wallet accepts; it also becomes the COSE `address` header the server
  * compares with the bech32 in the body, which is the same bytes.
  */
+/**
+ * The proof could not be built on this device, so the wallet was never asked:
+ * an address it cannot attach, a DID that would break the signed message, or no
+ * secure random source for the nonce. Kept apart from wallet failures so the
+ * screen does not blame the wallet for them.
+ */
+export class ImportProofLocalError extends Error {
+  constructor(readonly cause: unknown) {
+    super(`attach proof not built: ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.name = "ImportProofLocalError";
+  }
+}
+
 export async function signImportProof(
   wallet: DataSigner,
   userDid: string,
   addressHex: string,
   now: () => number = () => Math.floor(Date.now() / 1000),
 ): Promise<AttachProof> {
-  const checked = checkImportAddress(addressHex);
-  if (!checked.ok) throw new Error(`address cannot be attached: ${checked.reason}`);
-  const nonce = newImportNonce();
-  const expiresAt = now() + IMPORT_PROOF_LIFETIME_SEC;
-  const payload = toHex(importAttachMessage(userDid, checked.bech32, nonce, expiresAt));
+  let checked: { ok: true; bech32: string };
+  let nonce: string;
+  let expiresAt: number;
+  let payload: string;
+  try {
+    const c = checkImportAddress(addressHex);
+    if (!c.ok) throw new Error(`address cannot be attached: ${c.reason}`);
+    checked = c;
+    nonce = newImportNonce();
+    expiresAt = now() + IMPORT_PROOF_LIFETIME_SEC;
+    payload = toHex(importAttachMessage(userDid, checked.bech32, nonce, expiresAt));
+  } catch (err) {
+    throw new ImportProofLocalError(err);
+  }
   const signed = await wallet.signData(addressHex, payload);
   if (
     !signed ||

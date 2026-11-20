@@ -504,11 +504,12 @@
   "imported_detached": "已解绑 {{address}}。",
   "imported_err_proof_invalid": "服务器不接受钱包的签名。请在钱包中确认已选中要绑定的账户，且与 {{address}} 一致，然后重试。",
   "imported_err_already_attached": "此地址已绑定到另一个 Phoenix 身份。请先在那里解绑。",
-  "imported_err_proof_expired": "签名到达服务器太晚（有效期为 5 分钟）。请重试，并在钱包中立即批准。如果仍然发生，请检查此设备的时钟。",
+  "imported_err_proof_expired": "服务器未接受签名的有效时间范围。请确认此设备的时钟设为自动，然后重试并在钱包中立即批准。",
   "imported_err_retry": "此请求已被使用。请重试。",
   "imported_err_unauthorized": "你已退出登录，或登录所用的密钥无权更改钱包。请用拥有此 DID 的密钥重新登录。",
   "imported_err_not_attached": "该钱包已不再绑定到你的 DID（可能已在别处解绑）。",
   "imported_err_generic": "与 Phoenix 服务器通信时出错。请稍后重试。",
+  "imported_err_local": "无法在此设备上准备请求，因此未要求钱包签名。没有绑定任何内容。请重新加载页面后重试。",
   "imported_err_connect": "无法连接到 {{name}}。",
   "imported_err_sign": "{{name}} 无法签署该消息。",
   "imported_err_declined": "你在钱包中拒绝了签名。没有绑定任何内容。",
@@ -521,5 +522,5 @@
   "imported_attached_missing": "服务器已接受该钱包，但 {{address}} 不在列表中。请点“查看已绑定的钱包”再次检查。",
   "imported_err_network": "此钱包设置的 Cardano 网络与 Phoenix 服务器不同。请在钱包中切换网络，然后重试。",
   "imported_err_unavailable": "此 Phoenix 服务器尚不支持外部钱包。",
-  "imported_err_sign_timeout": "钱包未在 5 分钟内签名，请求已失效。没有绑定任何内容。请重试。"
+  "imported_err_sign_timeout": "钱包未及时签名，请求已失效。没有绑定任何内容。请重试。"
 }

@@ -88,12 +88,16 @@ afterEach(() => {
 const tr = (key: string, values?: Record<string, string>) => i18n.t(key, values) as string;
 const row = (address: string) => ({ address, kind: "imported", attached_at: "t" });
 
-function mount() {
-  render(
+function panel(did: string) {
+  return (
     <I18nextProvider i18n={i18n}>
-      <ImportedWalletsPanel did="did:phoenix:preprod:7f3a" />
-    </I18nextProvider>,
+      <ImportedWalletsPanel did={did} />
+    </I18nextProvider>
   );
+}
+
+function mount(did = "did:phoenix:preprod:7f3a") {
+  return render(panel(did));
 }
 
 const attachButton = () => screen.getByRole("button", { name: tr("imported_attach_with", { name: "Lace" }) });
@@ -303,6 +307,14 @@ describe("ImportedWalletsPanel — attach", () => {
     expect(m.attach).not.toHaveBeenCalled();
   });
 
+  it("a DID that cannot go into the signed message is refused here, without blaming or asking the wallet", async () => {
+    mount("did:phoenix:preprod:7f3a\nx");
+    await clickAttach();
+    expect((await screen.findByRole("alert")).textContent).toBe(tr("imported_err_local"));
+    expect(m.api.signData).not.toHaveBeenCalled();
+    expect(m.attach).not.toHaveBeenCalled();
+  });
+
   it("a variant of a key already on this DID says which address holds it", async () => {
     m.list.mockResolvedValue([row(OTHER_KEY), row(VARIANT)]);
     mount();
@@ -348,6 +360,15 @@ describe("ImportedWalletsPanel — list and detach", () => {
     fireEvent.click(screen.getByRole("button", { name: tr("imported_show_list") }));
     expect((await screen.findByRole("alert")).textContent).toBe(tr("imported_err_generic"));
     expect(screen.queryByText(tr("imported_none"))).toBeNull();
+  });
+
+  it("another DID signing in on the same screen does not see the previous DID's wallets", async () => {
+    m.list.mockResolvedValue([row(BASE)]);
+    const view = mount("did:phoenix:preprod:aaaa");
+    fireEvent.click(screen.getByRole("button", { name: tr("imported_show_list") }));
+    expect(await screen.findByText(BASE)).toBeTruthy();
+    view.rerender(panel("did:phoenix:preprod:bbbb"));
+    expect(screen.queryByText(BASE)).toBeNull();
   });
 
   it("an empty list says so", async () => {

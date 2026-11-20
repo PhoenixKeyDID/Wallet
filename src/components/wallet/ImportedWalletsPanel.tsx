@@ -16,6 +16,7 @@ import {
   classifyImportError,
   detachImportedWallet,
   IMPORT_PROOF_LIFETIME_SEC,
+  ImportProofLocalError,
   listImportedWallets,
   samePaymentKeyAs,
   signImportProof,
@@ -102,7 +103,18 @@ function untilStopped<T>(p: Promise<T>, signal: AbortSignal, ms: number, onSlow:
   });
 }
 
+/**
+ * Keyed by the DID: everything this screen holds — the attached list, a notice,
+ * a wait in flight — belongs to one identity. A host that keeps the frame mounted
+ * across a sign-out and a different sign-in would otherwise show the previous
+ * person's wallets, with Detach buttons, under the new DID. A new key unmounts
+ * the old screen, which also aborts its waits.
+ */
 export function ImportedWalletsPanel({ did }: Props) {
+  return <ImportedWalletsForDid key={did} did={did} />;
+}
+
+function ImportedWalletsForDid({ did }: Props) {
   const { t } = useTranslation("wallet");
   const [installed, setInstalled] = useState<Cip30Wallet[]>([]);
   /** `null` = not read yet; a read failure is a notice, never an empty list. */
@@ -230,6 +242,12 @@ export function ImportedWalletsPanel({ did }: Props) {
       } catch (err) {
         if (err instanceof SignWaitStopped) {
           if (err.reason === "timeout") setNotice({ kind: "error", key: "imported_err_sign_timeout" });
+          return;
+        }
+        if (err instanceof ImportProofLocalError) {
+          // Refused here before the wallet was asked: naming the wallet would
+          // send the user to look for a problem it does not have.
+          setNotice({ kind: "error", key: "imported_err_local" });
           return;
         }
         const code = dataSignCode(err);

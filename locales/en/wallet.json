@@ -504,11 +504,12 @@
   "imported_detached": "Detached {{address}}.",
   "imported_err_proof_invalid": "The server did not accept your wallet's signature. In your wallet, check that the account you want to attach is selected and that it matches {{address}}, then try again.",
   "imported_err_already_attached": "This address is already attached to another Phoenix identity. Detach it there first.",
-  "imported_err_proof_expired": "The signature reached the server too late (it is valid for 5 minutes). Try again and approve in your wallet right away. If it keeps happening, check this device's clock.",
+  "imported_err_proof_expired": "The server did not accept the signature's time window. Check that this device's clock is set automatically, then try again and approve in your wallet right away.",
   "imported_err_retry": "That request was already used. Try again.",
   "imported_err_unauthorized": "You are signed out, or signed in with a key that is not allowed to change wallets. Sign in again with the key that owns this DID.",
   "imported_err_not_attached": "That wallet is no longer attached to your DID (it may have been detached elsewhere).",
   "imported_err_generic": "Something went wrong talking to the Phoenix server. Try again later.",
+  "imported_err_local": "The request could not be prepared on this device, so your wallet was not asked to sign. Nothing was attached. Reload the page and try again.",
   "imported_err_connect": "Could not connect to {{name}}.",
   "imported_err_sign": "{{name}} could not sign the message.",
   "imported_err_declined": "You declined to sign in your wallet. Nothing was attached.",
@@ -521,5 +522,5 @@
   "imported_attached_missing": "The server accepted the wallet, but {{address}} is not in the list. Tap “Show attached wallets” to check again.",
   "imported_err_network": "This wallet is set to a different Cardano network than the Phoenix server. Switch the network in your wallet, then try again.",
   "imported_err_unavailable": "This Phoenix server does not offer external wallets yet.",
-  "imported_err_sign_timeout": "Your wallet did not sign within 5 minutes, so the request lapsed. Nothing was attached. Try again."
+  "imported_err_sign_timeout": "Your wallet did not sign in time, so the request lapsed. Nothing was attached. Try again."
 }
