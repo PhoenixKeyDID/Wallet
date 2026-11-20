@@ -51,6 +51,7 @@ const TX_SUMMARY = "src/lib/cardano/txSummary.ts";
 // Their helpers were pinned long before the screens were: reverting a screen
 // to the bare name left every helper test green until these were rendered.
 const REVIEW_OUTPUT = "src/components/wallet/ReviewOutput.tsx";
+const CONFIRM_GATE = "src/components/wallet/ConfirmGate.tsx";
 const TX_SUMMARY_VIEW = "extension/src/TxSummaryView.tsx";
 const STORE = "src/components/wallet/uncertainStore.ts";
 // Round six: the store-readiness work. A phrase on the clipboard, the web
@@ -150,6 +151,9 @@ const TESTS = [
   "src/components/wallet/__tests__/GovernancePanel.delegate.test.tsx",
   // The vote-delegation read refusing a row without its DRep field.
   "src/lib/cardano/indexer-errors.test.ts",
+  // A tick or a typed tail made right after a review appears, and the re-arm
+  // when the review switches to another destination.
+  "src/components/wallet/__tests__/ConfirmGate.rearm.test.tsx",
 ];
 
 /**
@@ -2420,6 +2424,25 @@ const MUTANTS = [
     file: STAKING,
     from: '    if (withdrawal === "released" && sentWithdrawal !== null) onWithdrawalSettled(sentWithdrawal.txHash);\n',
     to: "    /* MUT57-SETTLE */\n",
+  },
+  // ── The confirm gate re-arms inside the commit, so a tick right after a review
+  // appears is not undone, and still re-arms when the destination changes ──
+  {
+    name: "MUT-GATE-PASSIVE: the gate re-arms after paint and undoes a tick made right after the review appeared",
+    edits: [
+      {
+        file: CONFIRM_GATE,
+        from: 'import { useLayoutEffect, useState } from "react";',
+        to: 'import { useEffect, useState } from "react"; /* MUT-GATE-PASSIVE */',
+      },
+      { file: CONFIRM_GATE, from: "  useLayoutEffect(() => {\n", to: "  useEffect(() => {\n" },
+    ],
+  },
+  {
+    name: "MUT-GATE-NOREARM: a tick given for one destination carries over to another",
+    file: CONFIRM_GATE,
+    from: "    onChange(false);\n    // onChange is a stable",
+    to: "    /* MUT-GATE-NOREARM */\n    // onChange is a stable",
   },
   // ── Issue #58 (MUT58-*): a read showing the sent choice ends the record; an
   // open Abstain review refuses once another choice is in flight; a failed
