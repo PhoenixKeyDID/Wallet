@@ -26,7 +26,7 @@ type ProtocolParams = tyTypes.ProtocolParams;
 import type { PhoenixNetwork } from "./address";
 import { getChainSource } from "./chainSource";
 import { addressHexOf, readChainDatum, walletOwnsOutput, walletOwnsRefScriptOutput, type WalletInput } from "./ownUtxo";
-import { SubmitRejectedError } from "./submitError";
+import { SUBMIT_DETAIL_LIMIT, SubmitRejectedError } from "./submitError";
 import {
   bfProtocolParams,
   bfTipSlot,
@@ -772,7 +772,7 @@ export async function submitTx(network: PhoenixNetwork, signedCborHex: string): 
   // Typed, not a bare Error: the caller has to be able to tell "the node said
   // no" from "no answer came back", and a status code inside a string cannot
   // carry that. See `submitError.ts`.
-  if (!res.ok) throw new SubmitRejectedError(res.status, text.slice(0, 300), "Koios /submittx");
+  if (!res.ok) throw new SubmitRejectedError(res.status, text.slice(0, SUBMIT_DETAIL_LIMIT), "Koios /submittx");
   const hash = text.replace(/^"|"$/g, "");
   if (!/^[0-9a-f]{64}$/i.test(hash)) {
     throw new Error(`Koios /submittx returned no tx hash: ${text.slice(0, 300)}`);

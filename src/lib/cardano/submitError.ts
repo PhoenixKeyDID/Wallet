@@ -96,9 +96,12 @@ export const PROVIDER_REFUSED_REASON = "the wallet's chain provider refused the 
  * /ipc/node.socket refused`), and none of them names a rule.
  *
  * Every name must stand as a token of its own: a word glued to a letter,
- * digit, `_`, `.`, `/` or `-` is part of a host name or a path
- * (`ConwayRelay01_internal`, `/var/run/ShelleyHost/x`) and gives nothing, and
- * so does `TxValidationErrorInCardanoMode`.
+ * digit, `_`, `.`, `/`, `-`, `@` or `=` — or preceded by `:`, or followed by
+ * `:` and a port — is part of a host name, a path, a URL or a config pair
+ * (`ConwayRelay01_internal`, `/var/run/ShelleyHost/x`,
+ * `user@ConwayHostPrimary:5432`, `upstream=ConwayRelayEuWest`) and gives
+ * nothing, and so does `TxValidationErrorInCardanoMode`. A name followed by
+ * `: ` and a message (`ConwayNodeUnavailable: dial tcp …`) still stands alone.
  *
  * The match is on the *shape* of a name, not on a list of the ledger's rules:
  * `ConwayNodeUnavailable` or `LedgerUTxO` standing alone would pass too. That
@@ -108,36 +111,66 @@ export const PROVIDER_REFUSED_REASON = "the wallet's chain provider refused the 
  * next to it.
  */
 const LEDGER_REASON =
-  /(?<![\w./-])(?:(?:Shelley|Allegra|Mary|Alonzo|Babbage|Conway)(?!(?:Spending|Minting|Certifying|Rewarding|Voting|Proposing)\b)(?![A-Za-z]*Era|[A-Za-z]*Value\b)[A-Z][A-Za-z]+|[A-Z][A-Za-z]*UTxO|[A-Z][A-Za-z]*[a-z](?:UTXOW|UTXOS|UTXO|DELEGS|DELEG|DELPL|POOL|GOVCERT|CERTS|CERT|GOV|LEDGERS|LEDGER|PPUP|MIR)|ApplyTxError|TxValidationError|ValidationTagMismatch|PlutusFailure)(?![\w./-])/g;
+  /(?<![\w./@:=-])(?:(?:Shelley|Allegra|Mary|Alonzo|Babbage|Conway)(?!(?:Spending|Minting|Certifying|Rewarding|Voting|Proposing)\b)(?![A-Za-z]*Era|[A-Za-z]*Value\b)[A-Z][A-Za-z]+|[A-Z][A-Za-z]*UTxO|[A-Z][A-Za-z]*[a-z](?:UTXOW|UTXOS|UTXO|DELEGS|DELEG|DELPL|POOL|GOVCERT|CERTS|CERT|GOV|LEDGERS|LEDGER|PPUP|MIR)|ApplyTxError|TxValidationError|ValidationTagMismatch|PlutusFailure)(?![\w./@=-]|:\d)/g;
 
 /**
- * The failure a ledger rule raised, read from where the node puts it rather
- * than from its spelling: inside `ApplyTxError (…)`, the constructor right
- * after `…Failure (` or `ApplyTxError (`. `InsufficientCollateral`,
+ * How many characters of a refused body the two submit paths keep (Koios in
+ * `provider.ts`, the chain endpoint in `blockfrost.ts`). Shared so
+ * `ledgerNames` knows when the last word may have been cut in half.
+ */
+export const SUBMIT_DETAIL_LIMIT = 300;
+
+/**
+ * The ledger rules that wrap another rule's failure: `ApplyTxError`, a rule's
+ * `…Failure` that carries the failure of the rule below it
+ * (`ConwayUtxowFailure (UtxoFailure (UtxosFailure (…`, `ConwayCertsFailure
+ * (CertFailure (DelegFailure (…`), and the Babbage-era bridge
+ * (`AlonzoInBabbageUtxoPredFailure`).
+ *
+ * A closed set, unlike `LEDGER_REASON`: this decides whose *argument* is read,
+ * and a provider's own `…Failure` (`ConwayRelayFailure`, `DbFailure`) must not
+ * open one. `ConwayMempoolFailure` is left out on purpose: it carries free
+ * text, not a rule.
+ */
+const NESTING_WRAPPER =
+  /^(?:ApplyTxError|(?:Shelley|Allegra|Mary|Alonzo|Babbage|Conway)?(?:Utxow|Utxos|Utxo|Certs|Cert|Delegs|Deleg|Delpl|Pool|GovCert|Gov|Ledgers|Ledger|Ppup|Mir|Bbody)Failure|[A-Z][a-z]+In[A-Z][a-z]+(?:Utxow|Utxos|Utxo)PredFailure)$/;
+
+/**
+ * A name, then ` (`, then the constructor inside it. The inner name is a
+ * lookahead, so the next match can start on it: `A (B (C` gives `A→B`, then
+ * `B→C`.
+ *
+ * The inner one is the failure a ledger rule raised, read from where the node
+ * puts it rather than from its spelling. `InsufficientCollateral`,
  * `WrongNetwork`, `PPViewHashesDontMatch`, `MissingRedeemers` carry no era
  * prefix and no rule suffix, and they are what tells one rejection from
- * another. Nesting wrappers (`UtxoFailure`, `CertFailure`) are names too and
- * come through.
- *
- * Read this way only from the first wrapper `LEDGER_REASON` already accepted
- * (`ApplyTxError`, or a `…Failure` such as `ConwayUtxowFailure`, which is where
- * cardano-submit-api's JSON starts), so a provider message of the same shape
- * with no ledger wrapper before it (`UpstreamFailure (Connection refused …)`)
- * gives nothing.
+ * another. It counts only when the outer name was itself accepted (by
+ * `LEDGER_REASON`, or as the inner name of an accepted wrapper) and is a
+ * `NESTING_WRAPPER`. So the chain is walked from the outside in, and
+ * `DbFailure (Postgres10 …)` or `ConwayRelayFailure (Koios …)` gives nothing,
+ * even after a real `ApplyTxError` in the same body.
  */
-const INNER_RULE = /(?<=(?:Failure|ApplyTxError) \()[A-Z][A-Za-z0-9]*(?![\w./-])/g;
+const WRAPPED_RULE = /(?<![\w./@:=-])([A-Z][A-Za-z0-9]*) \((?=([A-Z][A-Za-z0-9]*)(?![\w./@=-]|:\d))/g;
 
-/** Ledger rule names in `detail`, each once, in the order they appear. */
+/**
+ * Ledger rule names in `detail`, each once, in the order they appear.
+ *
+ * A body cut at `SUBMIT_DETAIL_LIMIT` may end inside a word, and the trailing
+ * guard matches at the end of the string, so `…ValidationTa` would pass as a
+ * name. When the body is that long, a name that touches its end is dropped.
+ */
 function ledgerNames(detail: string): string[] {
-  const found: Array<[number, string]> = [];
-  for (const m of detail.matchAll(LEDGER_REASON)) found.push([m.index, m[0]]);
-  const wrapper = found.find(([, name]) => name === "ApplyTxError" || name.endsWith("Failure"));
-  if (wrapper) {
-    const start = wrapper[0];
-    for (const m of detail.slice(start).matchAll(INNER_RULE)) found.push([start + m.index, m[0]]);
+  const accepted = new Map<number, string>();
+  for (const m of detail.matchAll(LEDGER_REASON)) accepted.set(m.index, m[0]);
+  for (const m of detail.matchAll(WRAPPED_RULE)) {
+    if (accepted.get(m.index) === m[1] && NESTING_WRAPPER.test(m[1])) {
+      accepted.set(m.index + m[1].length + 2, m[2]);
+    }
   }
-  found.sort((a, b) => a[0] - b[0]);
-  return [...new Set(found.map(([, name]) => name))];
+  const found = [...accepted].sort((a, b) => a[0] - b[0]);
+  const cut = detail.length >= SUBMIT_DETAIL_LIMIT;
+  const whole = found.filter(([at, name]) => !(cut && at + name.length === detail.length));
+  return [...new Set(whole.map(([, name]) => name))];
 }
 
 /**

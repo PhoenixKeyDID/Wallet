@@ -3,6 +3,7 @@ import { submitTx } from "./provider";
 import { bfSubmitTx } from "./blockfrost";
 import {
   PROVIDER_REFUSED_REASON,
+  SUBMIT_DETAIL_LIMIT,
   SubmitRejectedError,
   isDefiniteRejection,
   rejectionReasonForSite,
@@ -267,8 +268,64 @@ describe("submit > the reason a site receives for a rejection", () => {
   it.each([
     "UpstreamFailure (Connection refused to 10.0.0.3)",
     "ConwaySpending (AsIx 0)",
+    // A ledger wrapper's name the body did not earn: nothing accepted it.
+    "upstream UtxoFailure (Postgres10 at db.internal)",
   ])("a 400 with a wrapper shape but no ledger wrapper gets the fixed reason: %s", (detail) => {
     expect(rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"))).toBe(PROVIDER_REFUSED_REASON);
+  });
+
+  // The inner name is read only through a chain of ledger wrappers walked from
+  // the outside in. A provider's own `…Failure (` opens none, even after a
+  // real wrapper in the same body, and neither does `ConwayMempoolFailure`,
+  // whose argument is free text.
+  it.each([
+    ["ConwayRelayFailure (Koios backend unreachable)", "ConwayRelayFailure", "Koios"],
+    ["TxSubmitFail ApplyTxError cached; DbFailure (Postgres10 at db.internal)", "ApplyTxError", "Postgres10"],
+    ["ConwayMempoolFailure (KoiosSecretRelay) at 10.0.0.1", "ConwayMempoolFailure", "KoiosSecretRelay"],
+  ])("a provider word inside a wrapper that is not a ledger wrapper stays home: %s", (detail, names, leak) => {
+    const reason = rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"));
+    expect(reason).toBe(`HTTP 400: ${names}`);
+    expect(reason).not.toContain(leak);
+  });
+
+  // A host inside a URL or a config pair is part of it.
+  it.each([
+    "postgres://user@ConwayHostPrimary:5432 refused",
+    "upstream=ConwayRelayEuWest:3001 refused",
+    "upstream ConwayRelayEuWest:3001 refused",
+    "relay at host:ConwayRelayEuWest refused",
+  ])("a 400 whose rule-shaped word is a host in a URL or config gets the fixed reason: %s", (detail) => {
+    expect(rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"))).toBe(PROVIDER_REFUSED_REASON);
+  });
+
+  // Both submit paths keep only the first SUBMIT_DETAIL_LIMIT characters. A
+  // cut inside a name must not hand the site half a name.
+  // `upTo` is where the cut falls; the padding moves the body so the cut lands
+  // right there.
+  const cutAt = (upTo: string, rest: string) => {
+    const tail =
+      "transaction submit error ShelleyTxValidationError ShelleyBasedEraConway (ApplyTxError (ConwayUtxowFailure (UtxoFailure (UtxosFailure (ValidationTagMismatch (IsValid True) (FailedUnexpectedly (PlutusFailure ";
+    const end = tail.indexOf(upTo) + upTo.length;
+    const body = '{"message":"' + " ".repeat(SUBMIT_DETAIL_LIMIT - 12 - end) + tail + rest;
+    return body.slice(0, SUBMIT_DETAIL_LIMIT);
+  };
+
+  it.each([
+    // Cut inside a name read through its wrapper.
+    ["(UtxosFailure (ValidationTa", "ShelleyTxValidationError ApplyTxError ConwayUtxowFailure UtxoFailure UtxosFailure"],
+    // Cut inside a name that matches on its own shape.
+    ["(ApplyTxError (ConwayUtxowFai", "ShelleyTxValidationError ApplyTxError"],
+  ])("a body cut inside a name does not give the site the half before the cut: …%s", (upTo, names) => {
+    const cut = cutAt(upTo, "\\\" :| [])))))");
+    expect(cut.length).toBe(SUBMIT_DETAIL_LIMIT);
+    expect(cut.endsWith(upTo)).toBe(true);
+    expect(rejectionReasonForSite(new SubmitRejectedError(400, cut, "Koios /submittx"))).toBe(`HTTP 400: ${names}`);
+  });
+
+  it("a body shorter than the cut keeps the name at its end", () => {
+    expect(rejectionReasonForSite(new SubmitRejectedError(400, "ApplyTxError (ConwayUtxowFailure (MissingRedeemers", "Koios /submittx"))).toBe(
+      "HTTP 400: ApplyTxError ConwayUtxowFailure MissingRedeemers",
+    );
   });
 
   // Only the site's reason is asserted: nothing here says this body never
