@@ -45,8 +45,12 @@ import {
   voteDelegationLanded,
   voteDelegationPending,
   voteDelegationWatch,
+  withdrawalTxAnswered,
+  withdrawalWatch,
   type SentDelegation,
   type SentVoteDelegation,
+  type SentWithdrawal,
+  type WithdrawalTxAnswer,
 } from "@/components/wallet/delegationFeedback";
 
 /**
@@ -57,6 +61,16 @@ export type DelegationSentProps = {
   sentDelegation: SentDelegation | null;
   onDelegationSent: (sent: SentDelegation) => void;
   onDelegationSettled: () => void;
+  /**
+   * A reward withdrawal just sent, held by the parent so a tab switch does not
+   * bring the withdraw button back while the indexer still reports the old
+   * balance (`withdrawalWatch`). `onWithdrawalSettled(txHash)` lets it go once
+   * its validity window closes; a read showing another balance only opens the
+   * door, so a lagging read of the old balance after that is still known stale.
+   */
+  sentWithdrawal: SentWithdrawal | null;
+  onWithdrawalSent: (sent: SentWithdrawal) => void;
+  onWithdrawalSettled: (txHash: string) => void;
   /**
    * A vote (DRep) delegation just sent — from here, or from the Governance tab.
    * Held by the parent, above the tab switch, so this panel offering "Choose
@@ -81,6 +95,9 @@ export type DelegationSentProps = {
 
 /** How often the account is re-read while a delegation waits to be recorded. */
 const PENDING_POLL_MS = 20_000;
+
+/** One account read: `seq` orders it among this mount's reads, `at` is the wall clock when it started. */
+type AccountRead = { seq: number; at: number };
 
 type PoolReview = { pool: PoolSummary; needsRegistration: boolean; built: BuiltTx };
 type WithdrawReview = { amount: bigint; built: BuiltTx };
@@ -107,6 +124,9 @@ export function StakingPanel({
   sentDelegation,
   onDelegationSent,
   onDelegationSettled,
+  sentWithdrawal,
+  onWithdrawalSent,
+  onWithdrawalSettled,
   sentVoteDelegation,
   onVoteDelegationSent,
   onVoteDelegationLanded,
@@ -127,12 +147,27 @@ export function StakingPanel({
   // one started earlier can show the very DRep a later record targets without
   // that record having landed (see `voteLandedByRead`).
   const [accountReadAt, setAccountReadAt] = useState<number | null>(null);
+  // The network the read above belongs to. The picker can switch without this
+  // panel remounting, and the load effect below clears the old answer only
+  // after the first render on the new network. Preprod and preview give one key
+  // the same stake_test1 address, so in that render the watches below would
+  // judge this network's records by the other network's balance. Cleared
+  // during render. Since a withdrawal record outlives a read of another balance
+  // (`withdrawalWatch`), that one render can no longer release it; the reset is
+  // kept so no render ever pairs a network with another network's answer, and
+  // no test pins it (the in-between render is not observable through `act`).
+  const [accountNetwork, setAccountNetwork] = useState(network);
+  if (accountNetwork !== network) {
+    setAccountNetwork(network);
+    setAccountState(null);
+    setAccountReadAt(null);
+  }
   const [loadingAccount, setLoadingAccount] = useState(true);
   // Distinguish "couldn't read stake status" from a genuine "not delegated / 0
   // rewards" — an indexer hiccup must not masquerade as lost stake.
   const [loadError, setLoadError] = useState(false);
   // The last timed re-read (while a delegation or vote delegation is in
-  // flight) failed. Kept apart from `loadError`: the screen keeps the last
+  // flight, or a sent withdrawal is held) failed. Kept apart from `loadError`: the screen keeps the last
   // good read and its waiting line, and says that read may be stale, rather
   // than swallowing the failure or replacing the screen with an error box.
   const [rereadFailed, setRereadFailed] = useState(false);
@@ -162,6 +197,29 @@ export function StakingPanel({
     now,
   );
 
+  // When the read now on screen was started. Several reads overlap — the
+  // timed re-read, the read after a signature, the vote look-ups — and the
+  // network answers them in any order: a read made right after a withdrawal
+  // can come back after a later one has shown the balance gone and released
+  // the hold, and laying its old balance over that offers the same withdrawal
+  // again. An answer to a read started before the one on screen is dropped.
+  //
+  // "Before" is counted, not timed: `seq` grows by one per read started on
+  // this mount. Ordered by `Date.now()`, a clock stepped back (NTP, a laptop
+  // waking, the user) dropped every read made after the step until the clock
+  // caught up. `at` (`Date.now()`) is kept only to compare with a record's
+  // `sentAt`, which is a wall-clock time from the parent.
+  const readSeqRef = useRef(0);
+  const startRead = (): AccountRead => ({ seq: ++readSeqRef.current, at: Date.now() });
+  const appliedReadSeqRef = useRef(0);
+  const applyAccountRead = (state: StakeAccountState, read: AccountRead): boolean => {
+    if (read.seq < appliedReadSeqRef.current) return false;
+    appliedReadSeqRef.current = read.seq;
+    setAccountState(state);
+    setAccountReadAt(read.at);
+    return true;
+  };
+
   // Read the wallet's own reward address + its on-chain state once on mount.
   // `getRewardAddresses()` is the only source of a stake key here — a wallet
   // this page did not derive can only sign for the key it reports.
@@ -184,12 +242,9 @@ export function StakingPanel({
         if (cancelled) return;
         setRewardAddressHex(hex);
         setRewardAddressBech32(bech32Addr);
-        const readAt = Date.now();
+        const read = startRead();
         const state = await getStakeAccountState(network, bech32Addr);
-        if (!cancelled) {
-          setAccountState(state);
-          setAccountReadAt(readAt);
-        }
+        if (!cancelled) applyAccountRead(state, read);
       } catch (err) {
         if (!cancelled) {
           setLoadError(true);
@@ -217,11 +272,10 @@ export function StakingPanel({
     if (!rewardAddressBech32) return;
     const readOn = network;
     try {
-      const readAt = Date.now();
+      const read = startRead();
       const state = await getStakeAccountState(readOn, rewardAddressBech32);
       if (networkRef.current !== readOn) return; // switched while reading: not this screen's answer
-      setAccountState(state);
-      setAccountReadAt(readAt);
+      if (!applyAccountRead(state, read)) return;
       setLoadError(false);
       setRereadFailed(false);
     } catch (err) {
@@ -260,17 +314,73 @@ export function StakingPanel({
     (watch.kind === "pending" || watch.kind === "unseen") &&
     sentDelegation !== null &&
     now - sentDelegation.sentAt < DELEGATION_WATCH_LIMIT_MS;
+
+  // A reward withdrawal just sent from this account. The indexer reports the
+  // old balance until it catches up, so while the record is held the withdraw
+  // door shows a waiting line instead of a second withdraw button; the same
+  // re-read below brings the new balance. A read started after the send that
+  // shows any other balance than what was withdrawn opens the door, but the
+  // record stays until its validity window closes: an indexer instance that
+  // has not caught up can still answer with the old amount, and that answer
+  // must hold the door again, not offer the same withdrawal a second time.
+  // The transaction is also looked up by hash: found in a block, every read of
+  // the old amount is stale; not in a block past `DELEGATION_UNSEEN_MS`, it was
+  // most likely dropped, and the door is offered again with a line saying so.
+  const [withdrawalTx, setWithdrawalTx] = useState<WithdrawalTxAnswer | null>(null);
+  const withdrawal = withdrawalWatch(
+    sentWithdrawal,
+    rewardAddressBech32,
+    network,
+    accountState?.rewardsAvailable,
+    accountReadAt,
+    withdrawalTx,
+    now,
+  );
   useEffect(() => {
-    if (!waiting || !rewardAddressBech32) return;
+    if (withdrawal === "released" && sentWithdrawal !== null) onWithdrawalSettled(sentWithdrawal.txHash);
+    // The record and callback are the parent's; the watch's answer is what moves.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [withdrawal]);
+
+  const withdrawalWatched = withdrawal === "held" || withdrawal === "unseen";
+  const rereading = waiting || withdrawalWatched;
+
+  // The look-up by hash, on the same period as the re-read, and once as soon
+  // as the watch starts. Only a definite answer is kept: a failed look-up is
+  // "not known", and must not turn into "not in a block" (`withdrawalTxAnswered`).
+  const withdrawalTxRef = useRef(sentWithdrawal);
+  withdrawalTxRef.current = sentWithdrawal;
+  useEffect(() => {
+    if (!withdrawalWatched) return;
+    let cancelled = false;
+    const lookUp = () => {
+      const sent = withdrawalTxRef.current;
+      if (sent === null) return;
+      const askedAt = Date.now();
+      fetchTxSeen(sent.network, sent.txHash).then(
+        (seen) => {
+          if (!cancelled) setWithdrawalTx((cur) => withdrawalTxAnswered(cur, sent.txHash, seen, askedAt));
+        },
+        () => {},
+      );
+    };
+    lookUp();
+    const timer = setInterval(lookUp, PENDING_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [withdrawalWatched, sentWithdrawal?.txHash]);
+  useEffect(() => {
+    if (!rereading || !rewardAddressBech32) return;
     let cancelled = false;
     const timer = setInterval(() => {
-      const readAt = Date.now();
-      setNow(readAt);
+      const read = startRead();
+      setNow(read.at);
       getStakeAccountState(network, rewardAddressBech32)
         .then((state) => {
           if (cancelled) return;
-          setAccountState(state);
-          setAccountReadAt(readAt);
+          if (!applyAccountRead(state, read)) return;
           setLoadError(false);
           setRereadFailed(false);
         })
@@ -282,7 +392,7 @@ export function StakingPanel({
       cancelled = true;
       clearInterval(timer);
     };
-  }, [waiting, network, rewardAddressBech32]);
+  }, [rereading, network, rewardAddressBech32]);
 
   // A vote delegation (Abstain here, or any choice on the Governance tab) is
   // in flight and the chain has not shown it yet. Held by the parent, so it
@@ -337,12 +447,11 @@ export function StakingPanel({
     if (!staleReadShowsVote || !rewardAddressBech32) return;
     let cancelled = false;
     const readOn = network;
-    const readAt = Date.now();
+    const read = startRead();
     getStakeAccountState(readOn, rewardAddressBech32)
       .then((state) => {
         if (cancelled || networkRef.current !== readOn) return;
-        setAccountState(state);
-        setAccountReadAt(readAt);
+        if (!applyAccountRead(state, read)) return;
         setLoadError(false);
         setRereadFailed(false);
       })
@@ -377,11 +486,17 @@ export function StakingPanel({
     let cancelled = false;
     let releaseTx: () => void = () => {};
     const confirmOnChain = (sent: SentVoteDelegation) => {
-      const readAt = Date.now();
+      const read = startRead();
       return getStakeAccountState(sent.network, sent.account).then((state) => {
         if (cancelled || networkRef.current !== sent.network) return false;
-        setAccountState(state);
-        setAccountReadAt(readAt);
+        // A newer read is already on screen: this one is not confirmed from.
+        // On this tab the look-up runs only while the screen's read shows no
+        // DRep (`voteInFlight`); a newer read that shows one ends this effect
+        // anyway, and one that still shows none would, with the record
+        // dropped on this older answer, put "no DRep" and Abstain back on
+        // screen — the second paid vote delegation the confirm read exists
+        // to prevent. The next tick asks again.
+        if (!applyAccountRead(state, read)) return false;
         setLoadError(false);
         setRereadFailed(false);
         return voteDelegationConfirmed(sent, state.delegatedDRep);
@@ -400,13 +515,12 @@ export function StakingPanel({
     // Once now, not one interval from now (see the Governance tab's twin).
     lookUpNow();
     const timer = setInterval(() => {
-      const readAt = Date.now();
-      setNow(readAt);
+      const read = startRead();
+      setNow(read.at);
       getStakeAccountState(network, rewardAddressBech32)
         .then((state) => {
           if (cancelled) return;
-          setAccountState(state);
-          setAccountReadAt(readAt);
+          if (!applyAccountRead(state, read)) return;
           setLoadError(false);
           setRereadFailed(false);
         })
@@ -520,6 +634,9 @@ export function StakingPanel({
   const reviewWithdraw = async () => {
     if (!rewardAddressHex) return toastError(t("reward_addr_not_ready"));
     if (!accountState || accountState.rewardsAvailable <= BigInt("0")) return;
+    // The door shows no button while a sent withdrawal is held; this is the
+    // same refusal for any other way in.
+    if (withdrawal === "held") return;
     // The node rejects a withdrawal from an account with no vote delegation.
     // Building it anyway would show a fee for a transaction that cannot land.
     if (accountState.delegatedDRep === null) return toastError(t("withdraw_needs_drep"));
@@ -550,6 +667,17 @@ export function StakingPanel({
     try {
       const hash = await port.signAndSubmit(withdrawReview.built, network);
       toastSuccess("withdraw_submitted", { hash: hash.slice(0, 12) });
+      if (rewardAddressBech32) {
+        const sentAt = Date.now();
+        setNow(sentAt);
+        onWithdrawalSent({
+          account: rewardAddressBech32,
+          network,
+          amount: withdrawReview.amount,
+          sentAt,
+          txHash: hash.toLowerCase(),
+        });
+      }
       setWithdrawReview(null);
       setChecked(false);
       await refreshAccountState();
@@ -930,7 +1058,7 @@ export function StakingPanel({
         {/* The timed re-read behind the waiting lines failed: the lines stay
             (they are still true), and the reader is told the numbers above
             may be from an older read. */}
-        {rereadFailed && (waiting || voteInFlight) && (
+        {rereadFailed && (waiting || withdrawal === "held" || voteInFlight) && (
           <p className="text-xs text-amber-brand">{t("stake_reread_failed")}</p>
         )}
         {/* Ran out without the chain showing it, and the chain still shows no
@@ -945,6 +1073,12 @@ export function StakingPanel({
               {t("vote_delegation_expired", { time: clockTime(expiredVoteDelegation.sentAt, now) })}
             </p>
           )}
+        {/* A sent withdrawal the chain does not have in a block, long after it
+            should have landed: the door below is offered again, and this says
+            why — so a second send is a choice, not a surprise. */}
+        {withdrawal === "unseen" && (
+          <p className="text-xs text-amber-brand">{t("withdraw_sent_unseen")}</p>
+        )}
         {/* The withdraw door is always on screen once the account is read.
             A button that only appears when there is something to take left a
             user with nothing yet looking for a feature that seemed missing. */}
@@ -952,6 +1086,7 @@ export function StakingPanel({
           <WithdrawDoor
             state={accountState}
             voteInFlight={voteInFlight}
+            withdrawHeld={withdrawal === "held"}
             locked={busy || uncertainHash !== null}
             busy={busy}
             onWithdraw={reviewWithdraw}
@@ -1047,20 +1182,23 @@ export function StakingPanel({
 }
 
 /**
- * The withdraw button and the reason when it cannot be used. Three states,
+ * The withdraw button and the reason when it cannot be used. Four states,
  * each with its own sentence, so "nothing to take yet", "the chain will refuse
- * this account" and "waiting for the fix to land" never look the same:
+ * this account", "waiting for the fix to land" and "the withdrawal just sent
+ * has not shown yet" never look the same:
  *
  * - no rewards        → button shown, disabled, with the reason;
  * - no vote delegation → the rule explained, and Abstain offered — or, once a
  *                        vote delegation is in flight, nothing here: the
  *                        waiting line above (outside the read-error branch)
  *                        says it, and the offer must not be made again;
+ * - a withdrawal just sent and still held → a waiting line, no button;
  * - otherwise          → the button.
  */
 function WithdrawDoor({
   state,
   voteInFlight,
+  withdrawHeld,
   locked,
   busy,
   onWithdraw,
@@ -1069,6 +1207,7 @@ function WithdrawDoor({
 }: {
   state: StakeAccountState;
   voteInFlight: boolean;
+  withdrawHeld: boolean;
   locked: boolean;
   busy: boolean;
   onWithdraw: () => void;
@@ -1100,6 +1239,12 @@ function WithdrawDoor({
         </button>
       </div>
     );
+  }
+
+  // A withdrawal was just sent and the indexer still reports the balance it
+  // took: a second button would sign a withdrawal the node refuses.
+  if (withdrawHeld) {
+    return <p className="text-xs text-amber-brand">{t("withdraw_sent_waiting")}</p>;
   }
 
   return (

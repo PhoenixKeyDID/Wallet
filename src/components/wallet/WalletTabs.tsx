@@ -10,6 +10,7 @@ import {
   voteDelegationExpiresAt,
   type SentDelegation,
   type SentVoteDelegation,
+  type SentWithdrawal,
 } from "./delegationFeedback";
 import {
   clearSentVote,
@@ -254,6 +255,30 @@ export function WalletTabs({
   const clearSentDelegation = useCallback(() => setSentDelegation(null), []);
 
   /**
+   * A reward withdrawal just sent. Here for the same reason as the delegation
+   * above: the indexer keeps reporting the old reward balance after it lands,
+   * and a trip to another tab and back must not bring the withdraw button back
+   * with that balance on it. Released by the Staking tab when the
+   * transaction's validity window has closed (`withdrawalWatch`) — it reads
+   * the clock on mount, so a record that outlives its window on another tab
+   * goes the moment Staking opens. A read showing another balance opens the
+   * door without dropping the record, so a lagging read of the old balance
+   * afterwards still holds it. Only the record for that hash goes.
+   *
+   * Deliberately in memory only, unlike the vote delegation below: a reload,
+   * the page locking, or a second browser tab starts without it, and while
+   * the provider still reports the old balance that screen offers Withdraw
+   * again. That is a confusing refusal, not a loss: the node rejects the
+   * duplicate (a reward withdrawal must equal the whole balance when it lands,
+   * and the first one already took it), so no funds move.
+   */
+  const [sentWithdrawal, setSentWithdrawal] = useState<SentWithdrawal | null>(null);
+  const clearSentWithdrawal = useCallback(
+    (txHash: string) => setSentWithdrawal((cur) => (cur !== null && cur.txHash === txHash ? null : cur)),
+    [],
+  );
+
+  /**
    * A vote (DRep) delegation just sent and not yet on chain. Here, not in a
    * panel, because the Staking and Governance tabs are each mounted only while
    * active: an Abstain sent on Staking, or a DRep chosen on Governance, must
@@ -407,6 +432,9 @@ export function WalletTabs({
           sentDelegation={sentDelegation}
           onDelegationSent={setSentDelegation}
           onDelegationSettled={clearSentDelegation}
+          sentWithdrawal={sentWithdrawal}
+          onWithdrawalSent={setSentWithdrawal}
+          onWithdrawalSettled={clearSentWithdrawal}
           sentVoteDelegation={sentVoteDelegation}
           expiredVoteDelegation={voteSlot.expired}
           onVoteDelegationSent={rememberVoteDelegation}
