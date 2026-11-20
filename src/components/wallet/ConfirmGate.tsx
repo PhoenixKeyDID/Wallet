@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useLayoutEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { PhoenixNetwork } from "@/lib/cardano";
 
@@ -155,7 +155,13 @@ export function ConfirmGate({
   // this reset a previously-matched confirmation (and the typed tails) would
   // carry over to a different destination — the button would stay enabled for
   // an address the user never re-checked. Re-arm whenever the set changes.
-  useEffect(() => {
+  //
+  // A layout effect, not a passive one: it runs inside the commit, before the
+  // new gate can be clicked. A passive effect runs after paint, so a tick that
+  // lands between the two was undone by this reset — the box showed unticked
+  // and the confirm button stayed locked with nothing to say why. Loaded CI
+  // runners hit that window in the screen tests.
+  useLayoutEffect(() => {
     setEntries(challengeKey.split("\n").map(() => ""));
     onChange(false);
     // onChange is a stable setState updater from the parent; only the challenge

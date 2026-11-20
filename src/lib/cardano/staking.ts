@@ -253,6 +253,14 @@ export type BuildWithdrawalParams = {
   tip: number;
 };
 
+/**
+ * Validity window, in slots, of a reward withdrawal: `ttl = tip +` this. One
+ * slot is one second on mainnet, preprod and preview, so the Staking tab's
+ * "just withdrew" hold is derived from it — change the TTL here and the hold
+ * follows.
+ */
+export const WITHDRAWAL_TTL_SLOTS = 7200;
+
 /** Build a reward-withdrawal tx. */
 export function buildWithdrawal(params: BuildWithdrawalParams): BuiltTx {
   const { rewardAddress, amount, inputs, changeAddress, protocolParams, tip } = params;
@@ -260,7 +268,7 @@ export function buildWithdrawal(params: BuildWithdrawalParams): BuiltTx {
   const rewardAccount = rewardAddressFromHex(rewardAddress);
 
   const tx = new Transaction({ protocolParams });
-  tx.setTTL(tip + 7200);
+  tx.setTTL(tip + WITHDRAWAL_TTL_SLOTS);
   tx.addWithdrawal({ rewardAccount, amount: new BigNumber(amount.toString()) });
 
   const prepared = tx.prepareTransaction({ inputs, changeAddress });
