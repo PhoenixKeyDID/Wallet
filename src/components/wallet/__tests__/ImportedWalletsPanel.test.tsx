@@ -390,6 +390,34 @@ describe("ImportedWalletsPanel — attach", () => {
     );
     expect(screen.queryByText(tr("imported_none"))).toBeNull();
   });
+
+  it("an attach whose list re-read never answers ends on its own bound, not a spinner for good", async () => {
+    vi.useFakeTimers();
+    m.list.mockReturnValue(new Promise(() => {}));
+    mount();
+    await clickAttach();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(m.attach).toHaveBeenCalledTimes(1);
+    // The attach is confirmed; the wait that can still hang is the list re-read,
+    // and the button must not stay on "sending" for a wallet that is attached.
+    expect(screen.getByRole("button", { name: tr("imported_sending") })).toBeTruthy();
+    // ATTACH_REREAD_TIMEOUT_MS: the proof's expiry is not this read's clock.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000 - 1);
+    });
+    expect(screen.getByRole("button", { name: tr("imported_sending") })).toBeTruthy();
+    expect(screen.queryByRole("status")).toBeNull();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(screen.getByRole("status").textContent).toBe(
+      tr("imported_attached_list_failed", { address: short(BASE) }),
+    );
+    expect(attachButton()).toBeTruthy();
+    expect(screen.queryByText(tr("imported_none"))).toBeNull();
+  });
 });
 
 describe("ImportedWalletsPanel — list and detach", () => {
