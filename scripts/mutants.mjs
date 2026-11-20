@@ -2952,6 +2952,23 @@ const MUTANTS = [
     to: " \\((?=([A-Z][A-Za-z]*)(?![\\w./@=-]|:\\d|MUTSUBMITINNERCOLON))/g;\n",
     marker: "MUTSUBMITINNERCOLON",
   },
+  // Issue #75, point 2: the letters-only counterpart of the two guards above.
+  // A provider word inside a lone `ApplyTxError (` wrapper, and the wrapper a
+  // body earned that must still open.
+  {
+    name: "MUT75-APPLYTX-GATE: a provider word inside a lone ApplyTxError wrapper (upstream ApplyTxError (KoiosPrimaryReplica)) reaches the site",
+    file: SUBMIT_ERROR,
+    from: "      if (m[1] === \"ApplyTxError\" && !shelleyAt.some((at) => at < m.index)) continue;\n",
+    to: "      if (false /* MUT75APPLYTXGATE */ && !shelleyAt.some((at) => at < m.index)) continue;\n",
+    marker: "MUT75APPLYTXGATE",
+  },
+  {
+    name: "MUT75-APPLYTX-EARNED: an ApplyTxError that follows ShelleyTxValidationError does not open its wrapper either",
+    file: SUBMIT_ERROR,
+    from: "      if (m[1] === \"ApplyTxError\" && !shelleyAt.some((at) => at < m.index)) continue;\n",
+    to: "      if (m[1] === \"ApplyTxError\") continue; /* MUT75APPLYTXEARNED */\n",
+    marker: "MUT75APPLYTXEARNED",
+  },
   {
     name: "MUT-SUBMIT-PURPOSE: a redeemer's purpose tag (ConwaySpending) counts as a ledger reason",
     file: SUBMIT_ERROR,

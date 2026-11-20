@@ -25,9 +25,12 @@
  *
  * ## The 4xx / 5xx line
  *
- * `4xx` means this transaction did not get in: usually the node saying no,
- * sometimes the provider failing before it reached one (see
- * `rejectionReasonForSite`). `5xx` is the node or a proxy failing, and a
+ * Every `4xx` is *answered* as this transaction did not get in: usually the
+ * node saying no, sometimes the provider failing before it reached one. Only
+ * one 400 of that second kind has been measured as never reaching a node (see
+ * `rejectionReasonForSite`); the rest are not proven pre-node either way, and
+ * whether they should keep the id to look up instead is the open question in
+ * issue #71. `5xx` is the node or a proxy failing, and a
  * failure on the way back cannot tell you whether the transaction got through
  * on the way in — so `5xx` stays **unknown**, along with timeouts and dropped
  * connections. The split is deliberately on the side of caution: a rejection
@@ -155,8 +158,12 @@ const NESTING_WRAPPER =
  * even after a real `ApplyTxError` in the same body.
  *
  * The inner name is letters only and stands as a token by the same rules as
- * `LEDGER_REASON`, so a numbered host (`ApplyTxError (ConwayRelay01)`) or a
- * `host:database` pair (`ApplyTxError (PgPrimary:cexplorer)`) gives nothing.
+ * `LEDGER_REASON`, so a numbered host (`ConwayUtxowFailure (ConwayRelay01)`)
+ * or a `host:database` pair (`ConwayUtxowFailure (PgPrimary:cexplorer)`)
+ * gives nothing — a wrapper the body earned, where the `ApplyTxError` gate in
+ * `ledgerNames` is not what keeps the host home. A letters-only word
+ * (`ApplyTxError (KoiosPrimaryReplica)`) is not kept out by that either; the
+ * gate is what keeps it home.
  */
 const WRAPPED_RULE = /(?<![\w./@:=\\&?-])([A-Z][A-Za-z]*) \((?=([A-Z][A-Za-z]*)(?![\w./@=-]|:\w))/g;
 
@@ -166,12 +173,31 @@ const WRAPPED_RULE = /(?<![\w./@:=\\&?-])([A-Z][A-Za-z]*) \((?=([A-Z][A-Za-z]*)(
  * A body cut at `SUBMIT_DETAIL_LIMIT` may end inside a word, and the trailing
  * guard matches at the end of the string, so `…ValidationTa` would pass as a
  * name. When the body is that long, a name that touches its end is dropped.
+ *
+ * `ApplyTxError` opens its wrapper only when `ShelleyTxValidationError` was
+ * accepted ahead of it. It is the one wrapper that also stands alone as a
+ * name, so a provider's own message can carry the word with any letters-only
+ * word in brackets behind it: measured, `upstream ApplyTxError
+ * (KoiosPrimaryReplica) at pg` and `ApplyTxError (UtxoFailure
+ * (InternalRelaySecret))` reached the site as `HTTP 400: ApplyTxError
+ * KoiosPrimaryReplica` and `… UtxoFailure InternalRelaySecret`. Every
+ * measured node body that wraps in `ApplyTxError (` carries
+ * `ShelleyTxValidationError` ahead of the wrapper (`… ShelleyTxValidationError
+ * ShelleyBasedEraConway (ApplyTxError (…`; the cardano-submit-api JSON quotes
+ * it as a kind), so that is what earns the wrapper. Without it the wrapper
+ * stays closed: the names that stand on their own still travel (`ApplyTxError
+ * (ConwayUtxowFailure (BadInputsUTxO` gives all three), and a chain that hangs
+ * only off the lone `ApplyTxError` stays home with it.
  */
 function ledgerNames(detail: string): string[] {
   const accepted = new Map<number, string>();
   for (const m of detail.matchAll(LEDGER_REASON)) accepted.set(m.index, m[0]);
+  // Where `ShelleyTxValidationError` was accepted — what earns an
+  // `ApplyTxError (` wrapper (see above).
+  const shelleyAt = [...accepted].filter(([, name]) => name === "ShelleyTxValidationError").map(([at]) => at);
   for (const m of detail.matchAll(WRAPPED_RULE)) {
     if (accepted.get(m.index) === m[1] && NESTING_WRAPPER.test(m[1])) {
+      if (m[1] === "ApplyTxError" && !shelleyAt.some((at) => at < m.index)) continue;
       accepted.set(m.index + m[1].length + 2, m[2]);
     }
   }
@@ -187,9 +213,15 @@ function ledgerNames(detail: string): string[] {
  * When the body names **ledger** rules, the site gets those names, each once,
  * in the order they appear in the body (`ShelleyTxValidationError ApplyTxError
  * ConwayUtxowFailure FeeTooSmallUTxO`) — the one thing its developer can act
- * on — and none of the text between them: the arguments are this transaction's
- * own data, which the site already has, and any other words in the body are the
- * provider's. A body with no such name gets a fixed sentence, as does:
+ * on — and none of the text between them. That loses information, not only
+ * words. Some of the dropped arguments are this transaction's own data, which
+ * the site already has, but others are the ledger's own findings, and they go
+ * with them: `FeeTooSmallUTxO (Mismatch {supplied = Coin 170000, required =
+ * Coin 171234})` reaches the site without the required fee the ledger worked
+ * out, and a `PlutusFailure` without its script trace. The names tell the
+ * site which rule to fix; the numbers and the trace stay in the wallet's own
+ * copy of the error. Any other words in the body are the provider's. A body
+ * with no such name gets a fixed sentence, as does:
  *
  * - 401/403 an invalid or revoked project token, 402 a plan limit, 429 a rate
  *   limit. That body describes the person's account with the provider, not the
@@ -209,8 +241,10 @@ function ledgerNames(detail: string): string[] {
  * This shapes the text only. Whether an error is a rejection at all is still
  * `isDefiniteRejection`'s call, made before this is reached. That call stays on
  * the status. Only the socket 400 above was measured as never reaching a
- * node; other non-ledger 400s are not proven pre-node, they are simply not
- * something the site is told. A ledger refusal that a proxy turns into a 5xx
+ * node; other non-ledger 400s are not proven pre-node either way — they are
+ * still answered as a rejection, just not with the provider's words, and
+ * whether they should keep the id to look up instead is the open question in
+ * issue #71. A ledger refusal that a proxy turns into a 5xx
  * stays *unknown* — the direction that cannot cost a second payment.
  */
 export function rejectionReasonForSite(err: SubmitRejectedError): string {
