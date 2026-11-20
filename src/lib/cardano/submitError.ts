@@ -80,12 +80,20 @@ export const PROVIDER_REFUSED_REASON = "the wallet's chain provider refused the 
  *
  * Era-prefixed constructors (`ConwayIncompleteWithdrawals`,
  * `ConwayMempoolFailure`, `BabbageOutputTooSmallUTxO`), the `…UTxO` rule names
- * (`BadInputsUTxO`, `ValueNotConservedUTxO`, `FeeTooSmallUTxO`), and the two
- * wrappers a node puts around them. The era prefix does not count when what
- * follows is an era *type tag* (`ConwayEra`, `ShelleyBasedEraConway`,
- * `AnyCardanoEra`): those travel inside provider errors that also carry
- * internal paths (`connection to /ipc/node.socket refused`), and they name no
- * rule.
+ * (`BadInputsUTxO`, `ValueNotConservedUTxO`, `FeeTooSmallUTxO`), the failures
+ * named after the ledger rule that raised them, which carry that rule's name in
+ * capitals (`MissingVKeyWitnessesUTXOW`, `StakeKeyNotRegisteredDELEG`), the two
+ * names a failing script reports (`ValidationTagMismatch`, `PlutusFailure`),
+ * and the two wrappers a node puts around them. Those inner names are the ones
+ * a developer acts on: without them a missing signature, a failing script and
+ * an unregistered stake key all read as the same `ConwayUtxowFailure`.
+ *
+ * The era prefix does not count when an era *type tag* follows or is part of
+ * the word (`ConwayEra`, `ShelleyBasedEraConway`, `ShelleyToBabbageEraBabbage`,
+ * `ConwayEraOnwardsConway`), nor for an era's value type (`MaryValue`): tags
+ * travel inside provider errors that also carry internal paths (`connection to
+ * /ipc/node.socket refused`), and neither names a rule. The fixed names match
+ * only as whole words, so `TxValidationErrorInCardanoMode` gives nothing.
  *
  * The match is on the *shape* of a name, not on a list of the ledger's rules:
  * `ConwayNodeUnavailable` or `LedgerUTxO` would pass too. That is why only the
@@ -94,13 +102,13 @@ export const PROVIDER_REFUSED_REASON = "the wallet's chain provider refused the 
  * to an internal address or path gives the site that word and nothing else.
  */
 const LEDGER_REASON =
-  /\b(?:Shelley|Allegra|Mary|Alonzo|Babbage|Conway)(?!Era|BasedEra)[A-Z][A-Za-z]+|\b[A-Z][A-Za-z]*UTxO\b|ApplyTxError|TxValidationError/g;
+  /\b(?:Shelley|Allegra|Mary|Alonzo|Babbage|Conway)(?![A-Za-z]*Era|[A-Za-z]*Value\b)[A-Z][A-Za-z]+|\b[A-Z][A-Za-z]*UTxO\b|\b[A-Z][A-Za-z]*[a-z](?:UTXOW|UTXOS|UTXO|DELEGS|DELEG|DELPL|POOL|GOVCERT|CERTS|CERT|GOV|LEDGERS|LEDGER|PPUP|MIR)\b|\b(?:ApplyTxError|TxValidationError|ValidationTagMismatch|PlutusFailure)\b/g;
 
 /**
  * The reason a website receives for a definite rejection.
  *
- * When the body names **ledger** rules, the site gets those names, in the
- * order the node nested them (`ShelleyTxValidationError ApplyTxError
+ * When the body names **ledger** rules, the site gets those names, each once,
+ * in the order they appear in the body (`ShelleyTxValidationError ApplyTxError
  * ConwayUtxowFailure FeeTooSmallUTxO`) — the one thing its developer can act
  * on — and none of the text between them: the arguments are this transaction's
  * own data, which the site already has, and any other words in the body are the
@@ -130,7 +138,7 @@ const LEDGER_REASON =
  */
 export function rejectionReasonForSite(err: SubmitRejectedError): string {
   if (err.status !== 400) return PROVIDER_REFUSED_REASON;
-  const names = err.detail.match(LEDGER_REASON) ?? [];
+  const names = [...new Set(err.detail.match(LEDGER_REASON) ?? [])];
   if (names.length === 0) return PROVIDER_REFUSED_REASON;
   return `HTTP 400: ${names.join(" ")}`;
 }

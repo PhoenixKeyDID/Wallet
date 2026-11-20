@@ -163,6 +163,30 @@ describe("submit > the reason a site receives for a rejection", () => {
       "ShelleyTxValidationError ApplyTxError ConwayUtxowFailure FeeTooSmallUTxO",
     ],
     ["BabbageOutputTooSmallUTxO [(addr, 900000)]", "BabbageOutputTooSmallUTxO"],
+    // The inner names are what tells these three apart; the wrappers are the same.
+    [
+      'transaction submit error ShelleyTxValidationError ShelleyBasedEraConway (ApplyTxError (ConwayUtxowFailure (MissingVKeyWitnessesUTXOW (fromList [KeyHash {unKeyHash = "abc"}])) :| []))',
+      "ShelleyTxValidationError ApplyTxError ConwayUtxowFailure MissingVKeyWitnessesUTXOW",
+    ],
+    [
+      'transaction submit error ShelleyTxValidationError ShelleyBasedEraConway (ApplyTxError (ConwayUtxowFailure (UtxoFailure (UtxosFailure (ValidationTagMismatch (IsValid True) (FailedUnexpectedly (PlutusFailure "The machine terminated because of an error" :| [])))))) :| []))',
+      "ShelleyTxValidationError ApplyTxError ConwayUtxowFailure ValidationTagMismatch PlutusFailure",
+    ],
+    [
+      'ApplyTxError (ConwayCertsFailure (CertFailure (DelegFailure (StakeKeyNotRegisteredDELEG (KeyHashObj (KeyHash "ab"))))) :| [])',
+      "ApplyTxError ConwayCertsFailure StakeKeyNotRegisteredDELEG",
+    ],
+    // cardano-submit-api's JSON: the value type (MaryValue) is not a rule, and
+    // TxValidationErrorInCardanoMode is a tag, not the TxValidationError wrapper.
+    [
+      '{"contents":{"contents":{"contents":{"era":"ShelleyBasedEraConway","error":["ConwayUtxowFailure (UtxoFailure (ValueNotConservedUTxO (MaryValue (Coin 1) (MultiAsset (fromList []))) (MaryValue (Coin 2) (MultiAsset (fromList [])))))"],"kind":"ShelleyTxValidationError"},"tag":"TxValidationErrorInCardanoMode"},"tag":"TxCmdTxSubmitValidationError"},"tag":"TxSubmitFail"}',
+      "ConwayUtxowFailure ValueNotConservedUTxO ShelleyTxValidationError",
+    ],
+    // Two failures of the same rule: each name once.
+    [
+      "ApplyTxError (ConwayUtxowFailure (BadInputsUTxO a) :| [ConwayUtxowFailure (BadInputsUTxO b)])",
+      "ApplyTxError ConwayUtxowFailure BadInputsUTxO",
+    ],
   ])("a 400 the ledger wrote reaches the site as the rule names in it: %s", (detail, names) => {
     expect(rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"))).toBe(`HTTP 400: ${names}`);
   });
@@ -189,6 +213,9 @@ describe("submit > the reason a site receives for a rejection", () => {
   it.each([
     'TxSubmitFail ShelleyBasedEraConway: connection to /ipc/node.socket refused',
     'TxCmdEraConsensusModeMismatch (Just "/ipc/node.socket") (AnyConsensusMode CardanoMode) (AnyCardanoEra ConwayEra)',
+    // Era witnesses carry the tag inside the word.
+    "TxSubmitFail ShelleyToBabbageEraBabbage: connection to /ipc/node.socket refused",
+    "TxSubmitFail ConwayEraOnwardsConway: connection to /ipc/node.socket refused",
   ])("a 400 that only names an era type tag gets the fixed reason: %s", (detail) => {
     const reason = rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"));
     expect(reason).toBe(PROVIDER_REFUSED_REASON);
