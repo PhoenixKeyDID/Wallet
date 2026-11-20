@@ -302,16 +302,71 @@ describe("submit > the reason a site receives for a rejection", () => {
     expect(rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"))).toBe(PROVIDER_REFUSED_REASON);
   });
 
-  // Inside a ledger wrapper, the inner name stands as a token by the same
-  // rules: a numbered host or a `host:database` pair gives nothing.
+  // Inside a ledger wrapper the body earned — an era-prefixed rule's own
+  // wrapper, which the gate below does not close — the inner name stands as a
+  // token by the same rules: a numbered host or a `host:database` pair gives
+  // nothing.
   it.each([
-    ["upstream ApplyTxError (KoiosPrimaryDb02) at pg", "KoiosPrimary"],
-    ["ApplyTxError (ConwayRelay01) refused", "ConwayRelay"],
-    ["ApplyTxError (PgPrimary:cexplorer) failed", "PgPrimary"],
-  ])("a host inside a ledger wrapper stays home: %s", (detail, leak) => {
+    ["upstream ConwayUtxowFailure (KoiosPrimaryDb02) at pg", "KoiosPrimary"],
+    ["ConwayUtxowFailure (ConwayRelay01) refused", "ConwayRelay"],
+    ["ConwayUtxowFailure (PgPrimary:cexplorer) failed", "PgPrimary"],
+  ])("a host inside an earned ledger wrapper stays home: %s", (detail, leak) => {
+    const reason = rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"));
+    expect(reason).toBe("HTTP 400: ConwayUtxowFailure");
+    expect(reason).not.toContain(leak);
+  });
+
+  // Issue #75, point 2: the letters-only counterpart of the hosts above. The
+  // wrapper match kept out only a word carrying digits or a `host:db` shape,
+  // so a provider's own word travelled: measured, `upstream ApplyTxError
+  // (KoiosPrimaryReplica) at pg` reached the site as `HTTP 400: ApplyTxError
+  // KoiosPrimaryReplica` and `ApplyTxError (UtxoFailure (InternalRelaySecret))`
+  // as `HTTP 400: ApplyTxError UtxoFailure InternalRelaySecret`. `ApplyTxError
+  // (` now opens only when it follows `ShelleyTxValidationError`, which every
+  // measured node body that wraps in it carries ahead of it.
+  it.each([
+    ["upstream ApplyTxError (KoiosPrimaryReplica) at pg", "KoiosPrimaryReplica"],
+    ["ApplyTxError (UtxoFailure (InternalRelaySecret))", "InternalRelaySecret"],
+  ])("a provider word inside a lone ApplyTxError wrapper stays home: %s", (detail, leak) => {
     const reason = rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"));
     expect(reason).toBe("HTTP 400: ApplyTxError");
     expect(reason).not.toContain(leak);
+  });
+
+  // The cost of that gate, stated: a wrapper chain that hangs only off a lone
+  // `ApplyTxError` — no era-prefixed wrapper to re-enter, no name that stands
+  // on its own — stays home with it. `UtxoFailure` and `NoCollateralInputs`
+  // travel only through the wrapper they hang from.
+  it("a wrapper chain that hangs only off a lone ApplyTxError stays home with it", () => {
+    expect(
+      rejectionReasonForSite(new SubmitRejectedError(400, "ApplyTxError (UtxoFailure (NoCollateralInputs))", "Koios /submittx")),
+    ).toBe("HTTP 400: ApplyTxError");
+  });
+
+  // The wrapper the body earned still opens: a Babbage body, where the chain
+  // hangs off `ApplyTxError` with nothing that stands on its own
+  // (`UtxowFailure` carries no era prefix and no rule suffix), and
+  // `ShelleyTxValidationError` ahead of it.
+  it("an ApplyTxError that follows ShelleyTxValidationError still opens its wrapper", () => {
+    expect(
+      rejectionReasonForSite(
+        new SubmitRejectedError(
+          400,
+          "transaction submit error ShelleyTxValidationError ShelleyBasedEraBabbage (ApplyTxError (UtxowFailure (BabbageOutputTooSmallUTxO [(addr, 900000)])) :| [])",
+          "Koios /submittx",
+        ),
+      ),
+    ).toBe("HTTP 400: ShelleyTxValidationError ApplyTxError UtxowFailure BabbageOutputTooSmallUTxO");
+  });
+
+  // Without the ShelleyTxValidationError ahead of it, the names that stand on
+  // their own still travel: the chain re-enters at the era-prefixed wrapper.
+  it("names that stand on their own still travel without a ShelleyTxValidationError ahead", () => {
+    expect(
+      rejectionReasonForSite(
+        new SubmitRejectedError(400, "ApplyTxError (ConwayUtxowFailure (UtxoFailure (FeeTooSmallUTxO 1 2)))", "Koios /submittx"),
+      ),
+    ).toBe("HTTP 400: ApplyTxError ConwayUtxowFailure UtxoFailure FeeTooSmallUTxO");
   });
 
   // Quotes cannot be refused: real rule names arrive quoted in a JSON body.
