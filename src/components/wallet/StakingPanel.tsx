@@ -141,12 +141,24 @@ export function StakingPanel({
   // one started earlier can show the very DRep a later record targets without
   // that record having landed (see `voteLandedByRead`).
   const [accountReadAt, setAccountReadAt] = useState<number | null>(null);
+  // The network the read above belongs to. The picker can switch without this
+  // panel remounting, and the load effect below clears the old answer only
+  // after the first render on the new network. Preprod and preview give one key
+  // the same stake_test1 address, so in that render the watches below would
+  // judge this network's records by the other network's balance — a preview 0
+  // releasing a withdrawal still in flight on preprod. Cleared during render.
+  const [accountNetwork, setAccountNetwork] = useState(network);
+  if (accountNetwork !== network) {
+    setAccountNetwork(network);
+    setAccountState(null);
+    setAccountReadAt(null);
+  }
   const [loadingAccount, setLoadingAccount] = useState(true);
   // Distinguish "couldn't read stake status" from a genuine "not delegated / 0
   // rewards" — an indexer hiccup must not masquerade as lost stake.
   const [loadError, setLoadError] = useState(false);
   // The last timed re-read (while a delegation or vote delegation is in
-  // flight) failed. Kept apart from `loadError`: the screen keeps the last
+  // flight, or a sent withdrawal is held) failed. Kept apart from `loadError`: the screen keeps the last
   // good read and its waiting line, and says that read may be stale, rather
   // than swallowing the failure or replacing the screen with an error box.
   const [rereadFailed, setRereadFailed] = useState(false);
@@ -278,13 +290,15 @@ export function StakingPanel({
   // A reward withdrawal just sent from this account. The indexer reports the
   // old balance until it catches up, so while the record is held the withdraw
   // door shows a waiting line instead of a second withdraw button; the same
-  // re-read below brings the new balance, and a balance lower than what was
-  // withdrawn (or the closed validity window) lets the record go.
+  // re-read below brings the new balance, and a read started after the send
+  // that shows any other balance than what was withdrawn (or the closed
+  // validity window) lets the record go.
   const withdrawal = withdrawalWatch(
     sentWithdrawal,
     rewardAddressBech32,
     network,
     accountState?.rewardsAvailable,
+    accountReadAt,
     now,
   );
   useEffect(() => {
@@ -978,7 +992,7 @@ export function StakingPanel({
         {/* The timed re-read behind the waiting lines failed: the lines stay
             (they are still true), and the reader is told the numbers above
             may be from an older read. */}
-        {rereadFailed && (waiting || voteInFlight) && (
+        {rereadFailed && (waiting || withdrawal === "held" || voteInFlight) && (
           <p className="text-xs text-amber-brand">{t("stake_reread_failed")}</p>
         )}
         {/* Ran out without the chain showing it, and the chain still shows no

@@ -2352,10 +2352,56 @@ const MUTANTS = [
     to: "          sentWithdrawal={null /* MUT57-LIFT */}\n",
   },
   {
-    name: "MUT57-DROP: a balance lower than the amount withdrawn does not release the hold",
+    name: "MUT57-DROP: a later read showing another balance than the amount withdrawn does not release the hold",
     file: FEEDBACK,
-    from: '  if (rewardsAvailable !== undefined && rewardsAvailable < sent.amount) return "released";\n',
+    from:
+      "  if (\n    readAt !== null &&\n    readAt > sent.sentAt &&\n    rewardsAvailable !== undefined &&\n" +
+      '    rewardsAvailable !== sent.amount\n  )\n    return "released";\n',
     to: "  /* MUT57-DROP */\n",
+  },
+  {
+    name: "MUT57-READAT: a read started before (or as) the withdrawal was sent releases the hold",
+    file: FEEDBACK,
+    from: "    readAt > sent.sentAt &&\n",
+    to: "    /* MUT57-READAT */\n",
+  },
+  {
+    name: "MUT57-NEQ: only a LOWER balance releases the hold, so new rewards after it landed keep the door shut",
+    file: FEEDBACK,
+    from: "    rewardsAvailable !== sent.amount\n",
+    to: "    rewardsAvailable < sent.amount /* MUT57-NEQ */\n",
+  },
+  {
+    name: "MUT57-ACCOUNT: a withdrawal sent from another account is held on this one",
+    file: FEEDBACK,
+    from:
+      '  if (sent === null || sent.account !== account || sent.network !== network) return "none";\n' +
+      "  if (now - sent.sentAt >= WITHDRAWAL_WATCH_LIMIT_MS)",
+    to:
+      '  if (sent === null /* MUT57-ACCOUNT */ || sent.network !== network) return "none";\n' +
+      "  if (now - sent.sentAt >= WITHDRAWAL_WATCH_LIMIT_MS)",
+  },
+  {
+    name: "MUT57-NETWORK: a withdrawal sent on another network is held on this one",
+    file: FEEDBACK,
+    from:
+      '  if (sent === null || sent.account !== account || sent.network !== network) return "none";\n' +
+      "  if (now - sent.sentAt >= WITHDRAWAL_WATCH_LIMIT_MS)",
+    to:
+      '  if (sent === null || sent.account !== account /* MUT57-NETWORK */) return "none";\n' +
+      "  if (now - sent.sentAt >= WITHDRAWAL_WATCH_LIMIT_MS)",
+  },
+  {
+    name: "MUT57-NETRESET: the other network's balance is kept for the first render after a network switch",
+    file: STAKING,
+    from: "    setAccountState(null);\n    setAccountReadAt(null);\n  }\n",
+    to: "    /* MUT57-NETRESET */\n  }\n",
+  },
+  {
+    name: "MUT57-REREAD-FAILED: a failed re-read while a withdrawal is held is not said",
+    file: STAKING,
+    from: '        {rereadFailed && (waiting || withdrawal === "held" || voteInFlight) && (\n',
+    to: "        {rereadFailed && (waiting || voteInFlight) /* MUT57-REREAD-FAILED */ && (\n",
   },
   {
     name: "MUT57-TTL: a held withdrawal outlives the transaction's validity window",

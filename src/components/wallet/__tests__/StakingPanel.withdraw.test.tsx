@@ -528,6 +528,113 @@ describe("StakingPanel: a withdrawal just sent is held until the balance or the 
   });
 });
 
+describe("#57: a held withdrawal, a re-read that fails, a balance that grows, another network", () => {
+  it("says so when every re-read fails while a sent withdrawal is held", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, "drep_always_abstain"));
+    const port = renderPanel();
+    await withdrawThroughUi(port);
+    await screen.findByText(en.withdraw_sent_waiting);
+    expect(screen.queryByText(en.stake_reread_failed)).toBeNull();
+
+    m.getStakeAccountState.mockRejectedValue(new Error("indexer down"));
+    await act(async () => {
+      vi.advanceTimersByTime(20_000);
+    });
+    expect(await screen.findByText(en.stake_reread_failed)).toBeTruthy();
+    // Still held: a failed read says nothing about the withdrawal.
+    expect(screen.getByText(en.withdraw_sent_waiting)).toBeTruthy();
+    expect(withdrawButton()).toBeNull();
+  });
+
+  it("lets go when a later read shows MORE than was withdrawn (a new epoch paid out after it landed)", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, "drep_always_abstain"));
+    const port = renderPanel();
+    await withdrawThroughUi(port);
+    await screen.findByText(en.withdraw_sent_waiting);
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS + BigInt(1_000_000), "drep_always_abstain"));
+    await act(async () => {
+      vi.advanceTimersByTime(20_000);
+    });
+    await waitFor(() => expect(withdrawButton()?.disabled).toBe(false));
+    expect(screen.queryByText(en.withdraw_sent_waiting)).toBeNull();
+  });
+
+  it("stays held when the read showing another balance did not start after the send", async () => {
+    // The clock does not move: the post-submit read starts in the same
+    // millisecond as the send, so it cannot be told apart from one that
+    // predates it, whatever it reports.
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, "drep_always_abstain"));
+    const port = renderPanel();
+    port.signAndSubmit.mockImplementation(async () => {
+      m.getStakeAccountState.mockResolvedValue(account(BigInt(0), "drep_always_abstain"));
+      return TX_HASH;
+    });
+    await withdrawThroughUi(port);
+    await waitFor(() => expect(m.getStakeAccountState.mock.calls.length).toBeGreaterThanOrEqual(2));
+    await act(async () => {});
+    expect(screen.getByText(en.withdraw_sent_waiting)).toBeTruthy();
+    expect(screen.queryByText(en.withdraw_no_rewards)).toBeNull();
+  });
+
+  it("is held on its own network only: another network offers its button, and the hold is there on the way back", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    // Both networks report the same balance and a DRep, so only the network
+    // in the record tells them apart.
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, "drep_always_abstain"));
+    const port = makePort();
+    const view = render(wrap(<Harness port={port} uncertainHash={null} network={0} />));
+    await withdrawThroughUi(port);
+    await screen.findByText(en.withdraw_sent_waiting);
+
+    vi.setSystemTime(Date.now() + 5_000);
+    view.rerender(wrap(<Harness port={port} uncertainHash={null} network={2} />));
+    await waitFor(() => expect(withdrawButton()?.disabled).toBe(false));
+    expect(screen.queryByText(en.withdraw_sent_waiting)).toBeNull();
+
+    vi.setSystemTime(Date.now() + 5_000);
+    view.rerender(wrap(<Harness port={port} uncertainHash={null} network={0} />));
+    expect(await screen.findByText(en.withdraw_sent_waiting)).toBeTruthy();
+    expect(withdrawButton()).toBeNull();
+  });
+
+  it("survives preprod → preview → preprod when preview reports another balance for the same stake_test address", async () => {
+    // Preprod and preview give the same key the same stake_test1 address, so
+    // only the network tells the two reads apart. Preview has never seen this
+    // key (unregistered, 0); preprod's indexer still reports the old balance.
+    // The first render back on preprod must not judge the preprod record with
+    // preview's 0 — that would release it, and the stale preprod read that
+    // follows would offer the same withdrawal again.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    m.getStakeAccountState.mockImplementation(async (net: PhoenixNetwork) =>
+      net === 2
+        ? { registered: false, delegatedPoolId: null, rewardsAvailable: BigInt(0), delegatedDRep: null }
+        : account(REWARDS, "drep_always_abstain"),
+    );
+    const port = makePort();
+    const view = render(wrap(<Harness port={port} uncertainHash={null} network={0} />));
+    await withdrawThroughUi(port);
+    await screen.findByText(en.withdraw_sent_waiting);
+
+    vi.setSystemTime(Date.now() + 5_000);
+    view.rerender(wrap(<Harness port={port} uncertainHash={null} network={2} />));
+    await screen.findByText(en.withdraw_no_rewards);
+    expect(screen.queryByText(en.withdraw_sent_waiting)).toBeNull();
+
+    vi.setSystemTime(Date.now() + 5_000);
+    view.rerender(wrap(<Harness port={port} uncertainHash={null} network={0} />));
+    expect(await screen.findByText(en.withdraw_sent_waiting)).toBeTruthy();
+    await waitFor(() =>
+      expect(m.getStakeAccountState.mock.calls.filter((c) => c[0] === 0).length).toBeGreaterThanOrEqual(3),
+    );
+    await act(async () => {});
+    expect(screen.getByText(en.withdraw_sent_waiting)).toBeTruthy();
+    expect(withdrawButton()).toBeNull();
+  });
+});
+
 describe("#58: the timed re-read behind a vote delegation in flight", () => {
   it("says so when a re-read fails, keeps the waiting line, and drops the warning on the next good read", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });

@@ -303,12 +303,22 @@ export const WITHDRAWAL_WATCH_LIMIT_MS = WITHDRAWAL_TTL_SLOTS * 1000;
  * - `none`: nothing sent, or sent from another account or network;
  * - `held`: sent from this account, and nothing yet says it is over — the
  *   withdraw door must not offer a second one;
- * - `released`: the indexer now reports less than was withdrawn (it landed),
- *   or the transaction's validity window has closed (it can no longer land).
- *   The record can go.
+ * - `released`: a read STARTED after the withdrawal was sent reports a
+ *   balance other than the amount withdrawn, or the transaction's validity
+ *   window has closed (it can no longer land). The record can go.
  *
- * `rewardsAvailable` undefined means the account has not been read (or the
- * read failed): that says nothing, so the record stays held.
+ * Why "other than", not "less than": since Conway a reward withdrawal must
+ * equal the whole balance at the moment it lands. A balance that differs from
+ * the amount sent means either it landed (the balance went to 0, then perhaps
+ * grew with a new epoch's rewards — which can read as MORE than was sent), or
+ * the balance moved before it landed, so the node can no longer accept it.
+ * Either way it is over, and the balance on screen is what can be withdrawn.
+ *
+ * Only a read started after `sentAt` says that: `readAt` is `Date.now()` taken
+ * before that read's request went out. A read started earlier (or in the same
+ * millisecond) can predate the withdrawal and says nothing about it, nor does
+ * `rewardsAvailable` undefined (not read, or the read failed) — the record
+ * stays held.
  */
 export type WithdrawalWatch = "none" | "held" | "released";
 
@@ -317,11 +327,18 @@ export function withdrawalWatch(
   account: string | null,
   network: PhoenixNetwork,
   rewardsAvailable: bigint | undefined,
+  readAt: number | null,
   now: number,
 ): WithdrawalWatch {
   if (sent === null || sent.account !== account || sent.network !== network) return "none";
   if (now - sent.sentAt >= WITHDRAWAL_WATCH_LIMIT_MS) return "released";
-  if (rewardsAvailable !== undefined && rewardsAvailable < sent.amount) return "released";
+  if (
+    readAt !== null &&
+    readAt > sent.sentAt &&
+    rewardsAvailable !== undefined &&
+    rewardsAvailable !== sent.amount
+  )
+    return "released";
   return "held";
 }
 
