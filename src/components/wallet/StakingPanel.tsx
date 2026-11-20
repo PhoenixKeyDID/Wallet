@@ -443,23 +443,40 @@ export function StakingPanel({
   // an old read showing anything else is not what keeps the record, and the
   // tab that just sent would only re-read what it has. Once per record: a read
   // started in the same millisecond leaves this true and does not loop.
+  //
+  // A failed read is tried again on the re-read period until one answers (or
+  // the record ends), and said on screen meanwhile (`stake_reread_failed`).
+  // Nothing else re-reads here: the account shows a DRep, so `voteInFlight` is
+  // false and its timer is off — a single failure used to leave the record on
+  // disk, with no sign why, until its watch ran out.
   useEffect(() => {
     if (!staleReadShowsVote || !rewardAddressBech32) return;
     let cancelled = false;
+    let failed = false;
     const readOn = network;
-    const read = startRead();
-    getStakeAccountState(readOn, rewardAddressBech32)
-      .then((state) => {
-        if (cancelled || networkRef.current !== readOn) return;
-        if (!applyAccountRead(state, read)) return;
-        setLoadError(false);
-        setRereadFailed(false);
-      })
-      .catch(() => {
-        if (!cancelled) setRereadFailed(true);
-      });
+    const readOnce = () => {
+      failed = false;
+      const read = startRead();
+      getStakeAccountState(readOn, rewardAddressBech32)
+        .then((state) => {
+          if (cancelled || networkRef.current !== readOn) return;
+          if (!applyAccountRead(state, read)) return;
+          setLoadError(false);
+          setRereadFailed(false);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          failed = true;
+          setRereadFailed(true);
+        });
+    };
+    readOnce();
+    const retry = setInterval(() => {
+      if (failed) readOnce();
+    }, PENDING_POLL_MS);
     return () => {
       cancelled = true;
+      clearInterval(retry);
     };
     // The record is the parent's; its hash and the read's age are what move.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1058,7 +1075,7 @@ export function StakingPanel({
         {/* The timed re-read behind the waiting lines failed: the lines stay
             (they are still true), and the reader is told the numbers above
             may be from an older read. */}
-        {rereadFailed && (waiting || withdrawal === "held" || voteInFlight) && (
+        {rereadFailed && (waiting || withdrawal === "held" || voteInFlight || staleReadShowsVote) && (
           <p className="text-xs text-amber-brand">{t("stake_reread_failed")}</p>
         )}
         {/* Ran out without the chain showing it, and the chain still shows no

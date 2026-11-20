@@ -43,6 +43,7 @@ const TABS = "src/components/wallet/WalletTabs.tsx";
 // What the delegation waiting lines decide from: when "waiting" becomes "not
 // seen", and when a sent vote delegation can no longer land.
 const FEEDBACK = "src/components/wallet/delegationFeedback.ts";
+const VOTE_STORE = "src/components/wallet/voteDelegationStore.ts";
 const GOV_LIB = "src/lib/cardano/governance.ts";
 const PROVIDER = "src/lib/cardano/provider.ts";
 const BLOCKFROST = "src/lib/cardano/blockfrost.ts";
@@ -2405,8 +2406,8 @@ const MUTANTS = [
   {
     name: "MUT57-REREAD-FAILED: a failed re-read while a withdrawal is held is not said",
     file: STAKING,
-    from: '        {rereadFailed && (waiting || withdrawal === "held" || voteInFlight) && (\n',
-    to: "        {rereadFailed && (waiting || voteInFlight) /* MUT57-REREAD-FAILED */ && (\n",
+    from: '        {rereadFailed && (waiting || withdrawal === "held" || voteInFlight || staleReadShowsVote) && (\n',
+    to: "        {rereadFailed && (waiting || voteInFlight || staleReadShowsVote) /* MUT57-REREAD-FAILED */ && (\n",
   },
   {
     name: "MUT57-TTL: a held withdrawal outlives the transaction's validity window",
@@ -2887,6 +2888,79 @@ const MUTANTS = [
     from: "      if (heldLockRef.current) return;\n",
     to: "      if (false /* MUT59-HELD-ONCE */) return;\n",
     marker: "MUT59-HELD-ONCE",
+  },
+  // ── Issue #66 (MUT66-*): a failed fresh read on the Staking tab is said and
+  // tried again; a choice sent back inside the indexer's lag (X → Y landed,
+  // then X) is ended only by its hash, not by a read showing X ──
+  {
+    name: "MUT66-RETRY: a failed fresh read on the Staking tab is never tried again",
+    file: STAKING,
+    from: "      if (failed) readOnce();\n",
+    to: "      if (false /* MUT66-RETRY */) readOnce();\n",
+    marker: "MUT66-RETRY",
+  },
+  {
+    name: "MUT66-SHOW: a failed fresh read on the Staking tab is not said",
+    file: STAKING,
+    from: '        {rereadFailed && (waiting || withdrawal === "held" || voteInFlight || staleReadShowsVote) && (\n',
+    to: '        {rereadFailed && (waiting || withdrawal === "held" || voteInFlight) /* MUT66-SHOW */ && (\n',
+    marker: "MUT66-SHOW",
+  },
+  {
+    name: "MUT66-LANDED: a read showing the target ends a send-back record",
+    file: FEEDBACK,
+    from: "  if (sent.resend === true) return false;\n",
+    to: "  /* MUT66-LANDED */\n",
+    marker: "MUT66-LANDED",
+  },
+  {
+    name: "MUT66-MARK: a choice sent back is not marked as a send-back",
+    file: TABS,
+    from: "sameVoteTarget(left, sent.target)) record.resend = true;\n",
+    to: "sameVoteTarget(left, sent.target)) void 0 /* MUT66-MARK */;\n",
+    marker: "MUT66-MARK",
+  },
+  {
+    name: "MUT66-REMEMBER: the choice a landed record moved away from is not remembered",
+    file: TABS,
+    from: "        rememberLeftVote(store, live.network, accountKey, live.drepBefore, Date.now());\n",
+    to: "        void rememberLeftVote; /* MUT66-REMEMBER */\n",
+    marker: "MUT66-REMEMBER",
+  },
+  {
+    name: "MUT66-STORE-WRITE: the send-back mark is not kept on disk",
+    file: VOTE_STORE,
+    from: "  if (sent.resend === true) record.resend = true;\n",
+    to: "  /* MUT66-STORE-WRITE */\n",
+    marker: "MUT66-STORE-WRITE",
+  },
+  {
+    name: "MUT66-STORE-READ: a record read from disk (another tab, a reload) loses its send-back mark",
+    file: VOTE_STORE,
+    from: "    sent.resend = true;\n",
+    to: "    /* MUT66-STORE-READ */\n",
+    marker: "MUT66-STORE-READ",
+  },
+  {
+    name: "MUT66-STORE-MARK-SHAPE: a send-back mark other than true is read as one",
+    file: VOTE_STORE,
+    from: "    if (resend !== true) return null;\n",
+    to: "    /* MUT66-STORE-MARK-SHAPE */\n",
+    marker: "MUT66-STORE-MARK-SHAPE",
+  },
+  {
+    name: "MUT66-LEFT-WINDOW: a move older than one watch window still marks a send-back",
+    file: VOTE_STORE,
+    from: "    if (Math.abs(now - o.at) >= VOTE_DELEGATION_WATCH_LIMIT_MS) {\n",
+    to: "    if (false /* MUT66-LEFT-WINDOW */) {\n",
+    marker: "MUT66-LEFT-WINDOW",
+  },
+  {
+    name: "MUT66-LEFT-SHAPE: a malformed memory is read as a choice moved away from",
+    file: VOTE_STORE,
+    from: "      o.drep.length === 0 ||\n",
+    to: "      false /* MUT66-LEFT-SHAPE */ ||\n",
+    marker: "MUT66-LEFT-SHAPE",
   },
 ];
 

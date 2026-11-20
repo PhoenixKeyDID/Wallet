@@ -14,11 +14,14 @@ import {
 } from "./delegationFeedback";
 import {
   clearSentVote,
+  readLeftVote,
   readSentVote,
+  rememberLeftVote,
   voteDelegationKey,
   writeSentVote,
   type StoredVoteDelegation,
 } from "./voteDelegationStore";
+import { sameVoteTarget } from "@/lib/cardano/governance";
 import { GovernancePanel } from "./GovernancePanel";
 import { ConnectPanel } from "./ConnectPanel";
 import { HistoryPanel } from "./HistoryPanel";
@@ -307,7 +310,12 @@ export function WalletTabs({
       // A failed write keeps the in-memory copy, which is what there was
       // before this was persisted; nothing on screen promises durability.
       // The hash is held lower-case, as the store and the indexer hold it.
-      const record = { ...sent, txHash: sent.txHash.toLowerCase() };
+      const record: SentVoteDelegation = { ...sent, txHash: sent.txHash.toLowerCase() };
+      // Sending back the choice this account last moved away from (X → Y
+      // landed, then X): marked, so no account read ends it — a lagging
+      // instance still shows X (`voteDelegationLanded`). Only the hash does.
+      const left = readLeftVote(store, sent.network, accountKey, sent.sentAt);
+      if (left !== null && sent.target !== undefined && sameVoteTarget(left, sent.target)) record.resend = true;
       writeSentVote(store, accountKey, record);
       setVoteSlot({ live: record, expired: null });
     },
@@ -325,6 +333,12 @@ export function WalletTabs({
     (txHash: string) => {
       const live = liveVoteRef.current;
       if (live === null || live.txHash !== txHash) return;
+      // The account held `drepBefore` until this landed: a later send of it is
+      // a send-back (`rememberVoteDelegation`). Kept for X → X too — X was
+      // held, which is all a lagging read needs to show it.
+      if (typeof live.drepBefore === "string") {
+        rememberLeftVote(store, live.network, accountKey, live.drepBefore, Date.now());
+      }
       clearSentVote(store, live.network, accountKey, txHash);
       setVoteSlot((cur) => (cur.live !== null && cur.live.txHash === txHash ? { live: null, expired: null } : cur));
     },
