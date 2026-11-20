@@ -98,6 +98,34 @@ for (const prefix of declared) {
   if (!imported.has(prefix)) fail.push(`${prefix} is declared in the contract but nothing imports it`);
 }
 
+// A host alias reached by a relative path. `@/lib/api` in a host is the host's
+// session-authed client; `./api` from src/lib/wallet.ts is resolved before any
+// alias is consulted, so in the host it lands on this repo's stand-in — a plain
+// fetch with no session — and every call comes back 401. It compiled and passed
+// every test here, because here the alias and the relative path are the same
+// file. Only the stand-ins themselves may reach each other relatively: they are
+// replaced as a set, so the host never loads them.
+const fromHostFiles = new Map(); // repo-relative stand-in path without extension → alias
+for (const alias of Object.keys(contract.aliasesFromHost ?? {})) {
+  fromHostFiles.set(join("src", alias.slice(2)).split(sep).join("/"), alias);
+}
+const stripExt = (p) => p.replace(SOURCE_EXT, "").replace(/\/index$/, "");
+for (const file of walk(SRC)) {
+  const self = stripExt(relative(REPO, file).split(sep).join("/"));
+  if (fromHostFiles.has(self)) continue;
+  const text = readFileSync(file, "utf8");
+  for (const m of text.matchAll(/(?:from\s+|import\s*\(\s*|require\s*\(\s*)["'](\.{1,2}\/[^"']+)["']/g)) {
+    const target = stripExt(relative(REPO, join(dirname(file), m[1])).split(sep).join("/"));
+    const alias = fromHostFiles.get(target);
+    if (alias) {
+      fail.push(
+        `${relative(REPO, file).split(sep).join("/")} imports "${m[1]}" — that is the stand-in ` +
+          `for ${alias}, which the host supplies. Import "${alias}" so the host's own module is used`,
+      );
+    }
+  }
+}
+
 const pkg = JSON.parse(readFileSync(join(REPO, "package.json"), "utf8"));
 const deps = Object.keys(pkg.dependencies ?? {});
 const mustInstall = new Set(contract.hostMustInstall ?? []);

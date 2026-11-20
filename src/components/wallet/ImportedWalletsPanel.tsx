@@ -55,8 +55,15 @@ type Phase = "connect" | "sign" | "send";
 const DATA_SIGN_ADDRESS_NOT_PK = 2;
 const DATA_SIGN_USER_DECLINED = 3;
 
-/** When a silent sign popup turns into a "look for the wallet window" hint. */
-const SIGN_SLOW_AFTER_MS = 20_000;
+/** When a silent wallet (address read or sign popup) turns into a "look for the wallet window" hint. */
+const SLOW_HINT_AFTER_MS = 20_000;
+
+/**
+ * Stop waiting for the signature this long before the proof itself expires, so a
+ * signature that arrives at the last second is not sent only to be refused as
+ * expired: the user sees "took too long" and can start over with a fresh proof.
+ */
+const SEND_MARGIN_MS = 30_000;
 
 function dataSignCode(err: unknown): number | null {
   if (!err || typeof err !== "object") return null;
@@ -78,7 +85,7 @@ class SignWaitStopped extends Error {
 function untilStopped<T>(p: Promise<T>, signal: AbortSignal, ms: number, onSlow: () => void): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     if (signal.aborted) return reject(new SignWaitStopped("cancelled"));
-    const slow = setTimeout(onSlow, SIGN_SLOW_AFTER_MS);
+    const slow = setTimeout(onSlow, SLOW_HINT_AFTER_MS);
     const limit = setTimeout(() => finish(() => reject(new SignWaitStopped("timeout"))), ms);
     const onAbort = () => finish(() => reject(new SignWaitStopped("cancelled")));
     function finish(settle: () => void) {
@@ -114,6 +121,10 @@ export function ImportedWalletsPanel({ did }: Props) {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setInstalled(listWallets());
   }, []);
+
+  // Leaving the screen stops any wait in flight, so nothing sets state or sends a
+  // proof after the user has moved on.
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   const failureNotice = (err: unknown, address?: string): Notice => {
     switch (classifyImportError(err)) {
@@ -213,7 +224,7 @@ export function ImportedWalletsPanel({ did }: Props) {
         proof = await untilStopped(
           signImportProof(api, did, addressHex),
           ac.signal,
-          IMPORT_PROOF_LIFETIME_SEC * 1000,
+          IMPORT_PROOF_LIFETIME_SEC * 1000 - SEND_MARGIN_MS,
           () => setSlow(true),
         );
       } catch (err) {

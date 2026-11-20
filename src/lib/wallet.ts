@@ -13,7 +13,10 @@
  * browser — we read the ready address the backend already computes.
  */
 import { bech32 } from "bech32";
-import { apiFetch, ApiError } from "./api";
+// Through the alias, never `./api`: the host maps `@/lib/api` to its own
+// session-authed client, but a relative path is resolved before any alias and
+// would land on this repo's stand-in, which sends no session at all.
+import { apiFetch, ApiError } from "@/lib/api";
 
 export type WalletKind = "phoenix" | "standard";
 

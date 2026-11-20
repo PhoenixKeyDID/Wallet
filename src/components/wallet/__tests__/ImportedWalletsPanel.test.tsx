@@ -269,7 +269,7 @@ describe("ImportedWalletsPanel — attach", () => {
     expect(m.api.signData).not.toHaveBeenCalled();
   });
 
-  it("a wallet that never signs is given up on once the proof would have expired", async () => {
+  it("a wallet that never signs is given up on 30s before the proof would expire", async () => {
     vi.useFakeTimers();
     m.api.signData.mockReturnValue(new Promise(() => {}));
     mount();
@@ -279,13 +279,27 @@ describe("ImportedWalletsPanel — attach", () => {
     });
     expect(screen.getByText(tr("imported_address_to_attach", { address: BASE }))).toBeTruthy();
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(IMPORT_PROOF_LIFETIME_SEC * 1000 - 1);
+      await vi.advanceTimersByTimeAsync(IMPORT_PROOF_LIFETIME_SEC * 1000 - 30_000 - 1);
     });
     expect(screen.queryByRole("alert")).toBeNull();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1);
     });
     expect(screen.getByRole("alert").textContent).toBe(tr("imported_err_sign_timeout"));
+    expect(m.attach).not.toHaveBeenCalled();
+  });
+
+  it("leaving the screen while the wallet is signing sends nothing when the signature arrives later", async () => {
+    let give!: (v: { signature: string; key: string }) => void;
+    m.api.signData.mockReturnValue(new Promise((r) => (give = r)));
+    mount();
+    await clickAttach();
+    await waitFor(() => expect(m.api.signData).toHaveBeenCalledTimes(1));
+    cleanup();
+    await act(async () => {
+      give({ signature: "84a0", key: "a401" });
+      await new Promise((r) => setTimeout(r, 20));
+    });
     expect(m.attach).not.toHaveBeenCalled();
   });
 
