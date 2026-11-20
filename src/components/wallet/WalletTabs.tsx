@@ -258,11 +258,19 @@ export function WalletTabs({
    * A reward withdrawal just sent. Here for the same reason as the delegation
    * above: the indexer keeps reporting the old reward balance after it lands,
    * and a trip to another tab and back must not bring the withdraw button back
-   * with that balance on it. Released by the Staking tab when the balance
-   * drops below what was withdrawn or the transaction's validity window has
-   * closed (`withdrawalWatch`) — it reads the clock on mount, so a record
-   * that outlives its window on another tab goes the moment Staking opens.
-   * Only the record for that hash goes.
+   * with that balance on it. Released by the Staking tab when the
+   * transaction's validity window has closed (`withdrawalWatch`) — it reads
+   * the clock on mount, so a record that outlives its window on another tab
+   * goes the moment Staking opens. A read showing another balance opens the
+   * door without dropping the record, so a lagging read of the old balance
+   * afterwards still holds it. Only the record for that hash goes.
+   *
+   * Deliberately in memory only, unlike the vote delegation below: a reload,
+   * the page locking, or a second browser tab starts without it, and while
+   * the provider still reports the old balance that screen offers Withdraw
+   * again. That is a confusing refusal, not a loss: the node rejects the
+   * duplicate (a reward withdrawal must equal the whole balance when it lands,
+   * and the first one already took it), so no funds move.
    */
   const [sentWithdrawal, setSentWithdrawal] = useState<SentWithdrawal | null>(null);
   const clearSentWithdrawal = useCallback(

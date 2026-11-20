@@ -129,6 +129,7 @@
   "withdraw_rewards": "Withdraw rewards",
   "withdraw_no_rewards": "No rewards to withdraw yet. Rewards arrive a few epochs after you delegate to a pool.",
   "withdraw_sent_waiting": "Withdrawal sent. Waiting for the chain to record it; until then the reward balance above is out of date. A second withdrawal is not offered meanwhile, because the node would refuse it.",
+  "withdraw_sent_unseen": "The withdrawal sent earlier has not been seen on chain: it is not in a block after more than ten minutes, so it most likely did not get in. The rewards above are still in the account, and the withdrawal can be sent again.",
   "withdraw_needs_drep": "Cardano only lets you withdraw rewards from an account that has made a voting choice (a DRep). Your rewards keep adding up in the meantime. This account has not made one yet, so a withdrawal would be refused. Choosing Abstain meets the rule without voting for anyone — it is a separate transaction with a small network fee — and you can change it later in the Governance tab.",
   "withdraw_abstain_button": "Choose Abstain",
   "vote_delegation_pending": "Voting choice sent. Withdraw rewards unlocks once the chain records it, usually within a minute or two. Do not send another one in the meantime.",

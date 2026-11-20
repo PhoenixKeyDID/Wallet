@@ -2356,11 +2356,11 @@ const MUTANTS = [
     to: "          sentWithdrawal={null /* MUT57-LIFT */}\n",
   },
   {
-    name: "MUT57-DROP: a later read showing another balance than the amount withdrawn does not release the hold",
+    name: "MUT57-DROP: a later read showing another balance than the amount withdrawn does not open the door",
     file: FEEDBACK,
     from:
       "  if (\n    readAt !== null &&\n    readAt > sent.sentAt &&\n    rewardsAvailable !== undefined &&\n" +
-      '    rewardsAvailable !== sent.amount\n  )\n    return "released";\n',
+      '    rewardsAvailable !== sent.amount\n  )\n    return "open";\n',
     to: "  /* MUT57-DROP */\n",
   },
   {
@@ -2396,15 +2396,9 @@ const MUTANTS = [
       "  if (now - sent.sentAt >= WITHDRAWAL_WATCH_LIMIT_MS)",
   },
   {
-    name: "MUT57-NETRESET: the other network's balance is kept for the first render after a network switch",
-    file: STAKING,
-    from: "    setAccountState(null);\n    setAccountReadAt(null);\n  }\n",
-    to: "    /* MUT57-NETRESET */\n  }\n",
-  },
-  {
     name: "MUT57-READ-ORDER: an account read that answers late lays an older balance over a newer one",
     file: STAKING,
-    from: "    if (readAt < appliedReadAtRef.current) return false;\n",
+    from: "    if (read.seq < appliedReadSeqRef.current) return false;\n",
     to: "    if (false /* MUT57-READ-ORDER */) return false;\n",
     marker: "MUT57-READ-ORDER",
   },
@@ -2423,7 +2417,7 @@ const MUTANTS = [
   {
     name: "MUT57-REREAD: nobody re-reads the account while a withdrawal is held",
     file: STAKING,
-    from: '  const rereading = waiting || withdrawal === "held";\n',
+    from: "  const rereading = waiting || withdrawalWatched;\n",
     to: "  const rereading = waiting; /* MUT57-REREAD */\n",
   },
   {
@@ -2431,6 +2425,61 @@ const MUTANTS = [
     file: STAKING,
     from: '    if (withdrawal === "released" && sentWithdrawal !== null) onWithdrawalSettled(sentWithdrawal.txHash);\n',
     to: "    /* MUT57-SETTLE */\n",
+  },
+  // ── Review of #57 (MUT57-*): the record outlives a read showing the balance
+  // gone, the transaction is looked up by hash, reads are ordered by count ──
+  {
+    name: "MUT57-KEEP: a read showing the balance gone drops the record, so a lagging read of the old amount lights the door again",
+    file: STAKING,
+    from: '    if (withdrawal === "released" && sentWithdrawal !== null) onWithdrawalSettled(sentWithdrawal.txHash);\n',
+    to:
+      '    if ((withdrawal === "released" || withdrawal === "open") /* MUT57-KEEP */ && sentWithdrawal !== null)\n' +
+      "      onWithdrawalSettled(sentWithdrawal.txHash);\n",
+  },
+  {
+    name: "MUT57-UNSEEN: a withdrawal not in a block long past the threshold holds the door for the whole validity window",
+    file: FEEDBACK,
+    from: '  if (answer !== null && !answer.seen && answer.askedAt - sent.sentAt > DELEGATION_UNSEEN_MS) return "unseen";\n',
+    to: "  /* MUT57-UNSEEN */\n",
+  },
+  {
+    name: "MUT57-UNSEEN-LINE: the door is offered again without saying the withdrawal was not seen",
+    file: STAKING,
+    from: '        {withdrawal === "unseen" && (\n',
+    to: "        {false /* MUT57-UNSEEN-LINE */ && (\n",
+  },
+  {
+    name: "MUT57-UNSEEN-FAILED: a failed look-up by hash counts as 'not in a block'",
+    file: STAKING,
+    from: "        () => {},\n      );\n    };\n    lookUp();\n",
+    to:
+      "        () => {\n" +
+      "          if (!cancelled) setWithdrawalTx((cur) => withdrawalTxAnswered(cur, sent.txHash, false, askedAt)); /* MUT57-UNSEEN-FAILED */\n" +
+      "        },\n      );\n    };\n    lookUp();\n",
+  },
+  {
+    name: "MUT57-UNSEEN-ASKED: a 'not in a block' asked before the threshold still says 'not seen' after it",
+    file: FEEDBACK,
+    from: "answer.askedAt - sent.sentAt > DELEGATION_UNSEEN_MS",
+    to: "now - sent.sentAt > DELEGATION_UNSEEN_MS /* MUT57-UNSEEN-ASKED */",
+  },
+  {
+    name: "MUT57-SEEN: a transaction found in a block can still be called 'not seen'",
+    file: FEEDBACK,
+    from: "  if (answer !== null && !answer.seen && ",
+    to: "  if (answer !== null && /* MUT57-SEEN */ ",
+  },
+  {
+    name: "MUT57-SEEN-LATCH: a later 'not in a block' from a lagging instance undoes 'found in a block'",
+    file: FEEDBACK,
+    from: "  if (cur !== null && cur.txHash === txHash && cur.seen) return cur;\n",
+    to: "  /* MUT57-SEEN-LATCH */\n",
+  },
+  {
+    name: "MUT57-SEQ: account reads are ordered by the wall clock, so a clock stepped back drops every later read",
+    file: STAKING,
+    from: "  const startRead = (): AccountRead => ({ seq: ++readSeqRef.current, at: Date.now() });\n",
+    to: "  const startRead = (): AccountRead => ({ seq: Date.now() /* MUT57-SEQ */, at: Date.now() });\n",
   },
   // ── The confirm gate re-arms inside the commit, so a tick right after a review
   // appears is not undone, and still re-arms when the destination changes ──

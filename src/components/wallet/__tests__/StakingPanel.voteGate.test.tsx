@@ -643,8 +643,10 @@ describe("A released withdrawal record is let go, not just looked past", () => {
     });
     expect(await screen.findByText(en.withdraw_no_rewards)).toBeTruthy();
 
-    // Next epoch's rewards, as large as the amount withdrawn.
-    m.getStakeAccountState.mockResolvedValue(account(REWARDS, "drep_always_abstain"));
+    // Next epoch's rewards: another amount than the one withdrawn. (Exactly
+    // the amount withdrawn reads as a lagging indexer instance and is held —
+    // the test below.)
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS + BigInt(1_234_567), "drep_always_abstain"));
     fireEvent.click(historyTab());
     await screen.findByText("history-stub");
     fireEvent.click(stakingTab());
@@ -652,6 +654,40 @@ describe("A released withdrawal record is let go, not just looked past", () => {
       expect((screen.queryByRole("button", { name: en.withdraw_rewards }) as HTMLButtonElement | null)?.disabled).toBe(false),
     );
     expect(screen.queryByText(en.withdraw_sent_waiting)).toBeNull();
+  });
+
+  it("after the balance dropped, a lagging read of exactly the amount withdrawn holds the door again", async () => {
+    // Review of #57: the record used to be dropped once a read showed the
+    // balance gone, so a later read from an indexer instance that had not
+    // caught up — the old balance, to the lovelace — lit the door again and
+    // offered the same withdrawal a second time.
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, "drep_always_abstain"));
+    const port = makePort();
+    render(wrap(<WalletTabs port={port} changeAddress={CHANGE_HEX} network={NETWORK} />));
+
+    fireEvent.click(stakingTab());
+    fireEvent.click(await screen.findByRole("button", { name: en.withdraw_rewards }));
+    await screen.findByLabelText(en.withdraw_verify_checkbox);
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: en.confirm_withdraw }));
+    await screen.findByText(en.withdraw_sent_waiting);
+
+    m.getStakeAccountState.mockResolvedValue(account(BigInt(0), "drep_always_abstain"));
+    await act(async () => {
+      vi.advanceTimersByTime(20_000);
+    });
+    expect(await screen.findByText(en.withdraw_no_rewards)).toBeTruthy();
+
+    // A lagging instance answers the next read with the balance withdrawn.
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, "drep_always_abstain"));
+    fireEvent.click(historyTab());
+    await screen.findByText("history-stub");
+    fireEvent.click(stakingTab());
+    expect(await screen.findByText(en.withdraw_sent_waiting)).toBeTruthy();
+    await act(async () => {});
+    expect(screen.queryByRole("button", { name: en.withdraw_rewards })).toBeNull();
+    expect(port.signAndSubmit).toHaveBeenCalledTimes(1);
   });
 });
 

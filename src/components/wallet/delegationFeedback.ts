@@ -298,14 +298,32 @@ export type SentWithdrawal = {
 export const WITHDRAWAL_WATCH_LIMIT_MS = WITHDRAWAL_TTL_SLOTS * 1000;
 
 /**
+ * What a look-up of the sent withdrawal by hash ({@link SentWithdrawal.txHash},
+ * `fetchTxSeen`) last said, for that hash. Only a definite answer is kept: a
+ * failed look-up is "not known" and leaves this as it was. `askedAt` is
+ * `Date.now()` taken before the request went out. Once a look-up has found the
+ * transaction in a block, `seen` stays true for that hash: a later "not in a
+ * block" from an indexer instance that has not caught up does not undo it.
+ */
+export type WithdrawalTxAnswer = { txHash: string; seen: boolean; askedAt: number };
+
+/**
  * Where a just-sent withdrawal stands for the account on screen:
  *
  * - `none`: nothing sent, or sent from another account or network;
  * - `held`: sent from this account, and nothing yet says it is over — the
  *   withdraw door must not offer a second one;
- * - `released`: a read STARTED after the withdrawal was sent reports a
- *   balance other than the amount withdrawn, or the transaction's validity
- *   window has closed (it can no longer land). The record can go.
+ * - `open`: a read STARTED after the withdrawal was sent reports a balance
+ *   other than the amount withdrawn. The door offers that balance; the record
+ *   is KEPT, so a later read from a lagging indexer instance that reports the
+ *   amount withdrawn again is read as stale and holds the door again;
+ * - `unseen`: past {@link DELEGATION_UNSEEN_MS}, a look-up started after that
+ *   threshold answered that the transaction is not in a block, it was never
+ *   found in one, and no read shows the balance moved. Most likely it was
+ *   dropped before reaching a block: the door is offered again, with a line
+ *   that says so. A look-up that failed is not this answer;
+ * - `released`: the transaction's validity window has closed (it can no
+ *   longer land). The record can go.
  *
  * Why "other than", not "less than": a reward withdrawal must equal the whole
  * balance at the moment it lands (a ledger rule since Shelley; Conway added
@@ -313,15 +331,16 @@ export const WITHDRAWAL_WATCH_LIMIT_MS = WITHDRAWAL_TTL_SLOTS * 1000;
  * the amount sent means either it landed (the balance went to 0, then perhaps
  * grew with a new epoch's rewards — which can read as MORE than was sent), or
  * the balance moved before it landed, so the node can no longer accept it.
- * Either way it is over, and the balance on screen is what can be withdrawn.
+ * Either way the balance on screen is what can be withdrawn.
  *
  * Only a read started after `sentAt` says that: `readAt` is `Date.now()` taken
  * before that read's request went out. A read started earlier (or in the same
  * millisecond) can predate the withdrawal and says nothing about it, nor does
  * `rewardsAvailable` undefined (not read, or the read failed) — the record
- * stays held.
+ * stays held. Found in a block, the withdrawal makes every read of exactly the
+ * amount stale until the window closes, whatever else was read before.
  */
-export type WithdrawalWatch = "none" | "held" | "released";
+export type WithdrawalWatch = "none" | "held" | "open" | "unseen" | "released";
 
 export function withdrawalWatch(
   sent: SentWithdrawal | null,
@@ -329,6 +348,7 @@ export function withdrawalWatch(
   network: PhoenixNetwork,
   rewardsAvailable: bigint | undefined,
   readAt: number | null,
+  tx: WithdrawalTxAnswer | null,
   now: number,
 ): WithdrawalWatch {
   if (sent === null || sent.account !== account || sent.network !== network) return "none";
@@ -339,8 +359,24 @@ export function withdrawalWatch(
     rewardsAvailable !== undefined &&
     rewardsAvailable !== sent.amount
   )
-    return "released";
+    return "open";
+  const answer = tx !== null && tx.txHash === sent.txHash ? tx : null;
+  if (answer !== null && !answer.seen && answer.askedAt - sent.sentAt > DELEGATION_UNSEEN_MS) return "unseen";
   return "held";
+}
+
+/**
+ * Folds one definite look-up answer into what is known about `txHash`: a
+ * hash once found in a block stays found (see {@link WithdrawalTxAnswer}).
+ */
+export function withdrawalTxAnswered(
+  cur: WithdrawalTxAnswer | null,
+  txHash: string,
+  seen: boolean,
+  askedAt: number,
+): WithdrawalTxAnswer {
+  if (cur !== null && cur.txHash === txHash && cur.seen) return cur;
+  return { txHash, seen, askedAt };
 }
 
 export type DelegationWatch =

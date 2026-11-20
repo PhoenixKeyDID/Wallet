@@ -128,10 +128,12 @@ function Harness({
   port,
   uncertainHash,
   network = NETWORK,
+  onSettled,
 }: {
   port: WalletPort;
   uncertainHash: string | null;
   network?: PhoenixNetwork;
+  onSettled?: (txHash: string) => void;
 }) {
   const [sv, setSv] = useState<SentVoteDelegation | null>(null);
   const [sw, setSw] = useState<SentWithdrawal | null>(null);
@@ -147,7 +149,10 @@ function Harness({
       onDelegationSettled={() => {}}
       sentWithdrawal={sw}
       onWithdrawalSent={setSw}
-      onWithdrawalSettled={(h) => setSw((cur) => (cur?.txHash === h ? null : cur))}
+      onWithdrawalSettled={(h) => {
+        onSettled?.(h);
+        setSw((cur) => (cur?.txHash === h ? null : cur));
+      }}
       sentVoteDelegation={sv}
       onVoteDelegationSent={setSv}
       onVoteDelegationLanded={(h) => setSv((cur) => (cur?.txHash === h ? null : cur))}
@@ -155,8 +160,12 @@ function Harness({
   );
 }
 
-function renderPanel(port = makePort(), uncertainHash: string | null = null) {
-  render(wrap(<Harness port={port} uncertainHash={uncertainHash} />));
+function renderPanel(
+  port = makePort(),
+  uncertainHash: string | null = null,
+  onSettled?: (txHash: string) => void,
+) {
+  render(wrap(<Harness port={port} uncertainHash={uncertainHash} onSettled={onSettled} />));
   return port;
 }
 
@@ -508,8 +517,12 @@ describe("StakingPanel: a withdrawal just sent is held until the balance or the 
 
   it("lets go once the transaction's validity window has closed, even on the old balance", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    // Found in a block: every read of the old balance is stale, so only the
+    // window closing lets the record go (not the "not seen" path).
+    m.fetchTxSeen.mockResolvedValue(true);
     m.getStakeAccountState.mockResolvedValue(account(REWARDS, "drep_always_abstain"));
-    const port = renderPanel();
+    const settled = vi.fn();
+    const port = renderPanel(makePort(), null, settled);
     await withdrawThroughUi(port);
     await screen.findByText(en.withdraw_sent_waiting);
     // One tick short of the window: still held.
@@ -525,6 +538,9 @@ describe("StakingPanel: a withdrawal just sent is held until the balance or the 
     });
     await waitFor(() => expect(withdrawButton()?.disabled).toBe(false));
     expect(screen.queryByText(en.withdraw_sent_waiting)).toBeNull();
+    // The record is handed back once, so the parent stops carrying it.
+    expect(settled).toHaveBeenCalledTimes(1);
+    expect(settled).toHaveBeenCalledWith(TX_HASH);
   });
 
   it("a slow read from right after the send, answering after the hold let go, does not bring the old balance back", async () => {
@@ -706,5 +722,99 @@ describe("#58: the expiry time carries the date when it falls on another day", (
     expect(
       await screen.findByText(en.vote_delegation_unseen.replace("{{time}}", "2026-11-14 01:19")),
     ).toBeTruthy();
+  });
+});
+
+/**
+ * Review of #57. A withdrawal the node accepted and then dropped from its
+ * mempool never moves the balance, and the door said "Waiting for the chain to
+ * record it" for the whole validity window, about two hours, with no way out
+ * but a reload. The transaction is now looked up by hash like a vote
+ * delegation is; and the read order no longer trusts the wall clock.
+ */
+describe("#57 review: a withdrawal looked up by hash, and reads ordered by count", () => {
+  // One timed tick past `DELEGATION_UNSEEN_MS`: the look-up on that tick is
+  // the first one started after the threshold.
+  const PAST_UNSEEN_TICKS = DELEGATION_UNSEEN_MS / 20_000 + 1;
+  const ticks = async (n: number) => {
+    for (let i = 0; i < n; i += 1) {
+      await act(async () => {
+        vi.advanceTimersByTime(20_000);
+      });
+    }
+  };
+
+  it("not in a block past ten minutes: the door is offered again, and says the withdrawal was not seen", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, "drep_always_abstain"));
+    const port = renderPanel();
+    await withdrawThroughUi(port);
+    await screen.findByText(en.withdraw_sent_waiting);
+    await waitFor(() => expect(m.fetchTxSeen).toHaveBeenCalledWith(NETWORK, TX_HASH.toLowerCase()));
+
+    await ticks(PAST_UNSEEN_TICKS - 1);
+    expect(screen.getByText(en.withdraw_sent_waiting)).toBeTruthy();
+    expect(screen.queryByText(en.withdraw_sent_unseen)).toBeNull();
+
+    await ticks(1);
+    expect(await screen.findByText(en.withdraw_sent_unseen)).toBeTruthy();
+    expect(screen.queryByText(en.withdraw_sent_waiting)).toBeNull();
+    expect(withdrawButton()!.disabled).toBe(false);
+    // And it can be sent again.
+    fireEvent.click(withdrawButton()!);
+    await waitFor(() => expect(m.buildWithdrawal).toHaveBeenCalledTimes(2));
+  });
+
+  it("a look-up that fails is not 'not seen': still held past ten minutes", async () => {
+    // The only definite answer came before the threshold; every look-up after
+    // it failed. Neither may be read as "not in a block" past ten minutes.
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    m.fetchTxSeen.mockReset();
+    m.fetchTxSeen.mockResolvedValueOnce(false);
+    m.fetchTxSeen.mockRejectedValue(new Error("koios down"));
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, "drep_always_abstain"));
+    const port = renderPanel();
+    await withdrawThroughUi(port);
+    await screen.findByText(en.withdraw_sent_waiting);
+    await ticks(PAST_UNSEEN_TICKS + 2);
+    expect(m.fetchTxSeen.mock.calls.length).toBeGreaterThan(PAST_UNSEEN_TICKS);
+    expect(screen.getByText(en.withdraw_sent_waiting)).toBeTruthy();
+    expect(screen.queryByText(en.withdraw_sent_unseen)).toBeNull();
+    expect(withdrawButton()).toBeNull();
+  });
+
+  it("found in a block once: a later 'not in a block' from a lagging instance does not offer it again", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    m.fetchTxSeen.mockReset();
+    m.fetchTxSeen.mockResolvedValueOnce(true);
+    m.fetchTxSeen.mockResolvedValue(false);
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, "drep_always_abstain"));
+    const port = renderPanel();
+    await withdrawThroughUi(port);
+    await screen.findByText(en.withdraw_sent_waiting);
+    await ticks(PAST_UNSEEN_TICKS + 2);
+    expect(screen.getByText(en.withdraw_sent_waiting)).toBeTruthy();
+    expect(screen.queryByText(en.withdraw_sent_unseen)).toBeNull();
+    expect(withdrawButton()).toBeNull();
+  });
+
+  it("a clock stepped back does not drop the reads made after the step", async () => {
+    // The mount read is taken at T. The clock then goes back an hour (NTP, a
+    // laptop waking). Ordered by `Date.now()`, every read after that started
+    // "before" the one on screen and was dropped, so the balance gone never
+    // showed and the door stayed on "waiting".
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, "drep_always_abstain"));
+    const port = renderPanel();
+    await waitFor(() => expect(m.getStakeAccountState).toHaveBeenCalledTimes(1));
+    await screen.findByRole("button", { name: en.withdraw_rewards });
+    vi.setSystemTime(Date.now() - 3_600_000);
+    await withdrawThroughUi(port);
+    await screen.findByText(en.withdraw_sent_waiting);
+
+    m.getStakeAccountState.mockResolvedValue(account(BigInt(0), "drep_always_abstain"));
+    await ticks(1);
+    expect(await screen.findByText(en.withdraw_no_rewards)).toBeTruthy();
+    expect(screen.queryByText(en.withdraw_sent_waiting)).toBeNull();
   });
 });
