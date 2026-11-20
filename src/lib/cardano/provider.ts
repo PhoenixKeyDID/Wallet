@@ -775,7 +775,7 @@ export async function submitTx(network: PhoenixNetwork, signedCborHex: string): 
   if (!res.ok) throw new SubmitRejectedError(res.status, text.slice(0, SUBMIT_DETAIL_LIMIT), "Koios /submittx");
   const hash = text.replace(/^"|"$/g, "");
   if (!/^[0-9a-f]{64}$/i.test(hash)) {
-    throw new Error(`Koios /submittx returned no tx hash: ${text.slice(0, 300)}`);
+    throw new Error(`Koios /submittx returned no tx hash: ${text.slice(0, SUBMIT_DETAIL_LIMIT)}`);
   }
   return hash.toLowerCase();
 }

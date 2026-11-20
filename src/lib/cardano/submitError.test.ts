@@ -269,7 +269,7 @@ describe("submit > the reason a site receives for a rejection", () => {
     "UpstreamFailure (Connection refused to 10.0.0.3)",
     "ConwaySpending (AsIx 0)",
     // A ledger wrapper's name the body did not earn: nothing accepted it.
-    "upstream UtxoFailure (Postgres10 at db.internal)",
+    "upstream UtxoFailure (PostgresPrimary at db.internal)",
   ])("a 400 with a wrapper shape but no ledger wrapper gets the fixed reason: %s", (detail) => {
     expect(rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"))).toBe(PROVIDER_REFUSED_REASON);
   });
@@ -294,8 +294,36 @@ describe("submit > the reason a site receives for a rejection", () => {
     "upstream=ConwayRelayEuWest:3001 refused",
     "upstream ConwayRelayEuWest:3001 refused",
     "relay at host:ConwayRelayEuWest refused",
+    "C:\\relays\\ConwayRelaySecret refused",
+    "GET /x?ConwayRelayHost refused",
+    "GET /x?a=1&ConwayRelayHost refused",
+    "ConwayRelayHost:cexplorer refused",
   ])("a 400 whose rule-shaped word is a host in a URL or config gets the fixed reason: %s", (detail) => {
     expect(rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"))).toBe(PROVIDER_REFUSED_REASON);
+  });
+
+  // Inside a ledger wrapper, the inner name stands as a token by the same
+  // rules: a numbered host or a `host:database` pair gives nothing.
+  it.each([
+    ["upstream ApplyTxError (KoiosPrimaryDb02) at pg", "KoiosPrimary"],
+    ["ApplyTxError (ConwayRelay01) refused", "ConwayRelay"],
+    ["ApplyTxError (PgPrimary:cexplorer) failed", "PgPrimary"],
+  ])("a host inside a ledger wrapper stays home: %s", (detail, leak) => {
+    const reason = rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"));
+    expect(reason).toBe("HTTP 400: ApplyTxError");
+    expect(reason).not.toContain(leak);
+  });
+
+  // Quotes cannot be refused: real rule names arrive quoted in a JSON body.
+  // A provider word shaped like a rule, quoted as a JSON value, is the known
+  // residue of matching on shape: it goes out as that one word, nothing more.
+  it("a quoted rule-shaped value goes out as that one word, never the text around it", () => {
+    expect(
+      rejectionReasonForSite(new SubmitRejectedError(400, '{"upstream":"ConwayRelayEuWest","host":"10.0.0.1","status":"down"}', "Koios /submittx")),
+    ).toBe("HTTP 400: ConwayRelayEuWest");
+    expect(
+      rejectionReasonForSite(new SubmitRejectedError(400, '{"error":["ApplyTxError (ConwayUtxowFailure (UtxoFailure (FeeTooSmallUTxO 1 2)))"]}', "Koios /submittx")),
+    ).toBe("HTTP 400: ApplyTxError ConwayUtxowFailure UtxoFailure FeeTooSmallUTxO");
   });
 
   // Both submit paths keep only the first SUBMIT_DETAIL_LIMIT characters. A

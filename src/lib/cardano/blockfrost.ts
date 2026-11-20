@@ -479,7 +479,7 @@ export async function bfSubmitTx(ep: BlockfrostEndpoint, signedCborHex: string):
   }
   const hash = text.replace(/^"|"$/g, "");
   if (!/^[0-9a-f]{64}$/i.test(hash)) {
-    throw new Error(`Chain endpoint /tx/submit returned no tx hash: ${text.slice(0, 300)}`);
+    throw new Error(`Chain endpoint /tx/submit returned no tx hash: ${text.slice(0, SUBMIT_DETAIL_LIMIT)}`);
   }
   return hash.toLowerCase();
 }

@@ -96,22 +96,26 @@ export const PROVIDER_REFUSED_REASON = "the wallet's chain provider refused the 
  * /ipc/node.socket refused`), and none of them names a rule.
  *
  * Every name must stand as a token of its own: a word glued to a letter,
- * digit, `_`, `.`, `/`, `-`, `@` or `=` — or preceded by `:`, or followed by
- * `:` and a port — is part of a host name, a path, a URL or a config pair
- * (`ConwayRelay01_internal`, `/var/run/ShelleyHost/x`,
- * `user@ConwayHostPrimary:5432`, `upstream=ConwayRelayEuWest`) and gives
- * nothing, and so does `TxValidationErrorInCardanoMode`. A name followed by
- * `: ` and a message (`ConwayNodeUnavailable: dial tcp …`) still stands alone.
+ * digit, `_`, `.`, `/`, `-`, `@` or `=`, preceded by `:`, `\`, `&` or `?`, or
+ * followed by `:` and a word — is part of a host name, a path, a URL or a
+ * `key=value` pair (`ConwayRelay01_internal`, `/var/run/ShelleyHost/x`,
+ * `C:\relays\ConwayRelay`, `?a=1&ConwayRelayHost`,
+ * `user@ConwayHostPrimary:5432`, `upstream=ConwayRelayEuWest`,
+ * `PgPrimary:cexplorer`) and gives nothing, and so does
+ * `TxValidationErrorInCardanoMode`. A name followed by `: ` and a message
+ * (`ConwayNodeUnavailable: dial tcp …`) still stands alone.
  *
  * The match is on the *shape* of a name, not on a list of the ledger's rules:
- * `ConwayNodeUnavailable` or `LedgerUTxO` standing alone would pass too. That
- * is why only the matched names reach the site (`rejectionReasonForSite`),
- * never the text around them: a provider message that happens to hold a
- * rule-shaped word gives the site that one word, never the address or path
- * next to it.
+ * `ConwayNodeUnavailable` or `LedgerUTxO` standing alone would pass too, and
+ * so would one quoted as a JSON value (`"upstream":"ConwayRelayEuWest"`) —
+ * quotes cannot be refused, because real rule names arrive quoted in a JSON
+ * body. That is why only the matched names reach the site
+ * (`rejectionReasonForSite`), never the text around them: a provider message
+ * that happens to hold a rule-shaped word gives the site that one word, never
+ * the address or path next to it.
  */
 const LEDGER_REASON =
-  /(?<![\w./@:=-])(?:(?:Shelley|Allegra|Mary|Alonzo|Babbage|Conway)(?!(?:Spending|Minting|Certifying|Rewarding|Voting|Proposing)\b)(?![A-Za-z]*Era|[A-Za-z]*Value\b)[A-Z][A-Za-z]+|[A-Z][A-Za-z]*UTxO|[A-Z][A-Za-z]*[a-z](?:UTXOW|UTXOS|UTXO|DELEGS|DELEG|DELPL|POOL|GOVCERT|CERTS|CERT|GOV|LEDGERS|LEDGER|PPUP|MIR)|ApplyTxError|TxValidationError|ValidationTagMismatch|PlutusFailure)(?![\w./@=-]|:\d)/g;
+  /(?<![\w./@:=\\&?-])(?:(?:Shelley|Allegra|Mary|Alonzo|Babbage|Conway)(?!(?:Spending|Minting|Certifying|Rewarding|Voting|Proposing)\b)(?![A-Za-z]*Era|[A-Za-z]*Value\b)[A-Z][A-Za-z]+|[A-Z][A-Za-z]*UTxO|[A-Z][A-Za-z]*[a-z](?:UTXOW|UTXOS|UTXO|DELEGS|DELEG|DELPL|POOL|GOVCERT|CERTS|CERT|GOV|LEDGERS|LEDGER|PPUP|MIR)|ApplyTxError|TxValidationError|ValidationTagMismatch|PlutusFailure)(?![\w./@=-]|:\w)/g;
 
 /**
  * How many characters of a refused body the two submit paths keep (Koios in
@@ -149,8 +153,12 @@ const NESTING_WRAPPER =
  * `NESTING_WRAPPER`. So the chain is walked from the outside in, and
  * `DbFailure (Postgres10 …)` or `ConwayRelayFailure (Koios …)` gives nothing,
  * even after a real `ApplyTxError` in the same body.
+ *
+ * The inner name is letters only and stands as a token by the same rules as
+ * `LEDGER_REASON`, so a numbered host (`ApplyTxError (ConwayRelay01)`) or a
+ * `host:database` pair (`ApplyTxError (PgPrimary:cexplorer)`) gives nothing.
  */
-const WRAPPED_RULE = /(?<![\w./@:=-])([A-Z][A-Za-z0-9]*) \((?=([A-Z][A-Za-z0-9]*)(?![\w./@=-]|:\d))/g;
+const WRAPPED_RULE = /(?<![\w./@:=\\&?-])([A-Z][A-Za-z]*) \((?=([A-Z][A-Za-z]*)(?![\w./@=-]|:\w))/g;
 
 /**
  * Ledger rule names in `detail`, each once, in the order they appear.
