@@ -3,6 +3,7 @@ import { submitTx } from "./provider";
 import { bfSubmitTx } from "./blockfrost";
 import {
   PROVIDER_REFUSED_REASON,
+  SUBMIT_DETAIL_LIMIT,
   SubmitRejectedError,
   isDefiniteRejection,
   rejectionReasonForSite,
@@ -100,7 +101,7 @@ describe("submit > the reason a site receives for a rejection", () => {
       const err = await call().catch((e: unknown) => e);
       expect(isDefiniteRejection(err), door).toBe(true);
       const reason = rejectionReasonForSite(err as SubmitRejectedError);
-      expect(reason, door).toBe("HTTP 400: BadInputsUTxO (spent)");
+      expect(reason, door).toBe("HTTP 400: BadInputsUTxO");
       expect(reason, door).not.toMatch(/koios|chain endpoint|submittx|tx\/submit/i);
     }
   });
@@ -125,7 +126,252 @@ describe("submit > the reason a site receives for a rejection", () => {
     },
   );
 
-  it("a 400 with an empty body still says 400, and nothing else", () => {
-    expect(rejectionReasonForSite(new SubmitRejectedError(400, "", "Koios /submittx"))).toBe("HTTP 400");
+  it("a 400 with an empty body gets the fixed reason: there is no ledger reason to pass on", () => {
+    expect(rejectionReasonForSite(new SubmitRejectedError(400, "", "Koios /submittx"))).toBe(PROVIDER_REFUSED_REASON);
+  });
+
+  // Measured on preprod (Koios /submittx, the same signed bytes sent three
+  // times): a real ledger refusal, then a 400 whose body was Koios's own
+  // backend failing to reach a node. The status was 400 both times.
+  const SOCKET_400 =
+    "TxCmdTxSubmitConnectionError: Network.Socket.connect: <socket: 14>: does not exist (No such file or directory)";
+
+  it("a 400 that is the provider's own backend failing does not reach the site", async () => {
+    for (const [door, call] of DOORS) {
+      stub(400, SOCKET_400);
+      const err = await call().catch((e: unknown) => e);
+      // Still a definite "did not get in": the node was never reached.
+      expect(isDefiniteRejection(err), door).toBe(true);
+      // The wallet's own copy keeps the provider's words.
+      expect((err as Error).message, door).toContain("TxCmdTxSubmitConnectionError");
+      const reason = rejectionReasonForSite(err as SubmitRejectedError);
+      expect(reason, door).toBe(PROVIDER_REFUSED_REASON);
+      expect(reason, door).not.toMatch(/socket|TxCmd|No such file/i);
+    }
+  });
+
+  it.each([
+    [
+      'ConwayIncompleteWithdrawals (NonEmptyMap (fromList [(AccountAddress {aaNetworkId = Testnet}, Mismatch (RelEQ) {supplied: Coin 15486, expected: Coin 0})]))',
+      "ConwayIncompleteWithdrawals",
+    ],
+    [
+      'ConwayMempoolFailure "All inputs are spent. Transaction has probably already been included"',
+      "ConwayMempoolFailure",
+    ],
+    [
+      '{"status_code":400,"error":"Bad Request","message":"\\"transaction submit error ShelleyTxValidationError ShelleyBasedEraConway (ApplyTxError (ConwayUtxowFailure (UtxoFailure (FeeTooSmallUTxO (Coin 170000) (Coin 168000))) :| []))\\""}',
+      "ShelleyTxValidationError ApplyTxError ConwayUtxowFailure UtxoFailure FeeTooSmallUTxO",
+    ],
+    ["BabbageOutputTooSmallUTxO [(addr, 900000)]", "BabbageOutputTooSmallUTxO"],
+    // The inner names are what tells these three apart; the wrappers are the same.
+    [
+      'transaction submit error ShelleyTxValidationError ShelleyBasedEraConway (ApplyTxError (ConwayUtxowFailure (MissingVKeyWitnessesUTXOW (fromList [KeyHash {unKeyHash = "abc"}])) :| []))',
+      "ShelleyTxValidationError ApplyTxError ConwayUtxowFailure MissingVKeyWitnessesUTXOW",
+    ],
+    [
+      'transaction submit error ShelleyTxValidationError ShelleyBasedEraConway (ApplyTxError (ConwayUtxowFailure (UtxoFailure (UtxosFailure (ValidationTagMismatch (IsValid True) (FailedUnexpectedly (PlutusFailure "The machine terminated because of an error" :| [])))))) :| []))',
+      "ShelleyTxValidationError ApplyTxError ConwayUtxowFailure UtxoFailure UtxosFailure ValidationTagMismatch PlutusFailure",
+    ],
+    [
+      'ApplyTxError (ConwayCertsFailure (CertFailure (DelegFailure (StakeKeyNotRegisteredDELEG (KeyHashObj (KeyHash "ab"))))) :| [])',
+      "ApplyTxError ConwayCertsFailure CertFailure DelegFailure StakeKeyNotRegisteredDELEG",
+    ],
+    // cardano-submit-api's JSON: the value type (MaryValue) is not a rule, and
+    // TxValidationErrorInCardanoMode is a tag, not the TxValidationError wrapper.
+    [
+      '{"contents":{"contents":{"contents":{"era":"ShelleyBasedEraConway","error":["ConwayUtxowFailure (UtxoFailure (ValueNotConservedUTxO (MaryValue (Coin 1) (MultiAsset (fromList []))) (MaryValue (Coin 2) (MultiAsset (fromList [])))))"],"kind":"ShelleyTxValidationError"},"tag":"TxValidationErrorInCardanoMode"},"tag":"TxCmdTxSubmitValidationError"},"tag":"TxSubmitFail"}',
+      "ConwayUtxowFailure UtxoFailure ValueNotConservedUTxO ShelleyTxValidationError",
+    ],
+    // Failures with no era prefix and no rule suffix come from where the node
+    // puts them: the constructor right inside a wrapper.
+    [
+      "transaction submit error ShelleyTxValidationError ShelleyBasedEraConway (ApplyTxError (ConwayUtxowFailure (UtxoFailure (InsufficientCollateral (DeltaCoin 100) (Coin 200))) :| []))",
+      "ShelleyTxValidationError ApplyTxError ConwayUtxowFailure UtxoFailure InsufficientCollateral",
+    ],
+    [
+      "transaction submit error ShelleyTxValidationError ShelleyBasedEraConway (ApplyTxError (ConwayUtxowFailure (UtxoFailure (NoCollateralInputs)) :| []))",
+      "ShelleyTxValidationError ApplyTxError ConwayUtxowFailure UtxoFailure NoCollateralInputs",
+    ],
+    [
+      'transaction submit error ShelleyTxValidationError ShelleyBasedEraConway (ApplyTxError (ConwayUtxowFailure (PPViewHashesDontMatch (SJust (SafeHash "a")) SNothing) :| []))',
+      "ShelleyTxValidationError ApplyTxError ConwayUtxowFailure PPViewHashesDontMatch",
+    ],
+    [
+      "transaction submit error ShelleyTxValidationError ShelleyBasedEraConway (ApplyTxError (ConwayUtxowFailure (UtxoFailure (WrongNetwork Testnet (fromList [addr]))) :| []))",
+      "ShelleyTxValidationError ApplyTxError ConwayUtxowFailure UtxoFailure WrongNetwork",
+    ],
+    [
+      "transaction submit error ShelleyTxValidationError ShelleyBasedEraConway (ApplyTxError (ConwayUtxowFailure (MissingRequiredDatums (fromList []) (fromList [])) :| []))",
+      "ShelleyTxValidationError ApplyTxError ConwayUtxowFailure MissingRequiredDatums",
+    ],
+    // A redeemer's purpose tag (ConwaySpending) is the transaction's own data,
+    // not a rule; the rule is MissingRedeemers.
+    [
+      'transaction submit error ShelleyTxValidationError ShelleyBasedEraConway (ApplyTxError (ConwayUtxowFailure (MissingRedeemers [(ConwaySpending (AsIx 0),ScriptHash "ab")]) :| []))',
+      "ShelleyTxValidationError ApplyTxError ConwayUtxowFailure MissingRedeemers",
+    ],
+    // A rule-suffixed name stands on its own, with no wrapper before it.
+    ["MissingVKeyWitnessesUTXOW (fromList [KeyHash {unKeyHash = \"abc\"}])", "MissingVKeyWitnessesUTXOW"],
+    // Two failures of the same rule: each name once.
+    [
+      "ApplyTxError (ConwayUtxowFailure (BadInputsUTxO a) :| [ConwayUtxowFailure (BadInputsUTxO b)])",
+      "ApplyTxError ConwayUtxowFailure BadInputsUTxO",
+    ],
+  ])("a 400 the ledger wrote reaches the site as the rule names in it: %s", (detail, names) => {
+    expect(rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"))).toBe(`HTTP 400: ${names}`);
+  });
+
+  // The match is on the shape of a name, so a provider message can hold a
+  // rule-shaped word next to an internal address. Only that word travels.
+  it.each([
+    ["ConwayNodeUnavailable: dial tcp 10.1.2.3:3001: connect: connection refused", "ConwayNodeUnavailable", "10.1.2.3"],
+    ["Error querying LedgerUTxO from db-sync at postgres://db:5432/cexplorer", "LedgerUTxO", "postgres://"],
+    [
+      "TxSubmitFail ShelleyBasedEraConway: connection to /ipc/node.socket refused; last ApplyTxError cached at 10.0.3.7:3001",
+      "ApplyTxError",
+      "/ipc/",
+    ],
+  ])("a 400 that mixes a rule-shaped word with provider text gives the site only the word: %s", (detail, names, leak) => {
+    const reason = rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"));
+    expect(reason).toBe(`HTTP 400: ${names}`);
+    expect(reason).not.toContain(leak);
+    expect(reason).not.toMatch(/\d+\.\d+\.\d+\.\d+/);
+  });
+
+  // Era type tags travel inside provider errors that carry internal paths and
+  // name no rule; the era prefix alone must not let them through.
+  it.each([
+    'TxSubmitFail ShelleyBasedEraConway: connection to /ipc/node.socket refused',
+    'TxCmdEraConsensusModeMismatch (Just "/ipc/node.socket") (AnyConsensusMode CardanoMode) (AnyCardanoEra ConwayEra)',
+    // Era witnesses carry the tag inside the word.
+    "TxSubmitFail ShelleyToBabbageEraBabbage: connection to /ipc/node.socket refused",
+    "TxSubmitFail ConwayEraOnwardsConway: connection to /ipc/node.socket refused",
+  ])("a 400 that only names an era type tag gets the fixed reason: %s", (detail) => {
+    const reason = rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"));
+    expect(reason).toBe(PROVIDER_REFUSED_REASON);
+    expect(reason).not.toContain("/ipc/");
+  });
+
+  // A word glued to a host name or a path is part of it, not a name of its own.
+  it.each([
+    "ConwayRelay01_internal.eu-west-1 refused",
+    "connection to /var/run/ShelleyHostSecret refused",
+    "ConwayMempoolFailure.eu-west-1.koios.internal unreachable",
+    "dial tcp ConwayRelay-03: no route to host",
+  ])("a 400 whose rule-shaped word is part of a host or a path gets the fixed reason: %s", (detail) => {
+    expect(rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"))).toBe(PROVIDER_REFUSED_REASON);
+  });
+
+  // The wrapper-and-constructor shape alone is not the ledger: with no ledger
+  // wrapper before it, a provider's own `…Failure (` gives nothing.
+  it.each([
+    "UpstreamFailure (Connection refused to 10.0.0.3)",
+    "ConwaySpending (AsIx 0)",
+    // A ledger wrapper's name the body did not earn: nothing accepted it.
+    "upstream UtxoFailure (PostgresPrimary at db.internal)",
+  ])("a 400 with a wrapper shape but no ledger wrapper gets the fixed reason: %s", (detail) => {
+    expect(rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"))).toBe(PROVIDER_REFUSED_REASON);
+  });
+
+  // The inner name is read only through a chain of ledger wrappers walked from
+  // the outside in. A provider's own `…Failure (` opens none, even after a
+  // real wrapper in the same body, and neither does `ConwayMempoolFailure`,
+  // whose argument is free text.
+  it.each([
+    ["ConwayRelayFailure (Koios backend unreachable)", "ConwayRelayFailure", "Koios"],
+    ["TxSubmitFail ApplyTxError cached; DbFailure (Postgres10 at db.internal)", "ApplyTxError", "Postgres10"],
+    ["ConwayMempoolFailure (KoiosSecretRelay) at 10.0.0.1", "ConwayMempoolFailure", "KoiosSecretRelay"],
+  ])("a provider word inside a wrapper that is not a ledger wrapper stays home: %s", (detail, names, leak) => {
+    const reason = rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"));
+    expect(reason).toBe(`HTTP 400: ${names}`);
+    expect(reason).not.toContain(leak);
+  });
+
+  // A host inside a URL or a config pair is part of it.
+  it.each([
+    "postgres://user@ConwayHostPrimary:5432 refused",
+    "upstream=ConwayRelayEuWest:3001 refused",
+    "upstream ConwayRelayEuWest:3001 refused",
+    "relay at host:ConwayRelayEuWest refused",
+    "C:\\relays\\ConwayRelaySecret refused",
+    "GET /x?ConwayRelayHost refused",
+    "GET /x?a=1&ConwayRelayHost refused",
+    "ConwayRelayHost:cexplorer refused",
+  ])("a 400 whose rule-shaped word is a host in a URL or config gets the fixed reason: %s", (detail) => {
+    expect(rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"))).toBe(PROVIDER_REFUSED_REASON);
+  });
+
+  // Inside a ledger wrapper, the inner name stands as a token by the same
+  // rules: a numbered host or a `host:database` pair gives nothing.
+  it.each([
+    ["upstream ApplyTxError (KoiosPrimaryDb02) at pg", "KoiosPrimary"],
+    ["ApplyTxError (ConwayRelay01) refused", "ConwayRelay"],
+    ["ApplyTxError (PgPrimary:cexplorer) failed", "PgPrimary"],
+  ])("a host inside a ledger wrapper stays home: %s", (detail, leak) => {
+    const reason = rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"));
+    expect(reason).toBe("HTTP 400: ApplyTxError");
+    expect(reason).not.toContain(leak);
+  });
+
+  // Quotes cannot be refused: real rule names arrive quoted in a JSON body.
+  // A provider word shaped like a rule, quoted as a JSON value, is the known
+  // residue of matching on shape: it goes out as that one word, nothing more.
+  it("a quoted rule-shaped value goes out as that one word, never the text around it", () => {
+    expect(
+      rejectionReasonForSite(new SubmitRejectedError(400, '{"upstream":"ConwayRelayEuWest","host":"10.0.0.1","status":"down"}', "Koios /submittx")),
+    ).toBe("HTTP 400: ConwayRelayEuWest");
+    expect(
+      rejectionReasonForSite(new SubmitRejectedError(400, '{"error":["ApplyTxError (ConwayUtxowFailure (UtxoFailure (FeeTooSmallUTxO 1 2)))"]}', "Koios /submittx")),
+    ).toBe("HTTP 400: ApplyTxError ConwayUtxowFailure UtxoFailure FeeTooSmallUTxO");
+  });
+
+  // Both submit paths keep only the first SUBMIT_DETAIL_LIMIT characters. A
+  // cut inside a name must not hand the site half a name.
+  // `upTo` is where the cut falls; the padding moves the body so the cut lands
+  // right there.
+  const cutAt = (upTo: string, rest: string) => {
+    const tail =
+      "transaction submit error ShelleyTxValidationError ShelleyBasedEraConway (ApplyTxError (ConwayUtxowFailure (UtxoFailure (UtxosFailure (ValidationTagMismatch (IsValid True) (FailedUnexpectedly (PlutusFailure ";
+    const end = tail.indexOf(upTo) + upTo.length;
+    const body = '{"message":"' + " ".repeat(SUBMIT_DETAIL_LIMIT - 12 - end) + tail + rest;
+    return body.slice(0, SUBMIT_DETAIL_LIMIT);
+  };
+
+  it.each([
+    // Cut inside a name read through its wrapper.
+    ["(UtxosFailure (ValidationTa", "ShelleyTxValidationError ApplyTxError ConwayUtxowFailure UtxoFailure UtxosFailure"],
+    // Cut inside a name that matches on its own shape.
+    ["(ApplyTxError (ConwayUtxowFai", "ShelleyTxValidationError ApplyTxError"],
+  ])("a body cut inside a name does not give the site the half before the cut: …%s", (upTo, names) => {
+    const cut = cutAt(upTo, "\\\" :| [])))))");
+    expect(cut.length).toBe(SUBMIT_DETAIL_LIMIT);
+    expect(cut.endsWith(upTo)).toBe(true);
+    expect(rejectionReasonForSite(new SubmitRejectedError(400, cut, "Koios /submittx"))).toBe(`HTTP 400: ${names}`);
+  });
+
+  it("a body shorter than the cut keeps the name at its end", () => {
+    expect(rejectionReasonForSite(new SubmitRejectedError(400, "ApplyTxError (ConwayUtxowFailure (MissingRedeemers", "Koios /submittx"))).toBe(
+      "HTTP 400: ApplyTxError ConwayUtxowFailure MissingRedeemers",
+    );
+  });
+
+  // Only the site's reason is asserted: nothing here says this body never
+  // reached a node.
+  it.each([
+    "Internal error: upstream connect error or disconnect/reset before headers",
+    "Conway", // the era name alone is not a rule failure
+    "malformed request: expected application/cbor",
+    "<html><body>400 Bad Request</body></html>",
+  ])("a 400 with no ledger rule in it gets the fixed reason: %s", (detail) => {
+    expect(rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"))).toBe(PROVIDER_REFUSED_REASON);
+  });
+
+  // The status decides first: a 4xx other than 400 is about the person's
+  // provider account even when its body quotes a ledger rule (a quota page
+  // echoing the transaction it refused, say), so the body still stays home.
+  it.each([401, 403, 429])("a %i whose body reads like a ledger rule still gets the fixed reason", (status) => {
+    const detail = "ConwayMempoolFailure ApplyTxError FeeTooSmallUTxO — quota exceeded for this project";
+    expect(rejectionReasonForSite(new SubmitRejectedError(status, detail, "Koios /submittx"))).toBe(PROVIDER_REFUSED_REASON);
   });
 });
