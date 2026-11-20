@@ -4,6 +4,7 @@ import {
   DELEGATION_WATCH_LIMIT_MS,
   VOTE_DELEGATION_TTL_SLOTS,
   VOTE_DELEGATION_WATCH_LIMIT_MS,
+  WITHDRAWAL_WATCH_LIMIT_MS,
   clockTime,
   delegationWatch,
   lookUpVoteTx,
@@ -13,8 +14,11 @@ import {
   voteDelegationExpiresAt,
   voteDelegationPending,
   voteDelegationWatch,
+  withdrawalTxAnswered,
+  withdrawalWatch,
   type SentDelegation,
   type SentVoteDelegation,
+  type SentWithdrawal,
 } from "../delegationFeedback";
 import en from "../../../../locales/en/wallet.json";
 import vi from "../../../../locales/vi/wallet.json";
@@ -253,6 +257,16 @@ describe("voteDelegationConfirmed — the sent target, not any vote delegation",
     expect(voteDelegationLanded({ ...base, drepBefore: null, target: NEW }, NEW)).toBe(true);
   });
 
+  it("#66: a send-back (X → Y landed, then X) is never ended by a read showing X", () => {
+    // A Koios instance that has not applied X → Y still answers X: a read
+    // cannot tell that from X landed. The hash look-up decides instead.
+    expect(voteDelegationLanded({ ...base, drepBefore: NEW, target: OLD, resend: true }, OLD)).toBe(false);
+    // Control: the same record not marked as a send-back is ended by that read.
+    expect(voteDelegationLanded({ ...base, drepBefore: NEW, target: OLD }, OLD)).toBe(true);
+    // The hash path still confirms it once the read shows the target.
+    expect(voteDelegationConfirmed({ ...base, drepBefore: NEW, target: OLD, resend: true }, OLD)).toBe(true);
+  });
+
   it("lookUpVoteTx tells the tab once the look-up has answered, whatever the answer", async () => {
     const flush = () => new Promise((r) => setTimeout(r, 0));
     const settled = vitest.fn();
@@ -290,5 +304,93 @@ describe("clock time of a vote delegation", () => {
   it("expires at sentAt plus the watch limit", () => {
     const sent: SentVoteDelegation = { account: ACCOUNT, network: 0, sentAt: T0, txHash: "ab".repeat(32) };
     expect(voteDelegationExpiresAt(sent)).toBe(T0 + VOTE_DELEGATION_WATCH_LIMIT_MS);
+  });
+});
+
+describe("withdrawalWatch — a sent withdrawal, until a later read or the TTL says it is over", () => {
+  const AMOUNT = BigInt(5_000_000);
+  const w: SentWithdrawal = { account: ACCOUNT, network: 0, amount: AMOUNT, sentAt: T0, txHash: "cd".repeat(32) };
+  const LATER = T0 + 20_000;
+
+  it("is none with nothing sent", () => {
+    expect(withdrawalWatch(null, ACCOUNT, 0, AMOUNT, LATER, null, LATER)).toBe("none");
+  });
+
+  // Each input below would release (or hold) the record on its own account and
+  // network, so an answer other than `none` means the key check is gone.
+  it("is none for another account, whatever the read says", () => {
+    expect(withdrawalWatch(w, OTHER, 0, AMOUNT, LATER, null, LATER)).toBe("none");
+    expect(withdrawalWatch(w, OTHER, 0, BigInt(0), LATER, null, LATER)).toBe("none");
+    expect(withdrawalWatch(w, null, 0, AMOUNT, LATER, null, LATER)).toBe("none");
+  });
+
+  it("is none for another network, whatever the read says", () => {
+    expect(withdrawalWatch(w, ACCOUNT, 2, AMOUNT, LATER, null, LATER)).toBe("none");
+    expect(withdrawalWatch(w, ACCOUNT, 1, BigInt(0), LATER, null, LATER)).toBe("none");
+  });
+
+  it("holds while a later read still shows the amount withdrawn", () => {
+    expect(withdrawalWatch(w, ACCOUNT, 0, AMOUNT, LATER, null, LATER)).toBe("held");
+  });
+
+  it("holds while nothing has been read, or the read failed", () => {
+    expect(withdrawalWatch(w, ACCOUNT, 0, undefined, LATER, null, LATER)).toBe("held");
+    expect(withdrawalWatch(w, ACCOUNT, 0, BigInt(0), null, null, LATER)).toBe("held");
+  });
+
+  it("opens the door on a later read showing less than was withdrawn", () => {
+    expect(withdrawalWatch(w, ACCOUNT, 0, BigInt(0), LATER, null, LATER)).toBe("open");
+    expect(withdrawalWatch(w, ACCOUNT, 0, AMOUNT - BigInt(1), T0 + 1, null, LATER)).toBe("open");
+  });
+
+  // A Conway withdrawal must equal the whole balance when it lands: a later
+  // read of MORE means it landed and a new epoch paid out, or the balance grew
+  // first and the node can no longer take it. Either way it is over.
+  it("opens the door on a later read showing MORE than was withdrawn", () => {
+    expect(withdrawalWatch(w, ACCOUNT, 0, AMOUNT + BigInt(1_000_000), LATER, null, LATER)).toBe("open");
+  });
+
+  it("holds when the read showing another balance started before or as the withdrawal was sent", () => {
+    expect(withdrawalWatch(w, ACCOUNT, 0, BigInt(0), T0, null, LATER)).toBe("held");
+    expect(withdrawalWatch(w, ACCOUNT, 0, AMOUNT + BigInt(1), T0, null, LATER)).toBe("held");
+    expect(withdrawalWatch(w, ACCOUNT, 0, BigInt(0), T0 - 1, null, LATER)).toBe("held");
+  });
+
+  it("releases once the validity window has closed, even on the old balance", () => {
+    expect(withdrawalWatch(w, ACCOUNT, 0, AMOUNT, LATER, null, T0 + WITHDRAWAL_WATCH_LIMIT_MS - 1)).toBe("held");
+    expect(withdrawalWatch(w, ACCOUNT, 0, AMOUNT, LATER, null, T0 + WITHDRAWAL_WATCH_LIMIT_MS)).toBe("released");
+    expect(withdrawalWatch(w, ACCOUNT, 0, undefined, null, null, T0 + WITHDRAWAL_WATCH_LIMIT_MS)).toBe("released");
+  });
+
+  // Review of #57: a transaction dropped from the mempool never moves the
+  // balance, and the door held "waiting" for the whole validity window.
+  const PAST = T0 + DELEGATION_UNSEEN_MS + 20_000;
+  const notIn = (askedAt: number) => ({ txHash: w.txHash, seen: false, askedAt });
+  it("is unseen once a look-up started past the threshold says the transaction is not in a block", () => {
+    expect(withdrawalWatch(w, ACCOUNT, 0, AMOUNT, PAST, notIn(PAST), PAST)).toBe("unseen");
+    expect(withdrawalWatch(w, ACCOUNT, 0, undefined, null, notIn(PAST), PAST)).toBe("unseen");
+  });
+
+  it("stays held past the threshold when the only 'not in a block' was asked before it", () => {
+    expect(withdrawalWatch(w, ACCOUNT, 0, AMOUNT, PAST, notIn(T0 + DELEGATION_UNSEEN_MS), PAST)).toBe("held");
+    expect(withdrawalWatch(w, ACCOUNT, 0, AMOUNT, PAST, null, PAST)).toBe("held");
+  });
+
+  it("does not take another transaction's answer for this one", () => {
+    expect(withdrawalWatch(w, ACCOUNT, 0, AMOUNT, PAST, { ...notIn(PAST), txHash: "ef".repeat(32) }, PAST)).toBe("held");
+  });
+
+  it("found in a block: a read of exactly the amount is stale until the window closes", () => {
+    const seen = { txHash: w.txHash, seen: true, askedAt: PAST };
+    expect(withdrawalWatch(w, ACCOUNT, 0, AMOUNT, PAST, seen, PAST)).toBe("held");
+    expect(withdrawalWatch(w, ACCOUNT, 0, BigInt(0), PAST, seen, PAST)).toBe("open");
+    expect(withdrawalWatch(w, ACCOUNT, 0, AMOUNT, PAST, seen, T0 + WITHDRAWAL_WATCH_LIMIT_MS)).toBe("released");
+  });
+
+  it("a hash once found in a block stays found; another hash starts over", () => {
+    const seen = withdrawalTxAnswered(null, w.txHash, true, LATER);
+    expect(withdrawalTxAnswered(seen, w.txHash, false, PAST)).toEqual({ txHash: w.txHash, seen: true, askedAt: LATER });
+    expect(withdrawalTxAnswered(notIn(LATER), w.txHash, false, PAST)).toEqual(notIn(PAST));
+    expect(withdrawalTxAnswered(seen, "ef".repeat(32), false, PAST)).toEqual({ txHash: "ef".repeat(32), seen: false, askedAt: PAST });
   });
 });

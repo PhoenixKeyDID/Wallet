@@ -10,14 +10,18 @@ import {
   voteDelegationExpiresAt,
   type SentDelegation,
   type SentVoteDelegation,
+  type SentWithdrawal,
 } from "./delegationFeedback";
 import {
   clearSentVote,
+  readLeftVote,
   readSentVote,
+  rememberLeftVote,
   voteDelegationKey,
   writeSentVote,
   type StoredVoteDelegation,
 } from "./voteDelegationStore";
+import { sameVoteTarget } from "@/lib/cardano/governance";
 import { GovernancePanel } from "./GovernancePanel";
 import { ConnectPanel } from "./ConnectPanel";
 import { HistoryPanel } from "./HistoryPanel";
@@ -254,6 +258,30 @@ export function WalletTabs({
   const clearSentDelegation = useCallback(() => setSentDelegation(null), []);
 
   /**
+   * A reward withdrawal just sent. Here for the same reason as the delegation
+   * above: the indexer keeps reporting the old reward balance after it lands,
+   * and a trip to another tab and back must not bring the withdraw button back
+   * with that balance on it. Released by the Staking tab when the
+   * transaction's validity window has closed (`withdrawalWatch`) — it reads
+   * the clock on mount, so a record that outlives its window on another tab
+   * goes the moment Staking opens. A read showing another balance opens the
+   * door without dropping the record, so a lagging read of the old balance
+   * afterwards still holds it. Only the record for that hash goes.
+   *
+   * Deliberately in memory only, unlike the vote delegation below: a reload,
+   * the page locking, or a second browser tab starts without it, and while
+   * the provider still reports the old balance that screen offers Withdraw
+   * again. That is a confusing refusal, not a loss: the node rejects the
+   * duplicate (a reward withdrawal must equal the whole balance when it lands,
+   * and the first one already took it), so no funds move.
+   */
+  const [sentWithdrawal, setSentWithdrawal] = useState<SentWithdrawal | null>(null);
+  const clearSentWithdrawal = useCallback(
+    (txHash: string) => setSentWithdrawal((cur) => (cur !== null && cur.txHash === txHash ? null : cur)),
+    [],
+  );
+
+  /**
    * A vote (DRep) delegation just sent and not yet on chain. Here, not in a
    * panel, because the Staking and Governance tabs are each mounted only while
    * active: an Abstain sent on Staking, or a DRep chosen on Governance, must
@@ -282,7 +310,12 @@ export function WalletTabs({
       // A failed write keeps the in-memory copy, which is what there was
       // before this was persisted; nothing on screen promises durability.
       // The hash is held lower-case, as the store and the indexer hold it.
-      const record = { ...sent, txHash: sent.txHash.toLowerCase() };
+      const record: SentVoteDelegation = { ...sent, txHash: sent.txHash.toLowerCase() };
+      // Sending back the choice this account last moved away from (X → Y
+      // landed, then X): marked, so no account read ends it — a lagging
+      // instance still shows X (`voteDelegationLanded`). Only the hash does.
+      const left = readLeftVote(store, sent.network, accountKey, sent.sentAt);
+      if (left !== null && sent.target !== undefined && sameVoteTarget(left, sent.target)) record.resend = true;
       writeSentVote(store, accountKey, record);
       setVoteSlot({ live: record, expired: null });
     },
@@ -300,6 +333,12 @@ export function WalletTabs({
     (txHash: string) => {
       const live = liveVoteRef.current;
       if (live === null || live.txHash !== txHash) return;
+      // The account held `drepBefore` until this landed: a later send of it is
+      // a send-back (`rememberVoteDelegation`). Kept for X → X too — X was
+      // held, which is all a lagging read needs to show it.
+      if (typeof live.drepBefore === "string") {
+        rememberLeftVote(store, live.network, accountKey, live.drepBefore, Date.now());
+      }
       clearSentVote(store, live.network, accountKey, txHash);
       setVoteSlot((cur) => (cur.live !== null && cur.live.txHash === txHash ? { live: null, expired: null } : cur));
     },
@@ -323,6 +362,12 @@ export function WalletTabs({
 
   // The record ends when its transaction can no longer land, whether or not a
   // tab is mounted to notice: drop it from disk and say it ran out.
+  //
+  // No send-back memory is written here (`rememberLeftVote`): an expiry cannot
+  // tell "never landed" from "landed but no read ever showed it". In the
+  // second case — every read lagging for the whole watch — a later send of
+  // `drepBefore` is not marked `resend`, and a lagging read of it can end that
+  // record early, as before send-backs were marked.
   useEffect(() => {
     const live = voteSlot.live;
     if (live === null) return;
@@ -407,6 +452,9 @@ export function WalletTabs({
           sentDelegation={sentDelegation}
           onDelegationSent={setSentDelegation}
           onDelegationSettled={clearSentDelegation}
+          sentWithdrawal={sentWithdrawal}
+          onWithdrawalSent={setSentWithdrawal}
+          onWithdrawalSettled={clearSentWithdrawal}
           sentVoteDelegation={sentVoteDelegation}
           expiredVoteDelegation={voteSlot.expired}
           onVoteDelegationSent={rememberVoteDelegation}

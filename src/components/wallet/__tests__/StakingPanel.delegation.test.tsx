@@ -140,6 +140,9 @@ function renderPanel(props: {
         sentDelegation={props.sentDelegation}
         onDelegationSent={props.onDelegationSent ?? (() => {})}
         onDelegationSettled={props.onDelegationSettled ?? (() => {})}
+        sentWithdrawal={null}
+        onWithdrawalSent={() => {}}
+        onWithdrawalSettled={() => {}}
         sentVoteDelegation={null}
         onVoteDelegationSent={() => {}}
         onVoteDelegationLanded={() => {}}
@@ -236,6 +239,9 @@ describe("StakingPanel: switching the network drops the old network's account re
         sentDelegation={null}
         onDelegationSent={() => {}}
         onDelegationSettled={() => {}}
+        sentWithdrawal={null}
+        onWithdrawalSent={() => {}}
+        onWithdrawalSettled={() => {}}
         sentVoteDelegation={null}
         onVoteDelegationSent={() => {}}
         onVoteDelegationLanded={() => {}}

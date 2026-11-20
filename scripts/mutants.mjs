@@ -43,6 +43,7 @@ const TABS = "src/components/wallet/WalletTabs.tsx";
 // What the delegation waiting lines decide from: when "waiting" becomes "not
 // seen", and when a sent vote delegation can no longer land.
 const FEEDBACK = "src/components/wallet/delegationFeedback.ts";
+const VOTE_STORE = "src/components/wallet/voteDelegationStore.ts";
 const GOV_LIB = "src/lib/cardano/governance.ts";
 const PROVIDER = "src/lib/cardano/provider.ts";
 const BLOCKFROST = "src/lib/cardano/blockfrost.ts";
@@ -51,6 +52,7 @@ const TX_SUMMARY = "src/lib/cardano/txSummary.ts";
 // Their helpers were pinned long before the screens were: reverting a screen
 // to the bare name left every helper test green until these were rendered.
 const REVIEW_OUTPUT = "src/components/wallet/ReviewOutput.tsx";
+const CONFIRM_GATE = "src/components/wallet/ConfirmGate.tsx";
 const TX_SUMMARY_VIEW = "extension/src/TxSummaryView.tsx";
 const STORE = "src/components/wallet/uncertainStore.ts";
 // Round six: the store-readiness work. A phrase on the clipboard, the web
@@ -150,6 +152,9 @@ const TESTS = [
   "src/components/wallet/__tests__/GovernancePanel.delegate.test.tsx",
   // The vote-delegation read refusing a row without its DRep field.
   "src/lib/cardano/indexer-errors.test.ts",
+  // A tick or a typed tail made right after a review appears, and the re-arm
+  // when the review switches to another destination.
+  "src/components/wallet/__tests__/ConfirmGate.rearm.test.tsx",
 ];
 
 /**
@@ -2337,6 +2342,165 @@ const MUTANTS = [
     from: "    // was closed is found as the tab opens.\n    lookUpNow();\n",
     to: "    // was closed is found as the tab opens.\n    /* MUT56R4-FIRST */\n",
   },
+  // ── Issue #57 (MUT57-*): a reward withdrawal just sent is held, above the
+  // tab switch, until the balance drops below it or its TTL has passed ──
+  {
+    name: "MUT57-HOLD: the withdraw door offers the button again while a sent withdrawal is held",
+    file: STAKING,
+    from: "  if (withdrawHeld) {\n",
+    to: "  if (false /* MUT57-HOLD */) {\n",
+  },
+  {
+    name: "MUT57-LIFT: the Staking tab is not handed the parent's withdrawal record",
+    file: TABS,
+    from: "          sentWithdrawal={sentWithdrawal}\n",
+    to: "          sentWithdrawal={null /* MUT57-LIFT */}\n",
+  },
+  {
+    name: "MUT57-DROP: a later read showing another balance than the amount withdrawn does not open the door",
+    file: FEEDBACK,
+    from:
+      "  if (\n    readAt !== null &&\n    readAt > sent.sentAt &&\n    rewardsAvailable !== undefined &&\n" +
+      '    rewardsAvailable !== sent.amount\n  )\n    return "open";\n',
+    to: "  /* MUT57-DROP */\n",
+  },
+  {
+    name: "MUT57-READAT: a read started before (or as) the withdrawal was sent releases the hold",
+    file: FEEDBACK,
+    from: "    readAt > sent.sentAt &&\n",
+    to: "    /* MUT57-READAT */\n",
+  },
+  {
+    name: "MUT57-NEQ: only a LOWER balance releases the hold, so new rewards after it landed keep the door shut",
+    file: FEEDBACK,
+    from: "    rewardsAvailable !== sent.amount\n",
+    to: "    rewardsAvailable < sent.amount /* MUT57-NEQ */\n",
+  },
+  {
+    name: "MUT57-ACCOUNT: a withdrawal sent from another account is held on this one",
+    file: FEEDBACK,
+    from:
+      '  if (sent === null || sent.account !== account || sent.network !== network) return "none";\n' +
+      "  if (now - sent.sentAt >= WITHDRAWAL_WATCH_LIMIT_MS)",
+    to:
+      '  if (sent === null /* MUT57-ACCOUNT */ || sent.network !== network) return "none";\n' +
+      "  if (now - sent.sentAt >= WITHDRAWAL_WATCH_LIMIT_MS)",
+  },
+  {
+    name: "MUT57-NETWORK: a withdrawal sent on another network is held on this one",
+    file: FEEDBACK,
+    from:
+      '  if (sent === null || sent.account !== account || sent.network !== network) return "none";\n' +
+      "  if (now - sent.sentAt >= WITHDRAWAL_WATCH_LIMIT_MS)",
+    to:
+      '  if (sent === null || sent.account !== account /* MUT57-NETWORK */) return "none";\n' +
+      "  if (now - sent.sentAt >= WITHDRAWAL_WATCH_LIMIT_MS)",
+  },
+  {
+    name: "MUT57-READ-ORDER: an account read that answers late lays an older balance over a newer one",
+    file: STAKING,
+    from: "    if (read.seq < appliedReadSeqRef.current) return false;\n",
+    to: "    if (false /* MUT57-READ-ORDER */) return false;\n",
+    marker: "MUT57-READ-ORDER",
+  },
+  {
+    name: "MUT57-REREAD-FAILED: a failed re-read while a withdrawal is held is not said",
+    file: STAKING,
+    from: '        {rereadFailed && (waiting || withdrawal === "held" || voteInFlight || staleReadShowsVote) && (\n',
+    to: "        {rereadFailed && (waiting || voteInFlight || staleReadShowsVote) /* MUT57-REREAD-FAILED */ && (\n",
+  },
+  {
+    name: "MUT57-TTL: a held withdrawal outlives the transaction's validity window",
+    file: FEEDBACK,
+    from: '  if (now - sent.sentAt >= WITHDRAWAL_WATCH_LIMIT_MS) return "released";\n',
+    to: "  /* MUT57-TTL */\n",
+  },
+  {
+    name: "MUT57-REREAD: nobody re-reads the account while a withdrawal is held",
+    file: STAKING,
+    from: "  const rereading = waiting || withdrawalWatched;\n",
+    to: "  const rereading = waiting; /* MUT57-REREAD */\n",
+  },
+  {
+    name: "MUT57-SETTLE: a released withdrawal record is never handed back to the parent",
+    file: STAKING,
+    from: '    if (withdrawal === "released" && sentWithdrawal !== null) onWithdrawalSettled(sentWithdrawal.txHash);\n',
+    to: "    /* MUT57-SETTLE */\n",
+  },
+  // ── Review of #57 (MUT57-*): the record outlives a read showing the balance
+  // gone, the transaction is looked up by hash, reads are ordered by count ──
+  {
+    name: "MUT57-KEEP: a read showing the balance gone drops the record, so a lagging read of the old amount lights the door again",
+    file: STAKING,
+    from: '    if (withdrawal === "released" && sentWithdrawal !== null) onWithdrawalSettled(sentWithdrawal.txHash);\n',
+    to:
+      '    if ((withdrawal === "released" || withdrawal === "open") /* MUT57-KEEP */ && sentWithdrawal !== null)\n' +
+      "      onWithdrawalSettled(sentWithdrawal.txHash);\n",
+  },
+  {
+    name: "MUT57-UNSEEN: a withdrawal not in a block long past the threshold holds the door for the whole validity window",
+    file: FEEDBACK,
+    from: '  if (answer !== null && !answer.seen && answer.askedAt - sent.sentAt > DELEGATION_UNSEEN_MS) return "unseen";\n',
+    to: "  /* MUT57-UNSEEN */\n",
+  },
+  {
+    name: "MUT57-UNSEEN-LINE: the door is offered again without saying the withdrawal was not seen",
+    file: STAKING,
+    from: '        {withdrawal === "unseen" && (\n',
+    to: "        {false /* MUT57-UNSEEN-LINE */ && (\n",
+  },
+  {
+    name: "MUT57-UNSEEN-FAILED: a failed look-up by hash counts as 'not in a block'",
+    file: STAKING,
+    from: "        () => {},\n      );\n    };\n    lookUp();\n",
+    to:
+      "        () => {\n" +
+      "          if (!cancelled) setWithdrawalTx((cur) => withdrawalTxAnswered(cur, sent.txHash, false, askedAt)); /* MUT57-UNSEEN-FAILED */\n" +
+      "        },\n      );\n    };\n    lookUp();\n",
+  },
+  {
+    name: "MUT57-UNSEEN-ASKED: a 'not in a block' asked before the threshold still says 'not seen' after it",
+    file: FEEDBACK,
+    from: "answer.askedAt - sent.sentAt > DELEGATION_UNSEEN_MS",
+    to: "now - sent.sentAt > DELEGATION_UNSEEN_MS /* MUT57-UNSEEN-ASKED */",
+  },
+  {
+    name: "MUT57-SEEN: a transaction found in a block can still be called 'not seen'",
+    file: FEEDBACK,
+    from: "  if (answer !== null && !answer.seen && ",
+    to: "  if (answer !== null && /* MUT57-SEEN */ ",
+  },
+  {
+    name: "MUT57-SEEN-LATCH: a later 'not in a block' from a lagging instance undoes 'found in a block'",
+    file: FEEDBACK,
+    from: "  if (cur !== null && cur.txHash === txHash && cur.seen) return cur;\n",
+    to: "  /* MUT57-SEEN-LATCH */\n",
+  },
+  {
+    name: "MUT57-SEQ: account reads are ordered by the wall clock, so a clock stepped back drops every later read",
+    file: STAKING,
+    from: "  const startRead = (): AccountRead => ({ seq: ++readSeqRef.current, at: Date.now() });\n",
+    to: "  const startRead = (): AccountRead => ({ seq: Date.now() /* MUT57-SEQ */, at: Date.now() });\n",
+  },
+  // ── The confirm gate re-arms inside the commit, so a tick right after a review
+  // appears is not undone, and still re-arms when the destination changes ──
+  {
+    name: "MUT-GATE-PASSIVE: the gate re-arms after paint and undoes a tick made right after the review appeared",
+    edits: [
+      {
+        file: CONFIRM_GATE,
+        from: 'import { useLayoutEffect, useState } from "react";',
+        to: 'import { useEffect, useState } from "react"; /* MUT-GATE-PASSIVE */',
+      },
+      { file: CONFIRM_GATE, from: "  useLayoutEffect(() => {\n", to: "  useEffect(() => {\n" },
+    ],
+  },
+  {
+    name: "MUT-GATE-NOREARM: a tick given for one destination carries over to another",
+    file: CONFIRM_GATE,
+    from: "    onChange(false);\n    // onChange is a stable",
+    to: "    /* MUT-GATE-NOREARM */\n    // onChange is a stable",
+  },
   // ── Issue #58 (MUT58-*): a read showing the sent choice ends the record; an
   // open Abstain review refuses once another choice is in flight; a failed
   // re-read is said; an expiry on another day carries its date ──
@@ -2893,6 +3057,86 @@ const MUTANTS = [
     to: "      if (false /* MUT59-HELD-ONCE */) return;\n",
     marker: "MUT59-HELD-ONCE",
   },
+  // ── Issue #66 (MUT66-*): a failed fresh read on the Staking tab is said and
+  // tried again; a choice sent back inside the indexer's lag (X → Y landed,
+  // then X) is ended only by its hash, not by a read showing X ──
+  {
+    name: "MUT66-LOOKUP: the Staking tab never looks up the hash of a send-back record",
+    file: STAKING,
+    from: "  const voteLookUp = voteWatch.kind !== \"none\";\n",
+    to: "  const voteLookUp = voteInFlight || (voteWatch.kind !== \"none\" && sentVoteDelegation?.resend !== true && false) /* MUT66-LOOKUP */;\n",
+    marker: "MUT66-LOOKUP",
+  },
+  {
+    name: "MUT66-LAGREAD: the Staking tab stops looking a record up once a fresh read shows a DRep that is not its target",
+    file: STAKING,
+    from: "  const voteLookUp = voteWatch.kind !== \"none\";\n",
+    to: "  const voteLookUp = voteInFlight || (voteWatch.kind !== \"none\" && sentVoteDelegation?.resend === true) /* MUT66-LAGREAD */;\n",
+    marker: "MUT66-LAGREAD",
+  },
+  {
+    name: "MUT66-SHOW: a failed fresh read on the Staking tab is not said",
+    file: STAKING,
+    from: '        {rereadFailed && (waiting || withdrawal === "held" || voteInFlight || staleReadShowsVote) && (\n',
+    to: '        {rereadFailed && (waiting || withdrawal === "held" || voteInFlight) /* MUT66-SHOW */ && (\n',
+    marker: "MUT66-SHOW",
+  },
+  {
+    name: "MUT66-LANDED: a read showing the target ends a send-back record",
+    file: FEEDBACK,
+    from: "  if (sent.resend === true) return false;\n",
+    to: "  /* MUT66-LANDED */\n",
+    marker: "MUT66-LANDED",
+  },
+  {
+    name: "MUT66-MARK: a choice sent back is not marked as a send-back",
+    file: TABS,
+    from: "sameVoteTarget(left, sent.target)) record.resend = true;\n",
+    to: "sameVoteTarget(left, sent.target)) void 0 /* MUT66-MARK */;\n",
+    marker: "MUT66-MARK",
+  },
+  {
+    name: "MUT66-REMEMBER: the choice a landed record moved away from is not remembered",
+    file: TABS,
+    from: "        rememberLeftVote(store, live.network, accountKey, live.drepBefore, Date.now());\n",
+    to: "        void rememberLeftVote; /* MUT66-REMEMBER */\n",
+    marker: "MUT66-REMEMBER",
+  },
+  {
+    name: "MUT66-STORE-WRITE: the send-back mark is not kept on disk",
+    file: VOTE_STORE,
+    from: "  if (sent.resend === true) record.resend = true;\n",
+    to: "  /* MUT66-STORE-WRITE */\n",
+    marker: "MUT66-STORE-WRITE",
+  },
+  {
+    name: "MUT66-STORE-READ: a record read from disk (another tab, a reload) loses its send-back mark",
+    file: VOTE_STORE,
+    from: "    sent.resend = true;\n",
+    to: "    /* MUT66-STORE-READ */\n",
+    marker: "MUT66-STORE-READ",
+  },
+  {
+    name: "MUT66-STORE-MARK-SHAPE: a send-back mark other than true is read as one",
+    file: VOTE_STORE,
+    from: "    if (resend !== true) return null;\n",
+    to: "    /* MUT66-STORE-MARK-SHAPE */\n",
+    marker: "MUT66-STORE-MARK-SHAPE",
+  },
+  {
+    name: "MUT66-LEFT-WINDOW: a move older than one watch window still marks a send-back",
+    file: VOTE_STORE,
+    from: "    if (Math.abs(now - o.at) >= VOTE_DELEGATION_WATCH_LIMIT_MS) {\n",
+    to: "    if (false /* MUT66-LEFT-WINDOW */) {\n",
+    marker: "MUT66-LEFT-WINDOW",
+  },
+  {
+    name: "MUT66-LEFT-SHAPE: a malformed memory is read as a choice moved away from",
+    file: VOTE_STORE,
+    from: "      o.drep.length === 0 ||\n",
+    to: "      false /* MUT66-LEFT-SHAPE */ ||\n",
+    marker: "MUT66-LEFT-SHAPE",
+  },
 ];
 
 /**
@@ -2916,6 +3160,13 @@ const MUTANTS = [
  * button for such an account, and dropping THAT is caught above ("the DRep
  * rule is not read"). With no button there is no way to reach the function
  * from the screen, so no screen test can tell whether its own check is there.
+ *
+ *   - `StakingPanel.reviewWithdraw()`'s `withdrawal === "held"` refusal
+ *
+ * The same shape for issue #57: while a sent withdrawal is held the door draws
+ * a waiting line and no button (MUT57-HOLD pins that), so nothing on the
+ * screen reaches the function's own check. Not listed as a mutant: it would
+ * stay green by construction.
  */
 
 const read = (rel) => readFileSync(join(REPO, rel), "utf8");
