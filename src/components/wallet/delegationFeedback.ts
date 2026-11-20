@@ -106,6 +106,16 @@ export type SentVoteDelegation = {
    * {@link drepBefore}".
    */
   target?: string;
+  /**
+   * `true`: {@link target} is a DRep this account held before
+   * {@link drepBefore} — the choice this wallet last saw it move away from
+   * (`voteDelegationStore` `readLeftVote`), so this record sends it back
+   * (X → Y landed, then X again). An account read cannot end such a record:
+   * a Koios instance that has not applied X → Y yet still answers X, which
+   * looks exactly like X having landed. Only the transaction found by hash
+   * (`lookUpVoteTx`) ends it. Absent: not a send-back, or not known to be.
+   */
+  resend?: true;
 };
 
 /**
@@ -139,6 +149,11 @@ export function voteDelegationLanded(
   onChain: string | null | undefined,
 ): boolean {
   if (sent === null || sent.drepBefore === undefined) return false;
+  // A send-back (X → Y landed, then X again): a lagging read showing X cannot
+  // be told from X landed, so a read says nothing here; the hash decides.
+  // Chosen over "two reads in a row show X": one lagging instance can answer
+  // both, and the hash look-up already exists and is exact.
+  if (sent.resend === true) return false;
   if (!voteDelegationConfirmed(sent, onChain)) return false;
   if (sent.drepBefore === null || sent.target === undefined) return true;
   return !sameVoteTarget(sent.drepBefore, sent.target);

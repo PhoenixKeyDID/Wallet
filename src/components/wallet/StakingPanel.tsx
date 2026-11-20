@@ -407,6 +407,15 @@ export function StakingPanel({
   // a failed read, or the next press sends a second one.
   const voteWatch = voteDelegationWatch(sentVoteDelegation, rewardAddressBech32, network, now);
   const voteInFlight = voteWatch.kind !== "none" && accountState?.delegatedDRep == null;
+  // The look-up by hash below runs for as long as a record is watched, not
+  // only while the account shows no DRep (`voteInFlight`). With a DRep on the
+  // account, nothing else is left to end the record once a fresh read has
+  // answered: a send-back (X → Y landed, then X: `SentVoteDelegation.resend`)
+  // is ended by its hash only, and a fresh read from a lagging instance that
+  // still shows X for a record X → Y turns the one-off re-read below off with
+  // no timer behind it. Nothing waiting is shown for either, since the account
+  // has a DRep.
+  const voteLookUp = voteWatch.kind !== "none";
   // The account read itself shows the choice that was sent, in place of the
   // one held before (`voteDelegationLanded`): the record can go now. The
   // look-up by hash below needs two reads in a row, and this read turning
@@ -443,6 +452,11 @@ export function StakingPanel({
   // an old read showing anything else is not what keeps the record, and the
   // tab that just sent would only re-read what it has. Once per record: a read
   // started in the same millisecond leaves this true and does not loop.
+  //
+  // A failed read is said on screen (`stake_reread_failed`) and read again on
+  // the look-up timer's next tick, which runs for as long as the record is
+  // watched (`voteLookUp`) — a single failure used to leave the record on
+  // disk, with no sign why, until its watch ran out.
   useEffect(() => {
     if (!staleReadShowsVote || !rewardAddressBech32) return;
     let cancelled = false;
@@ -482,7 +496,7 @@ export function StakingPanel({
   // the one held before a Governance-tab change; otherwise the record stays
   // and the timer keeps going (`lookUpVoteTx`).
   useEffect(() => {
-    if (!voteInFlight || !rewardAddressBech32) return;
+    if (!voteLookUp || !rewardAddressBech32) return;
     let cancelled = false;
     let releaseTx: () => void = () => {};
     const confirmOnChain = (sent: SentVoteDelegation) => {
@@ -490,9 +504,7 @@ export function StakingPanel({
       return getStakeAccountState(sent.network, sent.account).then((state) => {
         if (cancelled || networkRef.current !== sent.network) return false;
         // A newer read is already on screen: this one is not confirmed from.
-        // On this tab the look-up runs only while the screen's read shows no
-        // DRep (`voteInFlight`); a newer read that shows one ends this effect
-        // anyway, and one that still shows none would, with the record
+        // A newer read that still shows no DRep would, with the record
         // dropped on this older answer, put "no DRep" and Abstain back on
         // screen — the second paid vote delegation the confirm read exists
         // to prevent. The next tick asks again.
@@ -534,7 +546,7 @@ export function StakingPanel({
       clearInterval(timer);
       releaseTx();
     };
-  }, [voteInFlight, network, rewardAddressBech32]);
+  }, [voteLookUp, network, rewardAddressBech32]);
 
   const runSearch = async () => {
     setSearching(true);
@@ -1058,7 +1070,7 @@ export function StakingPanel({
         {/* The timed re-read behind the waiting lines failed: the lines stay
             (they are still true), and the reader is told the numbers above
             may be from an older read. */}
-        {rereadFailed && (waiting || withdrawal === "held" || voteInFlight) && (
+        {rereadFailed && (waiting || withdrawal === "held" || voteInFlight || staleReadShowsVote) && (
           <p className="text-xs text-amber-brand">{t("stake_reread_failed")}</p>
         )}
         {/* Ran out without the chain showing it, and the chain still shows no

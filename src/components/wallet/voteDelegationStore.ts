@@ -46,7 +46,7 @@ export type StoredVoteDelegation =
   | { kind: "live"; sent: SentVoteDelegation }
   | { kind: "expired"; sent: SentVoteDelegation };
 
-const FIELDS = new Set(["account", "network", "sentAt", "txHash", "drepBefore", "target"]);
+const FIELDS = new Set(["account", "network", "sentAt", "txHash", "drepBefore", "target", "resend"]);
 
 /**
  * The stored text as a record for `network`, or `null` if it is anything else.
@@ -71,7 +71,7 @@ function parseRecord(raw: string, network: number): SentVoteDelegation | null {
   if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
   const o = v as Record<string, unknown>;
   if (Object.keys(o).some((k) => !FIELDS.has(k))) return null;
-  const { account, sentAt, txHash, drepBefore, target } = o;
+  const { account, sentAt, txHash, drepBefore, target, resend } = o;
   if (typeof account !== "string" || account.length === 0) return null;
   if (o.network !== network || (network !== 0 && network !== 1 && network !== 2)) return null;
   if (typeof sentAt !== "number" || !Number.isSafeInteger(sentAt) || sentAt < 0) return null;
@@ -89,6 +89,10 @@ function parseRecord(raw: string, network: number): SentVoteDelegation | null {
   if ("target" in o) {
     if (typeof target !== "string" || target.length === 0) return null;
     sent.target = target;
+  }
+  if ("resend" in o) {
+    if (resend !== true) return null;
+    sent.resend = true;
   }
   return sent;
 }
@@ -157,6 +161,7 @@ export function writeSentVote(
   };
   if (sent.drepBefore !== undefined) record.drepBefore = sent.drepBefore;
   if (sent.target !== undefined) record.target = sent.target;
+  if (sent.resend === true) record.resend = true;
   try {
     store.setItem(voteDelegationKey(sent.network, accountKey), JSON.stringify(record));
     return true;
@@ -186,5 +191,82 @@ export function clearSentVote(
   } catch {
     // Unreadable storage: the in-memory copy is cleared by the caller either
     // way, and a stale record expires on its own at its watch limit.
+  }
+}
+
+const LEFT_PREFIX = "phoenix.leftVoteDelegation";
+
+/** The storage key for the choice an account last moved away from. */
+export function leftVoteKey(network: number, accountKey: string): string {
+  return slotKey(LEFT_PREFIX, network, accountKey);
+}
+
+/**
+ * Remember that a sent vote delegation landed and moved this account away
+ * from `drep` (the record's `drepBefore`). Read back by `readLeftVote` when the
+ * next choice is sent: sending `drep` again is a send-back, and an account
+ * read from a Koios instance that has not applied the move yet still shows
+ * `drep` (`SentVoteDelegation.resend`). One slot: the last move only. Two
+ * moves inside one indexer lag (X → Y → Z, then X) are not covered.
+ */
+export function rememberLeftVote(
+  store: KeyValueStore | null | undefined,
+  network: number,
+  accountKey: string,
+  drep: string,
+  at: number,
+): void {
+  if (!store || drep.length === 0) return;
+  try {
+    store.setItem(leftVoteKey(network, accountKey), JSON.stringify({ drep, at }));
+  } catch {
+    // Not kept: the next send-back is then judged as any other choice, which
+    // is what there was before this memory existed.
+  }
+}
+
+/**
+ * The choice this account last moved away from, if that move landed within
+ * one watch window (`VOTE_DELEGATION_WATCH_LIMIT_MS`) of `now`; otherwise, or
+ * on a malformed value (removed), `null`. Indexer instances lag each other by
+ * minutes, not hours: a move older than the window is not what a lagging read
+ * still shows, and keeping it would only stop reads ending records for good.
+ */
+export function readLeftVote(
+  store: KeyValueStore | null | undefined,
+  network: number,
+  accountKey: string,
+  now: number,
+): string | null {
+  if (!store) return null;
+  const key = leftVoteKey(network, accountKey);
+  try {
+    const raw = store.getItem(key);
+    if (raw === null) return null;
+    let v: unknown;
+    try {
+      v = JSON.parse(raw);
+    } catch {
+      v = null;
+    }
+    const o = typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+    if (
+      o === null ||
+      Object.keys(o).length !== 2 ||
+      typeof o.drep !== "string" ||
+      o.drep.length === 0 ||
+      typeof o.at !== "number" ||
+      !Number.isSafeInteger(o.at)
+    ) {
+      remove(store, key);
+      return null;
+    }
+    if (Math.abs(now - o.at) >= VOTE_DELEGATION_WATCH_LIMIT_MS) {
+      remove(store, key);
+      return null;
+    }
+    return o.drep;
+  } catch {
+    return null;
   }
 }

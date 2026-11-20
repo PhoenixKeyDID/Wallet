@@ -257,6 +257,16 @@ describe("voteDelegationConfirmed — the sent target, not any vote delegation",
     expect(voteDelegationLanded({ ...base, drepBefore: null, target: NEW }, NEW)).toBe(true);
   });
 
+  it("#66: a send-back (X → Y landed, then X) is never ended by a read showing X", () => {
+    // A Koios instance that has not applied X → Y still answers X: a read
+    // cannot tell that from X landed. The hash look-up decides instead.
+    expect(voteDelegationLanded({ ...base, drepBefore: NEW, target: OLD, resend: true }, OLD)).toBe(false);
+    // Control: the same record not marked as a send-back is ended by that read.
+    expect(voteDelegationLanded({ ...base, drepBefore: NEW, target: OLD }, OLD)).toBe(true);
+    // The hash path still confirms it once the read shows the target.
+    expect(voteDelegationConfirmed({ ...base, drepBefore: NEW, target: OLD, resend: true }, OLD)).toBe(true);
+  });
+
   it("lookUpVoteTx tells the tab once the look-up has answered, whatever the answer", async () => {
     const flush = () => new Promise((r) => setTimeout(r, 0));
     const settled = vitest.fn();

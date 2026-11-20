@@ -654,9 +654,10 @@ export function Approve() {
    * No key is touched here: `submitTx` hands over bytes that were signed
    * elsewhere, usually by this same window a moment earlier. It goes out
    * through the same provider the wallet's own Send tab uses, and the answer is
-   * the hash the node reported — or `TxSendError.Failure` with the node's own
-   * reason on a 400, which is the one thing a developer can act on, and a
-   * fixed reason on any other 4xx (`rejectionReasonForSite`).
+   * the hash the node reported — or `TxSendError.Failure` with the ledger rule
+   * names on a 400 whose body has them, which is the one thing a
+   * developer can act on, and a fixed reason on any other 4xx, or a 400 whose
+   * body names no ledger rule (`rejectionReasonForSite`).
    *
    * Only the network is read from the account, before the await. The idle
    * lock may wipe the keys while this is out; nothing after the await needs
@@ -688,10 +689,13 @@ export function Approve() {
       answer({ ok: true, value: hash }, req);
     } catch (e) {
       if (isDefiniteRejection(e) && !resend) {
-        // The node read it and said no: nothing is on chain, and its reason is
-        // what the site's developer can act on. Only the node's reason, though:
-        // a 401/402/403/429 body is about the person's provider account, and
-        // the endpoint label names the provider (`rejectionReasonForSite`).
+        // A 4xx: this transaction did not get in. What the site hears depends
+        // on the body (`rejectionReasonForSite`): a 400 forwards the ledger
+        // rule names in it and nothing else of the body, the one thing the
+        // site's developer can act on; anything else gets a fixed reason, because a
+        // 401/402/403/429 body is about the person's provider account, other
+        // 400 bodies can describe the provider's internals, and the endpoint
+        // label names the provider.
         answer({ ok: false, error: sendFailed(rejectionReasonForSite(e)) }, req);
       } else {
         // No answer, a 5xx, a dropped connection — or a 4xx for bytes whose
