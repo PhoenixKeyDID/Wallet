@@ -23,7 +23,7 @@
     "@/components/night": "src/components/night/*"
   },
   "aliasesFromHost": {
-    "@/lib/api": "session-authed API client; this repo ships a plain fetch client",
+    "@/lib/api": "session-authed API client; this repo ships a plain fetch client. Its ApiError must carry `status` and `rawCode` (the backend's integer code, on a non-1000 envelope and on a non-2xx JSON body): the imported-wallet screen tells a refused proof (1387 on 403) from a signed-out session by `rawCode`",
     "@/lib/toast": "user-facing notifications with i18n; this repo ships a console logger",
     "@/components/CopyBtn": "the host's styled copy-to-clipboard control",
     "@/components/Nav": "the host's site chrome",

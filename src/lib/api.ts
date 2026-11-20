@@ -24,14 +24,27 @@ export type ApiFetchOptions = RequestInit & {
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
+  /**
+   * The backend's integer `ErrorCode`, when the response carried one — on a
+   * non-1000 envelope and on a non-2xx with a JSON body. Same field name and
+   * meaning as the host client's, so a caller branching on it works on both.
+   */
+  readonly rawCode?: number;
   /** i18n key a UI can show; falls back to `errors.generic`. */
   readonly userMessageKey: string;
 
-  constructor(init: { status: number; code: string; message: string; userMessageKey?: string }) {
+  constructor(init: {
+    status: number;
+    code: string;
+    message: string;
+    rawCode?: number;
+    userMessageKey?: string;
+  }) {
     super(init.message);
     this.name = "ApiError";
     this.status = init.status;
     this.code = init.code;
+    this.rawCode = init.rawCode;
     this.userMessageKey = init.userMessageKey ?? `errors.${init.code}`;
   }
 }
@@ -82,6 +95,7 @@ function unwrapEnvelope<T>(body: unknown, status: number): T {
       throw new ApiError({
         status,
         code: `code_${env.code}`,
+        rawCode: env.code,
         message: env.message ?? `Backend returned code ${env.code}`,
       });
     }
@@ -139,10 +153,24 @@ export async function apiFetch<T = unknown>(
   }
 
   if (!res.ok) {
+    // The backend sends its own error code in the envelope on a non-2xx too
+    // (1387 rides on 403, 1388 on 409). Dropping it leaves a caller unable to
+    // tell "bad proof" from "signed out", which need different messages. The
+    // host client keeps it as `rawCode`; so does this one.
+    let rawCode: number | undefined;
+    let serverMessage: string | undefined;
+    try {
+      const body = (await res.json()) as { code?: unknown; message?: unknown };
+      if (typeof body?.code === "number") rawCode = body.code;
+      if (typeof body?.message === "string") serverMessage = body.message;
+    } catch {
+      // Not JSON — the status is all there is.
+    }
     throw new ApiError({
       status: res.status,
       code: statusCode(res.status),
-      message: `Request failed: ${res.status} ${res.statusText}`,
+      rawCode,
+      message: serverMessage ?? `Request failed: ${res.status} ${res.statusText}`,
     });
   }
 
