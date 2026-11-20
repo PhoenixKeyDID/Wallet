@@ -7,7 +7,10 @@ import { VOTE_DELEGATION_WATCH_LIMIT_MS, type SentVoteDelegation } from "../dele
 import { lockKey } from "../uncertainStore";
 import {
   clearSentVote,
+  leftVoteKey,
+  readLeftVote,
   readSentVote,
+  rememberLeftVote,
   voteDelegationKey,
   writeSentVote,
 } from "../voteDelegationStore";
@@ -146,5 +149,43 @@ describe("voteDelegationStore", () => {
     expect(readSentVote(store, 0, ACCT_KEY, T0).kind).toBe("live");
     clearSentVote(store, 0, ACCT_KEY, HASH.toUpperCase());
     expect(readSentVote(store, 0, ACCT_KEY, T0)).toEqual({ kind: "none" });
+  });
+
+  it("#66: keeps the send-back mark; a mark other than true is malformed", () => {
+    const store = memStore();
+    const resend: SentVoteDelegation = { ...SENT, drepBefore: "drep1y", target: "drep1x", resend: true };
+    writeSentVote(store, ACCT_KEY, resend);
+    expect(readSentVote(store, 0, ACCT_KEY, T0)).toEqual({ kind: "live", sent: resend });
+    for (const mark of [false, "true", 1, null]) {
+      store.setItem(
+        voteDelegationKey(0, ACCT_KEY),
+        JSON.stringify({ account: SENT.account, network: 0, sentAt: T0, txHash: HASH, resend: mark }),
+      );
+      expect(readSentVote(store, 0, ACCT_KEY, T0)).toEqual({ kind: "none" });
+    }
+  });
+
+  it("#66: remembers the choice last moved away from, for one watch window", () => {
+    const store = memStore();
+    expect(readLeftVote(store, 0, ACCT_KEY, T0)).toBeNull();
+    rememberLeftVote(store, 0, ACCT_KEY, "drep1x", T0);
+    expect(readLeftVote(store, 0, ACCT_KEY, T0 + 60_000)).toBe("drep1x");
+    // Another network, another account: not this memory.
+    expect(readLeftVote(store, 2, ACCT_KEY, T0)).toBeNull();
+    expect(readLeftVote(store, 0, "bb".repeat(28), T0)).toBeNull();
+    expect(leftVoteKey(0, ACCT_KEY)).not.toBe(voteDelegationKey(0, ACCT_KEY));
+    // Past the window it is dropped.
+    expect(readLeftVote(store, 0, ACCT_KEY, T0 + VOTE_DELEGATION_WATCH_LIMIT_MS)).toBeNull();
+    expect(store.data.size).toBe(0);
+  });
+
+  it("#66: a malformed memory is dropped, not guessed", () => {
+    for (const raw of ["{", "[]", JSON.stringify({ drep: "", at: T0 }), JSON.stringify({ drep: "drep1x" }),
+      JSON.stringify({ drep: "drep1x", at: T0, extra: 1 })]) {
+      const store = memStore();
+      store.setItem(leftVoteKey(0, ACCT_KEY), raw);
+      expect(readLeftVote(store, 0, ACCT_KEY, T0)).toBeNull();
+      expect(store.data.size).toBe(0);
+    }
   });
 });
