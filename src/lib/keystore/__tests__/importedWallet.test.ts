@@ -2,9 +2,9 @@
  * Attaching an external wallet to a DID (`POST /wallet/imported/attach`).
  *
  * Two oracles that are not this file's own code:
- * - the message bytes are compared with a vector produced by the server's own
- *   message builder (Java, run once and pasted here), so a drift in field order,
- *   length framing or the expiry's text form fails here, not as a 1387 in use;
+ * - the message bytes are compared with the vector the server's own test pins
+ *   for its message builder, so a drift in field order, a separator, a trailing
+ *   newline or the expiry's text form fails here, not as a 1387 in use;
  * - the proof is signed by this repo's keystore — a real CIP-30 `signData` — and
  *   checked by the vendored LAMP CIP-8 verifier, which reads the same COSE fields
  *   the server reads (protected `address` header, `blake2b224(COSE_Key.x)`,
@@ -32,11 +32,23 @@ import {
 } from "../../wallet";
 
 /**
- * `CanonicalMessage.build("PHOENIXKEY_WALLET_IMPORT_ATTACH:", did, address,
- * nonce, Long.toString(expiresAt))`, hex, for the inputs in the case below —
- * output of the backend class at the commit that added the attach route.
+ * The server's published vector for the attach message (PhoenixKey-Database
+ * f5f26fa5, `WalletImportServiceTest.attachMessageVector`): five plain-text
+ * lines joined by "\n", no trailing newline. Written out line by line here, not
+ * built by the code under test.
  */
-const JAVA_VECTOR = "50484f454e49584b45595f57414c4c45545f494d504f52545f4154544143483a000000186469643a70686f656e69783a70726570726f643a3766336100000013616464725f7465737431717a6578616d706c650000002030303131323233333434353536363737383839396161626263636464656566660000000a31373633333030303030";
+const VECTOR = {
+  did: "did:phoenix:alice",
+  address: "addr_test1qpy3zykaqy24cp76kjzlwx6h9cx2uav79nfck8qwja2599ea26s5nj7ethl6pylth7rye6uxzy7lapc5dqfpfrs9ynnsqqalcej6",
+  nonce: "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+  expiresAt: 1763456789,
+};
+const VECTOR_TEXT =
+  "PhoenixKey: attach wallet\n" +
+  "did: did:phoenix:alice\n" +
+  "address: addr_test1qpy3zykaqy24cp76kjzlwx6h9cx2uav79nfck8qwja2599ea26s5nj7ethl6pylth7rye6uxzy7lapc5dqfpfrs9ynnsqqalcej6\n" +
+  "nonce: 0f1e2d3c4b5a69788796a5b4c3d2e1f0\n" +
+  "expires_at: 1763456789";
 
 const ENTROPY = Uint8Array.from(Buffer.alloc(32, 9));
 const rawHex = (bech: string) =>
@@ -65,30 +77,37 @@ function keystoreWallet(account: Account): DataSigner {
 }
 
 describe("importAttachMessage — the bytes the server rebuilds", () => {
-  it("matches the server's own builder byte for byte", () => {
-    const got = importAttachMessage(
-      "did:phoenix:preprod:7f3a",
-      "addr_test1qzexample",
-      "00112233445566778899aabbccddeeff",
-      1763300000,
-    );
-    expect(JAVA_VECTOR).toMatch(/^[0-9a-f]+$/);
-    expect(hex(got)).toBe(JAVA_VECTOR);
+  it("matches the server's published vector byte for byte", () => {
+    const got = importAttachMessage(VECTOR.did, VECTOR.address, VECTOR.nonce, VECTOR.expiresAt);
+    expect(Buffer.from(got).toString("utf8")).toBe(VECTOR_TEXT);
+    expect(hex(got)).toBe(Buffer.from(VECTOR_TEXT, "utf8").toString("hex"));
+    expect(got[got.length - 1]).not.toBe(0x0a);
   });
 
-  it("frames each field with a 4-byte big-endian length after the prefix", () => {
-    const m = importAttachMessage("d", "ab", "c", 7);
-    const prefix = Buffer.from("PHOENIXKEY_WALLET_IMPORT_ATTACH:");
-    expect(Buffer.from(m.subarray(0, prefix.length)).equals(prefix)).toBe(true);
-    expect(hex(m.subarray(prefix.length))).toBe(
-      "00000001" + "64" + "00000002" + "6162" + "00000001" + "63" + "00000001" + "37",
-    );
-  });
-
-  it("counts UTF-8 bytes, not UTF-16 code units", () => {
+  it("encodes as UTF-8", () => {
     const m = importAttachMessage("é", "a", "b", 1);
-    const at = "PHOENIXKEY_WALLET_IMPORT_ATTACH:".length;
-    expect(hex(m.subarray(at, at + 6))).toBe("00000002c3a9");
+    expect(hex(m)).toBe(
+      Buffer.from("PhoenixKey: attach wallet\ndid: \u00e9\naddress: a\nnonce: b\nexpires_at: 1").toString("hex"),
+    );
+  });
+
+  it("refuses a line break in the DID, the address or the nonce instead of signing it", () => {
+    const ok = [VECTOR.did, VECTOR.address, VECTOR.nonce] as const;
+    for (let i = 0; i < 3; i++) {
+      for (const brk of ["\n", "\r", "\r\n"]) {
+        const f: [string, string, string] = [...ok];
+        f[i] = f[i]!.slice(0, 5) + brk + f[i]!.slice(5);
+        expect(() => importAttachMessage(f[0], f[1], f[2], VECTOR.expiresAt)).toThrow(/line break/);
+      }
+    }
+  });
+
+  it("is text this repo's own wallet shows as text in its sign prompt", () => {
+    const entry = acct.external[0]!;
+    const msg = importAttachMessage(VECTOR.did, entry.address, VECTOR.nonce, VECTOR.expiresAt);
+    const p = planDataSign(acct, rawHex(entry.address), hex(msg));
+    expect(p.ok).toBe(true);
+    if (p.ok) expect(p.plan.payloadText).toBe(Buffer.from(msg).toString("utf8"));
   });
 
   it("refuses an expiry that is not a positive whole number", () => {

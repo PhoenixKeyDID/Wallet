@@ -15,7 +15,7 @@ import i18next, { type i18n as I18n } from "i18next";
 import { I18nextProvider, initReactI18next } from "react-i18next";
 import en from "../../../../locales/en/wallet.json";
 import { ApiError } from "@/lib/api";
-import { WalletConnectError } from "@/lib/cardano";
+import { CONNECT_TIMEOUT_MS, WalletConnectError } from "@/lib/cardano";
 import { IMPORT_PROOF_LIFETIME_SEC } from "@/lib/wallet";
 
 const BASE_HEX = "00" + "11".repeat(28) + "22".repeat(28);
@@ -209,6 +209,64 @@ describe("ImportedWalletsPanel — attach", () => {
     expect(screen.queryByRole("alert")).toBeNull();
     expect(screen.queryByRole("button", { name: tr("cancel") })).toBeNull();
     expect(m.attach).not.toHaveBeenCalled();
+  });
+
+  it("Cancel while the wallet withholds its address frees the screen and never asks it to sign", async () => {
+    m.api.getChangeAddress.mockReturnValue(new Promise(() => {}));
+    mount();
+    await clickAttach();
+    await waitFor(() => expect(m.api.getChangeAddress).toHaveBeenCalledTimes(1));
+    fireEvent.click(await screen.findByRole("button", { name: tr("cancel") }));
+    await waitFor(() => expect(attachButton()).toBeTruthy());
+    expect(screen.queryByRole("button", { name: tr("cancel") })).toBeNull();
+    expect((screen.getByRole("button", { name: tr("imported_show_list") }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(m.api.signData).not.toHaveBeenCalled();
+    expect(m.attach).not.toHaveBeenCalled();
+  });
+
+  it("an address that arrives after Cancel is not signed for, and a late refusal is not left unhandled", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (r: unknown) => unhandled.push(r);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      let give!: (v: string) => void;
+      m.api.getChangeAddress.mockReturnValue(new Promise<string>((r) => (give = r)));
+      // Were the wallet asked anyway, the user would decline the popup that appeared.
+      m.api.signData.mockRejectedValue({ code: 3, info: "user declined" });
+      mount();
+      await clickAttach();
+      await waitFor(() => expect(m.api.getChangeAddress).toHaveBeenCalledTimes(1));
+      fireEvent.click(await screen.findByRole("button", { name: tr("cancel") }));
+      await waitFor(() => expect(attachButton()).toBeTruthy());
+      await act(async () => {
+        give(BASE_HEX);
+        await new Promise((r) => setTimeout(r, 20));
+      });
+      expect(m.api.signData).not.toHaveBeenCalled();
+      expect(unhandled).toEqual([]);
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(m.attach).not.toHaveBeenCalled();
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  it("a wallet that never gives its address times out with the connect-timeout sentence", async () => {
+    vi.useFakeTimers();
+    m.api.getChangeAddress.mockReturnValue(new Promise(() => {}));
+    mount();
+    await clickAttach();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(CONNECT_TIMEOUT_MS - 1);
+    });
+    expect(screen.queryByRole("alert")).toBeNull();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(screen.getByRole("alert").textContent).toBe(tr("connect_timeout"));
+    expect(attachButton()).toBeTruthy();
+    expect(m.api.signData).not.toHaveBeenCalled();
   });
 
   it("a wallet that never signs is given up on once the proof would have expired", async () => {

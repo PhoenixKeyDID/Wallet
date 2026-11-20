@@ -6,6 +6,7 @@ import {
   listWallets,
   enableWallet,
   isConnectRefused,
+  CONNECT_TIMEOUT_MS,
   WalletConnectError,
   type Cip30Wallet,
 } from "@/lib/cardano";
@@ -36,9 +37,11 @@ import {
  * again for nothing, and an address already on another DID (1388) is not fixed
  * by signing again.
  *
- * A wallet is free to never answer, at connect or at sign. Both waits can be
- * cancelled, show a hint when slow, and the sign wait stops on its own when the
- * proof it would produce has expired anyway.
+ * A wallet is free to never answer — at connect, when asked for its address, or
+ * at sign. Each of those waits can be cancelled and shows a hint when slow; the
+ * address wait stops on its own after the connect timeout, and the sign wait when
+ * the proof it would produce has expired anyway. Once a wait is cancelled no
+ * further call goes to the wallet.
  */
 type Props = {
   /** DID of the signed-in user, supplied by the host session. */
@@ -176,8 +179,19 @@ export function ImportedWalletsPanel({ did }: Props) {
       }
       let addressHex: string;
       try {
-        addressHex = await api.getChangeAddress();
-      } catch {
+        // A locked or still-loading wallet may never answer this; the wait has to
+        // obey Cancel and a timeout like the connect and sign waits do.
+        addressHex = await untilStopped(
+          Promise.resolve().then(() => api.getChangeAddress()),
+          ac.signal,
+          CONNECT_TIMEOUT_MS,
+          () => setSlow(true),
+        );
+      } catch (err) {
+        if (err instanceof SignWaitStopped) {
+          if (err.reason === "timeout") setNotice({ kind: "error", key: "connect_timeout" });
+          return;
+        }
         // E.g. the account was switched mid-flow: the wallet refuses, and the
         // user must see that rather than a button that silently reset.
         setNotice({ kind: "error", key: "imported_err_connect", values: { name: w.name } });

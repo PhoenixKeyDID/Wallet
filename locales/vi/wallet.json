@@ -515,7 +515,7 @@
   "imported_err_script": "Địa chỉ của ví này do một script giữ, không phải một khoá, nên không chứng minh quyền sở hữu bằng chữ ký được.",
   "imported_err_address": "Ví này đưa ra một địa chỉ không gắn được.",
   "imported_sending": "Đang gửi lên Phoenix…",
-  "imported_address_to_attach": "Địa chỉ ví sẽ gắn: {{address}}. Ví có thể hiện thông điệp thành chuỗi ký tự khó đọc; trong đó là DID của bạn và địa chỉ này. Chỉ duyệt khi chính bạn vừa bấm gắn ở đây.",
+  "imported_address_to_attach": "Địa chỉ ví sẽ gắn: {{address}}. Lời nhắc ký của ví sẽ hiện một đoạn văn bản ngắn ghi DID của bạn và địa chỉ này; hãy đối chiếu cả hai. Chỉ duyệt khi chính bạn vừa bấm gắn ở đây.",
   "imported_detached_list_failed": "Đã gỡ {{address}}, nhưng chưa tải lại được danh sách. Bấm “Xem các ví đã gắn” để thử lại.",
   "imported_attached_same_key": "Khoá của ví này đã gắn với DID của bạn qua địa chỉ {{existing}}. Không có gì mới được thêm.",
   "imported_attached_missing": "Máy chủ đã nhận ví, nhưng {{address}} không có trong danh sách. Bấm “Xem các ví đã gắn” để kiểm tra lại.",

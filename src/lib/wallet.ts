@@ -82,8 +82,14 @@ export async function getAllWallets(userDid: string): Promise<AllWalletsResponse
 //
 // The wallet extension signs; this module never sees its key. What the server
 // checks, and therefore what this code must produce byte for byte:
-//   - payload = ATTACH_PREFIX ++ frame(did) ++ frame(address) ++ frame(nonce)
-//     ++ frame(expiresAt), each frame a 4-byte big-endian length then UTF-8;
+//   - payload = UTF-8 of five plain-text lines joined by "\n", no trailing
+//     newline (PhoenixKey-Database#763):
+//       PhoenixKey: attach wallet
+//       did: <did>
+//       address: <address>
+//       nonce: <nonce>
+//       expires_at: <expiresAt>
+//     and no field may contain "\n" or "\r" (the server refuses it with 1387);
 //   - `address` is the bech32 string exactly as sent in the body;
 //   - `nonce` is hex, at least 16 bytes, single use per DID;
 //   - `expiresAt` is Unix seconds in decimal digits, in the future and at most
@@ -91,8 +97,8 @@ export async function getAllWallets(userDid: string): Promise<AllWalletsResponse
 //   - the address pays to a key hash, and the COSE_Key hashes to it.
 // ---------------------------------------------------------------------------
 
-/** Domain prefix of the attach message; a signature here is useless elsewhere. */
-export const IMPORT_ATTACH_PREFIX = "PHOENIXKEY_WALLET_IMPORT_ATTACH:";
+/** First line of the attach message; a signature over it is useless elsewhere. */
+export const IMPORT_ATTACH_TITLE = "PhoenixKey: attach wallet";
 
 /**
  * How long the signed message stays valid. The server refuses more than ten
@@ -141,8 +147,14 @@ function fromHex(hex: string): Uint8Array {
 
 /**
  * The exact bytes the server rebuilds and compares against the COSE payload.
- * Any drift here — field order, a separator, the expiry as a float — and every
- * proof is refused with 1387, so this function is pinned by a fixed vector.
+ * Any drift here — field order, a separator, a trailing newline, the expiry as a
+ * float — and every proof is refused with 1387, so this function is pinned by
+ * the server's published vector.
+ *
+ * The message is readable text so the wallet's own prompt shows the DID and the
+ * address being signed for. Lines carry no length prefix; what keeps two
+ * different sets of fields from producing the same text is that no field may hold
+ * a line break, so one is refused here rather than signed and sent.
  */
 export function importAttachMessage(
   userDid: string,
@@ -153,17 +165,20 @@ export function importAttachMessage(
   if (!Number.isSafeInteger(expiresAt) || expiresAt <= 0) {
     throw new Error("expiresAt must be a positive whole number of seconds");
   }
-  const fields = [userDid, address, nonce, String(expiresAt)].map((f) => utf8.encode(f));
-  const prefix = utf8.encode(IMPORT_ATTACH_PREFIX);
-  const out = new Uint8Array(prefix.length + fields.reduce((n, f) => n + 4 + f.length, 0));
-  out.set(prefix, 0);
-  let at = prefix.length;
-  for (const f of fields) {
-    new DataView(out.buffer).setUint32(at, f.length, false);
-    out.set(f, at + 4);
-    at += 4 + f.length;
+  for (const [name, value] of [
+    ["userDid", userDid],
+    ["address", address],
+    ["nonce", nonce],
+  ] as const) {
+    if (/[\r\n]/.test(value)) throw new Error(`${name} must not contain a line break`);
   }
-  return out;
+  return utf8.encode(
+    `${IMPORT_ATTACH_TITLE}\n` +
+      `did: ${userDid}\n` +
+      `address: ${address}\n` +
+      `nonce: ${nonce}\n` +
+      `expires_at: ${expiresAt}`,
+  );
 }
 
 export type ImportAddressCheck =
@@ -233,11 +248,10 @@ export type AttachProof = {
  * Ask the external wallet to sign the attach message for `addressHex`.
  * Nothing is sent to the server here.
  *
- * The message is NOT readable text: each field is framed by a 4-byte length, so
- * it carries 0x00 bytes and wallets show it as hex. The user cannot check the
- * DID it names in the wallet's popup, which is why the screen shows the address
- * first and tells the user to approve only a request they started there. The
- * framing is the server's; a readable form has to change on both sides.
+ * The message is plain text naming the DID and the address, so a wallet that
+ * shows text can let the user check both in its own prompt. How a third-party
+ * wallet displays it is its choice, so the screen still shows the address first
+ * and tells the user to approve only a request they started there.
  *
  * `addressHex` goes to `signData` as raw address hex, the form CIP-30 defines and
  * every wallet accepts; it also becomes the COSE `address` header the server

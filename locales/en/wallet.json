@@ -515,7 +515,7 @@
   "imported_err_script": "This wallet's address is controlled by a script, not a key, so it cannot prove ownership with a signature.",
   "imported_err_address": "This wallet gave an address that cannot be attached.",
   "imported_sending": "Sending to Phoenix…",
-  "imported_address_to_attach": "Wallet address to attach: {{address}}. Your wallet may show the message as unreadable characters; it contains your DID and this address. Approve it only because you started it here.",
+  "imported_address_to_attach": "Wallet address to attach: {{address}}. Your wallet's signing prompt should show a short text naming your DID and this address; check both. Approve it only because you started it here.",
   "imported_detached_list_failed": "Detached {{address}}, but the list could not be refreshed. Tap “Show attached wallets” to try again.",
   "imported_attached_same_key": "This wallet's key is already attached to your DID under {{existing}}. Nothing new was added.",
   "imported_attached_missing": "The server accepted the wallet, but {{address}} is not in the list. Tap “Show attached wallets” to check again.",

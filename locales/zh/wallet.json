@@ -515,7 +515,7 @@
   "imported_err_script": "此钱包地址由脚本而非密钥控制，因此无法通过签名证明所有权。",
   "imported_err_address": "此钱包提供的地址无法绑定。",
   "imported_sending": "正在发送到 Phoenix…",
-  "imported_address_to_attach": "要绑定的钱包地址：{{address}}。钱包可能会把消息显示为难以阅读的字符；其中包含你的 DID 和此地址。只有在你刚在这里发起时才批准。",
+  "imported_address_to_attach": "要绑定的钱包地址：{{address}}。钱包的签名提示应显示一段注明你的 DID 和此地址的简短文字；请核对两者。只有在你刚在这里发起时才批准。",
   "imported_detached_list_failed": "已解绑 {{address}}，但列表未能刷新。请点“查看已绑定的钱包”重试。",
   "imported_attached_same_key": "此钱包的密钥已通过 {{existing}} 绑定到你的 DID。没有新增任何内容。",
   "imported_attached_missing": "服务器已接受该钱包，但 {{address}} 不在列表中。请点“查看已绑定的钱包”再次检查。",
