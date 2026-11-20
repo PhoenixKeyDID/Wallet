@@ -81,12 +81,16 @@ export const PROVIDER_REFUSED_REASON = "the wallet's chain provider refused the 
  * Era-prefixed constructors (`ConwayIncompleteWithdrawals`,
  * `ConwayMempoolFailure`, `BabbageOutputTooSmallUTxO`), the `…UTxO` rule names
  * (`BadInputsUTxO`, `ValueNotConservedUTxO`, `FeeTooSmallUTxO`), and the two
- * wrappers a node puts around them. An allowlist, not a blocklist: a provider
+ * wrappers a node puts around them. The era prefix does not count when what
+ * follows is an era *type tag* (`ConwayEra`, `ShelleyBasedEraConway`,
+ * `AnyCardanoEra`): those travel inside provider errors that also carry
+ * internal paths (`connection to /ipc/node.socket refused`), and they name no
+ * rule. An allowlist, not a blocklist: a provider
  * can invent any new infrastructure message, and the one that is not listed
  * must fall to the fixed sentence, not through to the site.
  */
 const LEDGER_REASON =
-  /\b(?:Shelley|Allegra|Mary|Alonzo|Babbage|Conway)[A-Z][A-Za-z]+|\b[A-Z][A-Za-z]*UTxO\b|ApplyTxError|TxValidationError/;
+  /\b(?:Shelley|Allegra|Mary|Alonzo|Babbage|Conway)(?!Era|BasedEra)[A-Z][A-Za-z]+|\b[A-Z][A-Za-z]*UTxO\b|ApplyTxError|TxValidationError/;
 
 /**
  * The reason a website receives for a definite rejection.
@@ -112,8 +116,9 @@ const LEDGER_REASON =
  *
  * This shapes the text only. Whether an error is a rejection at all is still
  * `isDefiniteRejection`'s call, made before this is reached. That call stays on
- * the status: the socket 400 above never reached a node, so "nothing was
- * recorded" is true of it, and a ledger refusal that a proxy turns into a 5xx
+ * the status. Only the socket 400 above was measured as never reaching a
+ * node; other non-ledger 400s are not proven pre-node, they are simply not
+ * something the site is told. A ledger refusal that a proxy turns into a 5xx
  * stays *unknown* — the direction that cannot cost a second payment.
  */
 export function rejectionReasonForSite(err: SubmitRejectedError): string {

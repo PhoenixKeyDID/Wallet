@@ -2686,9 +2686,16 @@ const MUTANTS = [
   {
     name: "MUT-SUBMIT-ERA: the era name alone counts as a ledger reason",
     file: SUBMIT_ERROR,
-    from: "(?:Shelley|Allegra|Mary|Alonzo|Babbage|Conway)[A-Z][A-Za-z]+|\\b[A-Z][A-Za-z]*UTxO\\b|ApplyTxError|TxValidationError/;\n",
+    from: "(?:Shelley|Allegra|Mary|Alonzo|Babbage|Conway)(?!Era|BasedEra)[A-Z][A-Za-z]+|\\b[A-Z][A-Za-z]*UTxO\\b|ApplyTxError|TxValidationError/;\n",
     to: "(?:Shelley|Allegra|Mary|Alonzo|Babbage|Conway)[A-Za-z]*|\\b[A-Z][A-Za-z]*UTxO\\b|ApplyTxError|TxValidationError/; // MUT-SUBMIT-ERA\n",
     marker: "MUT-SUBMIT-ERA",
+  },
+  {
+    name: "MUT-SUBMIT-ERATAG: an era type tag (ConwayEra, ShelleyBasedEra…) counts as a ledger reason",
+    file: SUBMIT_ERROR,
+    from: "(?:Shelley|Allegra|Mary|Alonzo|Babbage|Conway)(?!Era|BasedEra)[A-Z][A-Za-z]+|\\b[A-Z][A-Za-z]*UTxO\\b|ApplyTxError|TxValidationError/;\n",
+    to: "(?:Shelley|Allegra|Mary|Alonzo|Babbage|Conway)[A-Z][A-Za-z]+|\\b[A-Z][A-Za-z]*UTxO\\b|ApplyTxError|TxValidationError/; // MUT-SUBMIT-ERATAG\n",
+    marker: "MUT-SUBMIT-ERATAG",
   },
   {
     name: "MUT59-APPROVE-REASON: the window sends the whole error message to the site again",

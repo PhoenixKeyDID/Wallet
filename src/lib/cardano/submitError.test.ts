@@ -158,6 +158,19 @@ describe("submit > the reason a site receives for a rejection", () => {
     expect(rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"))).toBe(`HTTP 400: ${detail}`);
   });
 
+  // Era type tags travel inside provider errors that carry internal paths and
+  // name no rule; the era prefix alone must not let them through.
+  it.each([
+    'TxSubmitFail ShelleyBasedEraConway: connection to /ipc/node.socket refused',
+    'TxCmdEraConsensusModeMismatch (Just "/ipc/node.socket") (AnyConsensusMode CardanoMode) (AnyCardanoEra ConwayEra)',
+  ])("a 400 that only names an era type tag gets the fixed reason: %s", (detail) => {
+    const reason = rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"));
+    expect(reason).toBe(PROVIDER_REFUSED_REASON);
+    expect(reason).not.toContain("/ipc/");
+  });
+
+  // Only the site's reason is asserted: nothing here says this body never
+  // reached a node.
   it.each([
     "Internal error: upstream connect error or disconnect/reset before headers",
     "Conway", // the era name alone is not a rule failure
