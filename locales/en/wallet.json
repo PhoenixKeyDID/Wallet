@@ -524,5 +524,6 @@
   "imported_attached_missing": "The server accepted the wallet, but {{address}} is not in the list. Tap “Show attached wallets” to check again.",
   "imported_err_network": "This wallet is set to a different Cardano network than the Phoenix server. Switch the network in your wallet, then try again.",
   "imported_err_unavailable": "This Phoenix server does not offer external wallets yet.",
-  "imported_err_sign_timeout": "Your wallet did not sign in time, so the request lapsed. Nothing was attached. Try again."
+  "imported_err_sign_timeout": "Your wallet did not sign in time, so the request lapsed. Nothing was attached. Try again.",
+  "imported_err_send_unknown": "The answer did not arrive before the signed request expired, so it is not known whether {{address}} was attached. Tap “Show attached wallets” to see what is attached now."
 }
