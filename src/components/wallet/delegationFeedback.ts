@@ -274,7 +274,7 @@ export function voteDelegationPending(
  * same reason as {@link SentDelegation}: the indexer goes on reporting the old
  * `rewards_available` after the withdrawal lands, so without this the withdraw
  * door offers the same amount again. The node refuses that second one (a
- * Conway withdrawal must equal the whole balance when it lands, and the
+ * reward withdrawal must equal the whole balance when it lands, and the
  * balance is 0 by then), so it costs nothing — but the reader sees a submit
  * error they cannot explain, about a withdrawal that did in fact work.
  */
@@ -307,8 +307,9 @@ export const WITHDRAWAL_WATCH_LIMIT_MS = WITHDRAWAL_TTL_SLOTS * 1000;
  *   balance other than the amount withdrawn, or the transaction's validity
  *   window has closed (it can no longer land). The record can go.
  *
- * Why "other than", not "less than": since Conway a reward withdrawal must
- * equal the whole balance at the moment it lands. A balance that differs from
+ * Why "other than", not "less than": a reward withdrawal must equal the whole
+ * balance at the moment it lands (a ledger rule since Shelley; Conway added
+ * only the DRep requirement). A balance that differs from
  * the amount sent means either it landed (the balance went to 0, then perhaps
  * grew with a new epoch's rewards — which can read as MORE than was sent), or
  * the balance moved before it landed, so the node can no longer accept it.

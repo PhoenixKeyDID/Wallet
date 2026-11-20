@@ -188,6 +188,21 @@ export function StakingPanel({
     now,
   );
 
+  // When the read now on screen was started. Several reads overlap — the
+  // timed re-read, the read after a signature, the vote look-ups — and the
+  // network answers them in any order: a read made right after a withdrawal
+  // can come back after a later one has shown the balance gone and released
+  // the hold, and laying its old balance over that offers the same withdrawal
+  // again. An answer to a read started before the one on screen is dropped.
+  const appliedReadAtRef = useRef(Number.NEGATIVE_INFINITY);
+  const applyAccountRead = (state: StakeAccountState, readAt: number): boolean => {
+    if (readAt < appliedReadAtRef.current) return false;
+    appliedReadAtRef.current = readAt;
+    setAccountState(state);
+    setAccountReadAt(readAt);
+    return true;
+  };
+
   // Read the wallet's own reward address + its on-chain state once on mount.
   // `getRewardAddresses()` is the only source of a stake key here — a wallet
   // this page did not derive can only sign for the key it reports.
@@ -212,10 +227,7 @@ export function StakingPanel({
         setRewardAddressBech32(bech32Addr);
         const readAt = Date.now();
         const state = await getStakeAccountState(network, bech32Addr);
-        if (!cancelled) {
-          setAccountState(state);
-          setAccountReadAt(readAt);
-        }
+        if (!cancelled) applyAccountRead(state, readAt);
       } catch (err) {
         if (!cancelled) {
           setLoadError(true);
@@ -246,8 +258,7 @@ export function StakingPanel({
       const readAt = Date.now();
       const state = await getStakeAccountState(readOn, rewardAddressBech32);
       if (networkRef.current !== readOn) return; // switched while reading: not this screen's answer
-      setAccountState(state);
-      setAccountReadAt(readAt);
+      if (!applyAccountRead(state, readAt)) return;
       setLoadError(false);
       setRereadFailed(false);
     } catch (err) {
@@ -317,8 +328,7 @@ export function StakingPanel({
       getStakeAccountState(network, rewardAddressBech32)
         .then((state) => {
           if (cancelled) return;
-          setAccountState(state);
-          setAccountReadAt(readAt);
+          if (!applyAccountRead(state, readAt)) return;
           setLoadError(false);
           setRereadFailed(false);
         })
@@ -389,8 +399,7 @@ export function StakingPanel({
     getStakeAccountState(readOn, rewardAddressBech32)
       .then((state) => {
         if (cancelled || networkRef.current !== readOn) return;
-        setAccountState(state);
-        setAccountReadAt(readAt);
+        if (!applyAccountRead(state, readAt)) return;
         setLoadError(false);
         setRereadFailed(false);
       })
@@ -428,8 +437,7 @@ export function StakingPanel({
       const readAt = Date.now();
       return getStakeAccountState(sent.network, sent.account).then((state) => {
         if (cancelled || networkRef.current !== sent.network) return false;
-        setAccountState(state);
-        setAccountReadAt(readAt);
+        if (!applyAccountRead(state, readAt)) return false;
         setLoadError(false);
         setRereadFailed(false);
         return voteDelegationConfirmed(sent, state.delegatedDRep);
@@ -453,8 +461,7 @@ export function StakingPanel({
       getStakeAccountState(network, rewardAddressBech32)
         .then((state) => {
           if (cancelled) return;
-          setAccountState(state);
-          setAccountReadAt(readAt);
+          if (!applyAccountRead(state, readAt)) return;
           setLoadError(false);
           setRereadFailed(false);
         })

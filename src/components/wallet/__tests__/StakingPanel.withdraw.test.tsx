@@ -526,6 +526,41 @@ describe("StakingPanel: a withdrawal just sent is held until the balance or the 
     await waitFor(() => expect(withdrawButton()?.disabled).toBe(false));
     expect(screen.queryByText(en.withdraw_sent_waiting)).toBeNull();
   });
+
+  it("a slow read from right after the send, answering after the hold let go, does not bring the old balance back", async () => {
+    // The read made right after the signature is slow (the provider's fetch
+    // has no timeout). The timed re-read started later answers first with the
+    // balance gone, the hold lets go and the parent drops the record — and
+    // then the slow read lands with the balance that was just withdrawn.
+    // Nothing holds any more, so laying that answer on screen would offer the
+    // same withdrawal a second time.
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, "drep_always_abstain"));
+    const port = renderPanel();
+    await waitFor(() => expect(m.getStakeAccountState).toHaveBeenCalledTimes(1));
+    let answerSlowRead: (v: ReturnType<typeof account>) => void = () => {};
+    m.getStakeAccountState.mockImplementationOnce(
+      () => new Promise((resolve) => (answerSlowRead = resolve)),
+    );
+    await withdrawThroughUi(port);
+    await screen.findByText(en.withdraw_sent_waiting);
+    await waitFor(() => expect(m.getStakeAccountState).toHaveBeenCalledTimes(2));
+
+    m.getStakeAccountState.mockResolvedValue(account(BigInt(0), "drep_always_abstain"));
+    vi.setSystemTime(Date.now() + 1_000);
+    await act(async () => {
+      vi.advanceTimersByTime(20_000);
+    });
+    expect(await screen.findByText(en.withdraw_no_rewards)).toBeTruthy();
+    expect(screen.queryByText(en.withdraw_sent_waiting)).toBeNull();
+
+    await act(async () => {
+      answerSlowRead(account(REWARDS, "drep_always_abstain"));
+    });
+    expect(screen.getByText(en.withdraw_no_rewards)).toBeTruthy();
+    expect(withdrawButton()!.disabled).toBe(true);
+    expect(m.buildWithdrawal).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("#57: a held withdrawal, a re-read that fails, a balance that grows, another network", () => {

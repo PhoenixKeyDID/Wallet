@@ -2402,6 +2402,13 @@ const MUTANTS = [
     to: "    /* MUT57-NETRESET */\n  }\n",
   },
   {
+    name: "MUT57-READ-ORDER: an account read that answers late lays an older balance over a newer one",
+    file: STAKING,
+    from: "    if (readAt < appliedReadAtRef.current) return false;\n",
+    to: "    if (false /* MUT57-READ-ORDER */) return false;\n",
+    marker: "MUT57-READ-ORDER",
+  },
+  {
     name: "MUT57-REREAD-FAILED: a failed re-read while a withdrawal is held is not said",
     file: STAKING,
     from: '        {rereadFailed && (waiting || withdrawal === "held" || voteInFlight) && (\n',
