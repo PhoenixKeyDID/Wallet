@@ -2672,9 +2672,23 @@ const MUTANTS = [
   {
     name: "MUT59-SITE-LABEL: a 400 reaches the site with the endpoint label that names the provider",
     file: SUBMIT_ERROR,
-    from: '  return err.detail ? `HTTP 400: ${err.detail}` : "HTTP 400";\n',
+    from: "  return `HTTP 400: ${err.detail}`;\n",
     to: "  return err.message; /* MUT59-SITE-LABEL */\n",
     marker: "MUT59-SITE-LABEL",
+  },
+  {
+    name: "MUT-SUBMIT-LEDGER: any 400 body reaches the site, the provider's socket error included",
+    file: SUBMIT_ERROR,
+    from: "  if (!LEDGER_REASON.test(err.detail)) return PROVIDER_REFUSED_REASON;\n",
+    to: "  if (false /* MUT-SUBMIT-LEDGER */) return PROVIDER_REFUSED_REASON;\n",
+    marker: "MUT-SUBMIT-LEDGER",
+  },
+  {
+    name: "MUT-SUBMIT-ERA: the era name alone counts as a ledger reason",
+    file: SUBMIT_ERROR,
+    from: "(?:Shelley|Allegra|Mary|Alonzo|Babbage|Conway)[A-Z][A-Za-z]+|\\b[A-Z][A-Za-z]*UTxO\\b|ApplyTxError|TxValidationError/;\n",
+    to: "(?:Shelley|Allegra|Mary|Alonzo|Babbage|Conway)[A-Za-z]*|\\b[A-Z][A-Za-z]*UTxO\\b|ApplyTxError|TxValidationError/; // MUT-SUBMIT-ERA\n",
+    marker: "MUT-SUBMIT-ERA",
   },
   {
     name: "MUT59-APPROVE-REASON: the window sends the whole error message to the site again",

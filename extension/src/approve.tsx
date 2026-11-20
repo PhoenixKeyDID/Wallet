@@ -655,8 +655,9 @@ export function Approve() {
    * elsewhere, usually by this same window a moment earlier. It goes out
    * through the same provider the wallet's own Send tab uses, and the answer is
    * the hash the node reported — or `TxSendError.Failure` with the node's own
-   * reason on a 400, which is the one thing a developer can act on, and a
-   * fixed reason on any other 4xx (`rejectionReasonForSite`).
+   * reason on a 400 that names a ledger rule, which is the one thing a
+   * developer can act on, and a fixed reason on any other 4xx, or a 400 that
+   * is the provider failing before a node read it (`rejectionReasonForSite`).
    *
    * Only the network is read from the account, before the await. The idle
    * lock may wipe the keys while this is out; nothing after the await needs

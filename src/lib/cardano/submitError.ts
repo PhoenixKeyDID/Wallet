@@ -25,7 +25,9 @@
  *
  * ## The 4xx / 5xx line
  *
- * `4xx` is the node saying no. `5xx` is the node or a proxy failing, and a
+ * `4xx` means this transaction did not get in: usually the node saying no,
+ * sometimes the provider failing before it reached one (see
+ * `rejectionReasonForSite`). `5xx` is the node or a proxy failing, and a
  * failure on the way back cannot tell you whether the transaction got through
  * on the way in — so `5xx` stays **unknown**, along with timeouts and dropped
  * connections. The split is deliberately on the side of caution: a rejection
@@ -67,30 +69,55 @@ export function isDefiniteRejection(err: unknown): err is SubmitRejectedError {
 }
 
 /**
- * What a website is told when its `submitTx` was refused with a 4xx other
- * than 400. Fixed on purpose: see `rejectionReasonForSite`.
+ * What a website is told when its `submitTx` was refused and the reply carries
+ * no ledger reason the site could act on. Fixed on purpose: see
+ * `rejectionReasonForSite`.
  */
 export const PROVIDER_REFUSED_REASON = "the wallet's chain provider refused the request";
 
 /**
+ * Words that only the ledger's own rule failures use.
+ *
+ * Era-prefixed constructors (`ConwayIncompleteWithdrawals`,
+ * `ConwayMempoolFailure`, `BabbageOutputTooSmallUTxO`), the `…UTxO` rule names
+ * (`BadInputsUTxO`, `ValueNotConservedUTxO`, `FeeTooSmallUTxO`), and the two
+ * wrappers a node puts around them. An allowlist, not a blocklist: a provider
+ * can invent any new infrastructure message, and the one that is not listed
+ * must fall to the fixed sentence, not through to the site.
+ */
+const LEDGER_REASON =
+  /\b(?:Shelley|Allegra|Mary|Alonzo|Babbage|Conway)[A-Z][A-Za-z]+|\b[A-Z][A-Za-z]*UTxO\b|ApplyTxError|TxValidationError/;
+
+/**
  * The reason a website receives for a definite rejection.
  *
- * Only a **400** is the node reading the transaction and saying no, and its
- * body is the ledger's reason — the one thing the site's developer can act on.
- * Every other 4xx is the chain provider talking about the *person's account
- * with it*: 401/403 an invalid or revoked project token, 402 a plan limit, 429
- * a rate limit. That body describes the user, not the transaction, so the site
- * gets a fixed sentence instead.
+ * The site gets the reply body only when the body is the **ledger** refusing
+ * the transaction — the one thing the site's developer can act on. Anything
+ * else gets a fixed sentence:
  *
- * The endpoint label is left out for every status, 400 included. `message`
- * starts with it (`Koios /submittx`, `Chain endpoint /tx/submit`), and that
- * tells the site which provider this wallet uses and whether it is a custom
- * one. The full `message` stays available to the wallet's own code.
+ * - 401/403 an invalid or revoked project token, 402 a plan limit, 429 a rate
+ *   limit. That body describes the person's account with the provider, not the
+ *   transaction.
+ * - A 400 that is not the ledger. The status alone does not say the node read
+ *   anything: Koios was measured answering **400** with
+ *   `TxCmdTxSubmitConnectionError: Network.Socket.connect: <socket: 14>: does
+ *   not exist` — its own backend failing to reach a node — for the same bytes
+ *   that, a moment earlier, got a real `ConwayIncompleteWithdrawals`. Passing
+ *   that through tells a website how the wallet's provider is wired inside.
+ *
+ * The endpoint label is left out for every status. `message` starts with it
+ * (`Koios /submittx`, `Chain endpoint /tx/submit`), and that tells the site
+ * which provider this wallet uses and whether it is a custom one. The full
+ * `message` stays available to the wallet's own code.
  *
  * This shapes the text only. Whether an error is a rejection at all is still
- * `isDefiniteRejection`'s call, made before this is reached.
+ * `isDefiniteRejection`'s call, made before this is reached. That call stays on
+ * the status: the socket 400 above never reached a node, so "nothing was
+ * recorded" is true of it, and a ledger refusal that a proxy turns into a 5xx
+ * stays *unknown* — the direction that cannot cost a second payment.
  */
 export function rejectionReasonForSite(err: SubmitRejectedError): string {
   if (err.status !== 400) return PROVIDER_REFUSED_REASON;
-  return err.detail ? `HTTP 400: ${err.detail}` : "HTTP 400";
+  if (!LEDGER_REASON.test(err.detail)) return PROVIDER_REFUSED_REASON;
+  return `HTTP 400: ${err.detail}`;
 }

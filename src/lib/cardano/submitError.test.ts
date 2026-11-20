@@ -125,7 +125,53 @@ describe("submit > the reason a site receives for a rejection", () => {
     },
   );
 
-  it("a 400 with an empty body still says 400, and nothing else", () => {
-    expect(rejectionReasonForSite(new SubmitRejectedError(400, "", "Koios /submittx"))).toBe("HTTP 400");
+  it("a 400 with an empty body gets the fixed reason: there is no ledger reason to pass on", () => {
+    expect(rejectionReasonForSite(new SubmitRejectedError(400, "", "Koios /submittx"))).toBe(PROVIDER_REFUSED_REASON);
+  });
+
+  // Measured on preprod (Koios /submittx, the same signed bytes sent three
+  // times): a real ledger refusal, then a 400 whose body was Koios's own
+  // backend failing to reach a node. The status was 400 both times.
+  const SOCKET_400 =
+    "TxCmdTxSubmitConnectionError: Network.Socket.connect: <socket: 14>: does not exist (No such file or directory)";
+
+  it("a 400 that is the provider's own backend failing does not reach the site", async () => {
+    for (const [door, call] of DOORS) {
+      stub(400, SOCKET_400);
+      const err = await call().catch((e: unknown) => e);
+      // Still a definite "did not get in": the node was never reached.
+      expect(isDefiniteRejection(err), door).toBe(true);
+      // The wallet's own copy keeps the provider's words.
+      expect((err as Error).message, door).toContain("TxCmdTxSubmitConnectionError");
+      const reason = rejectionReasonForSite(err as SubmitRejectedError);
+      expect(reason, door).toBe(PROVIDER_REFUSED_REASON);
+      expect(reason, door).not.toMatch(/socket|TxCmd|No such file/i);
+    }
+  });
+
+  it.each([
+    'ConwayIncompleteWithdrawals (NonEmptyMap (fromList [(AccountAddress {aaNetworkId = Testnet}, Mismatch (RelEQ) {supplied: Coin 15486, expected: Coin 0})]))',
+    'ConwayMempoolFailure "All inputs are spent. Transaction has probably already been included"',
+    '{"status_code":400,"error":"Bad Request","message":"\\"transaction submit error ShelleyTxValidationError ShelleyBasedEraConway (ApplyTxError (ConwayUtxowFailure (UtxoFailure (FeeTooSmallUTxO (Coin 170000) (Coin 168000))) :| []))\\""}',
+    "BabbageOutputTooSmallUTxO [(addr, 900000)]",
+  ])("a 400 the ledger wrote reaches the site as it was written: %s", (detail) => {
+    expect(rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"))).toBe(`HTTP 400: ${detail}`);
+  });
+
+  it.each([
+    "Internal error: upstream connect error or disconnect/reset before headers",
+    "Conway", // the era name alone is not a rule failure
+    "malformed request: expected application/cbor",
+    "<html><body>400 Bad Request</body></html>",
+  ])("a 400 with no ledger rule in it gets the fixed reason: %s", (detail) => {
+    expect(rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"))).toBe(PROVIDER_REFUSED_REASON);
+  });
+
+  // The status decides first: a 4xx other than 400 is about the person's
+  // provider account even when its body quotes a ledger rule (a quota page
+  // echoing the transaction it refused, say), so the body still stays home.
+  it.each([401, 403, 429])("a %i whose body reads like a ledger rule still gets the fixed reason", (status) => {
+    const detail = "ConwayMempoolFailure ApplyTxError FeeTooSmallUTxO — quota exceeded for this project";
+    expect(rejectionReasonForSite(new SubmitRejectedError(status, detail, "Koios /submittx"))).toBe(PROVIDER_REFUSED_REASON);
   });
 });
