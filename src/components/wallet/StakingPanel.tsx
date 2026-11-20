@@ -411,11 +411,25 @@ export function StakingPanel({
   // only while the account shows no DRep (`voteInFlight`). With a DRep on the
   // account, nothing else is left to end the record once a fresh read has
   // answered: a send-back (X → Y landed, then X: `SentVoteDelegation.resend`)
-  // is ended by its hash only, and a fresh read from a lagging instance that
+  // is ended by its hash for its first ten minutes and by a read showing the
+  // sent choice after that (`voteDelegationLanded`, the fallback for a
+  // `/tx_status` that is down), and a fresh read from a lagging instance that
   // still shows X for a record X → Y turns the one-off re-read below off with
   // no timer behind it. Nothing waiting is shown for either, since the account
   // has a DRep.
   const voteLookUp = voteWatch.kind !== "none";
+  // A failed re-read is about a record this panel is waiting on (a delegation,
+  // a withdrawal, a vote delegation). When the last one goes — landed, expired,
+  // dropped in another tab — the flag goes with it: kept, the next wait opened
+  // with the "re-read failed" line already up, before any read of the new
+  // record had failed, and it stayed until that read answered.
+  useEffect(() => {
+    if (waiting || withdrawalWatched || voteWatch.kind !== "none") return;
+    setRereadFailed(false);
+    // Each term is the watch state the flag-setting reads above key on; the
+    // flag itself is the only thing moved.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [waiting, withdrawalWatched, voteWatch.kind]);
   // The account read itself shows the choice that was sent, in place of the
   // one held before (`voteDelegationLanded`): the record can go now. The
   // look-up by hash below needs two reads in a row, and this read turning
@@ -434,14 +448,14 @@ export function StakingPanel({
     accountState !== null &&
     accountReadAt !== null &&
     accountReadAt <= sentVoteDelegation.sentAt &&
-    voteDelegationLanded(sentVoteDelegation, accountState.delegatedDRep);
+    voteDelegationLanded(sentVoteDelegation, accountState.delegatedDRep, accountReadAt);
   const voteLandedByRead =
     voteWatch.kind !== "none" &&
     sentVoteDelegation !== null &&
     accountState !== null &&
     accountReadAt !== null &&
     accountReadAt > sentVoteDelegation.sentAt &&
-    voteDelegationLanded(sentVoteDelegation, accountState.delegatedDRep);
+    voteDelegationLanded(sentVoteDelegation, accountState.delegatedDRep, accountReadAt);
   useEffect(() => {
     if (voteLandedByRead && sentVoteDelegation !== null) onVoteDelegationLanded(sentVoteDelegation.txHash);
     // The record and callback are the parent's; the read's answer is what moves.

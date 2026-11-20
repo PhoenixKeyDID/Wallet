@@ -110,10 +110,14 @@ export type SentVoteDelegation = {
    * `true`: {@link target} is a DRep this account held before
    * {@link drepBefore} — the choice this wallet last saw it move away from
    * (`voteDelegationStore` `readLeftVote`), so this record sends it back
-   * (X → Y landed, then X again). An account read cannot end such a record:
-   * a Koios instance that has not applied X → Y yet still answers X, which
-   * looks exactly like X having landed. Only the transaction found by hash
-   * (`lookUpVoteTx`) ends it. Absent: not a send-back, or not known to be.
+   * (X → Y landed, then X again). An account read cannot end such a record
+   * while it is younger than {@link DELEGATION_UNSEEN_MS}: a Koios instance
+   * that has not applied X → Y yet still answers X, which looks exactly like
+   * X having landed. Inside that window only the transaction found by hash
+   * (`lookUpVoteTx`) ends it; past it, a read showing the target ends it too
+   * (`voteDelegationLanded`) — a `/tx_status` that is down or answers in an
+   * unknown shape must not hold the record for its whole two-hour watch.
+   * Absent: not a send-back, or not known to be.
    */
   resend?: true;
 };
@@ -143,17 +147,33 @@ export function voteDelegationConfirmed(
  * read cannot tell old from new and this says nothing; the primary signal —
  * the transaction itself found in a block — decides those, and clears the
  * record instead, so it is not asked here.
+ *
+ * `readAt` is when the read behind `onChain` was STARTED. It matters only for
+ * a send-back (X → Y landed, then X again, {@link SentVoteDelegation.resend}):
+ * a Koios instance that has not applied X → Y still answers X, which looks
+ * exactly like X having landed, so while the record is younger than
+ * {@link DELEGATION_UNSEEN_MS} a read says nothing and the hash decides.
+ * Past that mark a read showing the sent choice ends it anyway — the fallback
+ * for a `/tx_status` that is down or answers in an unknown shape, which
+ * otherwise held the record to its whole watch (two hours) with every read
+ * already showing the choice. A read that old showing X is not an instance
+ * still before the move this send undoes: the send came after that move
+ * landed, and instances lag each other by minutes, not ten of them (the same
+ * bound `readLeftVote` leans on). Chosen over "two reads in a row show X": a
+ * balancer can hand both reads to the one lagging instance, and one read ten
+ * minutes after the send says more than two reads twenty seconds apart.
  */
 export function voteDelegationLanded(
   sent: SentVoteDelegation | null,
   onChain: string | null | undefined,
+  readAt: number,
 ): boolean {
   if (sent === null || sent.drepBefore === undefined) return false;
   // A send-back (X → Y landed, then X again): a lagging read showing X cannot
   // be told from X landed, so a read says nothing here; the hash decides.
   // Chosen over "two reads in a row show X": one lagging instance can answer
   // both, and the hash look-up already exists and is exact.
-  if (sent.resend === true) return false;
+  if (sent.resend === true && readAt - sent.sentAt < DELEGATION_UNSEEN_MS) return false;
   if (!voteDelegationConfirmed(sent, onChain)) return false;
   if (sent.drepBefore === null || sent.target === undefined) return true;
   return !sameVoteTarget(sent.drepBefore, sent.target);

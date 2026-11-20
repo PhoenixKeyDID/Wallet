@@ -533,13 +533,13 @@ function DelegateSection({
     sentVoteDelegation !== null &&
     currentReadAt !== null &&
     currentReadAt <= sentVoteDelegation.sentAt &&
-    voteDelegationLanded(sentVoteDelegation, current);
+    voteDelegationLanded(sentVoteDelegation, current, currentReadAt);
   const voteLandedByRead =
     voteWatch.kind !== "none" &&
     sentVoteDelegation !== null &&
     currentReadAt !== null &&
     currentReadAt > sentVoteDelegation.sentAt &&
-    voteDelegationLanded(sentVoteDelegation, current);
+    voteDelegationLanded(sentVoteDelegation, current, currentReadAt);
   const voteInFlight = voteWatch.kind !== "none" && !voteLandedByRead;
   // The DRep read shows the choice sent, in place of the one before: the
   // record can go now. Without this, the read turning `voteInFlight` false

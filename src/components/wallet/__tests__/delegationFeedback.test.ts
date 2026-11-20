@@ -199,9 +199,10 @@ describe("lookUpVoteTx — the transaction itself, found in a block", () => {
   });
 
   it("the DRep-change signal stays secondary: equal or unread says nothing", () => {
-    expect(voteDelegationLanded({ ...vote, drepBefore: "drep1x" }, "drep1x")).toBe(false);
-    expect(voteDelegationLanded({ ...vote }, "drep1x")).toBe(false);
-    expect(voteDelegationLanded({ ...vote, drepBefore: null }, "drep1x")).toBe(true);
+    const read = T0 + 60_000;
+    expect(voteDelegationLanded({ ...vote, drepBefore: "drep1x" }, "drep1x", read)).toBe(false);
+    expect(voteDelegationLanded({ ...vote }, "drep1x", read)).toBe(false);
+    expect(voteDelegationLanded({ ...vote, drepBefore: null }, "drep1x", read)).toBe(true);
   });
 });
 
@@ -250,21 +251,40 @@ describe("voteDelegationConfirmed — the sent target, not any vote delegation",
   });
 
   it("the DRep-change signal on the Governance tab needs the target, and a change", () => {
-    expect(voteDelegationLanded({ ...base, drepBefore: OLD, target: NEW }, NEW)).toBe(true);
-    expect(voteDelegationLanded({ ...base, drepBefore: OLD, target: NEW }, "drep1third")).toBe(false);
-    expect(voteDelegationLanded({ ...base, drepBefore: OLD, target: OLD }, OLD)).toBe(false);
-    expect(voteDelegationLanded({ ...base, target: NEW }, NEW)).toBe(false);
-    expect(voteDelegationLanded({ ...base, drepBefore: null, target: NEW }, NEW)).toBe(true);
+    const read = T0 + 60_000;
+    expect(voteDelegationLanded({ ...base, drepBefore: OLD, target: NEW }, NEW, read)).toBe(true);
+    expect(voteDelegationLanded({ ...base, drepBefore: OLD, target: NEW }, "drep1third", read)).toBe(false);
+    expect(voteDelegationLanded({ ...base, drepBefore: OLD, target: OLD }, OLD, read)).toBe(false);
+    expect(voteDelegationLanded({ ...base, target: NEW }, NEW, read)).toBe(false);
+    expect(voteDelegationLanded({ ...base, drepBefore: null, target: NEW }, NEW, read)).toBe(true);
   });
 
   it("#66: a send-back (X → Y landed, then X) is never ended by a read showing X", () => {
     // A Koios instance that has not applied X → Y still answers X: a read
     // cannot tell that from X landed. The hash look-up decides instead.
-    expect(voteDelegationLanded({ ...base, drepBefore: NEW, target: OLD, resend: true }, OLD)).toBe(false);
+    expect(voteDelegationLanded({ ...base, drepBefore: NEW, target: OLD, resend: true }, OLD, T0 + 60_000)).toBe(false);
     // Control: the same record not marked as a send-back is ended by that read.
-    expect(voteDelegationLanded({ ...base, drepBefore: NEW, target: OLD }, OLD)).toBe(true);
+    expect(voteDelegationLanded({ ...base, drepBefore: NEW, target: OLD }, OLD, T0 + 60_000)).toBe(true);
     // The hash path still confirms it once the read shows the target.
     expect(voteDelegationConfirmed({ ...base, drepBefore: NEW, target: OLD, resend: true }, OLD)).toBe(true);
+  });
+
+  it("#74: a send-back record past the unseen mark is ended by a read showing the choice", () => {
+    // The fallback for a `/tx_status` that is down or answers in an unknown
+    // shape: without it the record waited out its whole watch (two hours) even
+    // though every read showed the choice. The read that ends it must itself
+    // have started `DELEGATION_UNSEEN_MS` after the send — an instance still
+    // before the move this send undoes is minutes behind at most.
+    const sent: SentVoteDelegation = { ...base, drepBefore: NEW, target: OLD, resend: true };
+    expect(voteDelegationLanded(sent, OLD, T0 + DELEGATION_UNSEEN_MS - 1)).toBe(false);
+    expect(voteDelegationLanded(sent, OLD, T0 + DELEGATION_UNSEEN_MS)).toBe(true);
+    // A read that old still says nothing unless it shows the sent choice.
+    expect(voteDelegationLanded(sent, NEW, T0 + DELEGATION_UNSEEN_MS)).toBe(false);
+    expect(voteDelegationLanded(sent, null, T0 + DELEGATION_UNSEEN_MS)).toBe(false);
+    expect(voteDelegationLanded(sent, undefined, T0 + DELEGATION_UNSEEN_MS)).toBe(false);
+    // The read behind the answer is younger than the mark wherever the answer
+    // came from: a read started before the send never ends a send-back.
+    expect(voteDelegationLanded(sent, OLD, T0 - 1)).toBe(false);
   });
 
   it("lookUpVoteTx tells the tab once the look-up has answered, whatever the answer", async () => {
