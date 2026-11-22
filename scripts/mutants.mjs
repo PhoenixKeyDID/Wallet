@@ -325,6 +325,12 @@ const MUTANTS = [
     to: "settled={!balanceFailed}",
   },
   {
+    name: "a browser wallet's balance stays a dash after Refresh reads it",
+    file: "src/components/wallet/Cip30Panel.tsx",
+    from: "      // The first read may have failed; a Refresh that lands is the first read.\n      setBalanceRead(true);",
+    to: "      // The first read may have failed; a Refresh that lands is the first read.",
+  },
+  {
     name: "the popup flashes its welcome screen before the saved wallets are read",
     file: PANEL,
     from: "} else if (!listed) {",

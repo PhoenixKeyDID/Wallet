@@ -163,6 +163,8 @@ export function Cip30Panel() {
       setLovelace(bal.lovelace);
       setAssets(bal.assets);
       setBalanceFailed(false);
+      // The first read may have failed; a Refresh that lands is the first read.
+      setBalanceRead(true);
     } catch (err) {
       setBalanceFailed(true);
       toastApiError(err);

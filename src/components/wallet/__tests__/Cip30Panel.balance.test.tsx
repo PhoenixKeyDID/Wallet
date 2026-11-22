@@ -18,6 +18,8 @@ import en from "../../../../locales/en/wallet.json";
 const ctx = vi.hoisted(() => ({
   /** When set, the balance read waits for this. */
   balanceGate: null as Promise<void> | null,
+  /** When set, the balance read throws. */
+  balanceFails: false,
   lovelace: BigInt(12_345_678),
 }));
 
@@ -33,11 +35,16 @@ vi.mock("@/lib/cardano", async (orig) => {
     enableWallet: async () => api,
     readBalance: async () => {
       if (ctx.balanceGate) await ctx.balanceGate;
+      if (ctx.balanceFails) throw new Error("balance read failed");
       return { lovelace: ctx.lovelace, assets: [] };
     },
     cip30Port: () => ({ kind: "cip30" }),
   };
 });
+vi.mock("@/lib/toast", async (orig) => ({
+  ...((await orig()) as Record<string, unknown>),
+  toastApiError: () => {},
+}));
 // The feature tabs below the card are not what this file is about.
 vi.mock("../WalletTabs", () => ({ WalletTabs: () => null }));
 
@@ -47,6 +54,7 @@ import { UNREAD_FIGURE } from "../moneyNotice";
 afterEach(() => {
   cleanup();
   ctx.balanceGate = null;
+  ctx.balanceFails = false;
 });
 
 async function renderWithI18n(node: ReactElement) {
@@ -80,5 +88,17 @@ describe("Cip30Panel: the balance card before the first read", () => {
     release();
     await screen.findByText(/12\.345678/);
     expect(text()).not.toContain(`${en.balance_label}${UNREAD_FIGURE}`);
+  });
+
+  it("shows the figure once Refresh reads it, after the first read failed", async () => {
+    ctx.balanceFails = true;
+    const view = await renderWithI18n(<Cip30Panel />);
+    fireEvent.click(await screen.findByText("Slow"));
+    await screen.findByText(en.balance_load_failed);
+    ctx.balanceFails = false;
+    fireEvent.click(screen.getByText(en.refresh));
+    await screen.findByText(/12\.345678/);
+    const text = view.container.textContent ?? "";
+    expect(text).not.toContain(`${en.balance_label}${UNREAD_FIGURE}`);
   });
 });
