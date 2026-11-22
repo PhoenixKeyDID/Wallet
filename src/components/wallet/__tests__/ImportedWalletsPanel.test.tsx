@@ -293,6 +293,54 @@ describe("ImportedWalletsPanel — attach", () => {
     expect(m.attach).not.toHaveBeenCalled();
   });
 
+  it("a send that never settles ends at the proof's expiry with the outcome unknown, not a spinner for good", async () => {
+    vi.useFakeTimers();
+    let answer!: (e: unknown) => void;
+    m.attach.mockReturnValue(new Promise((_resolve, reject) => (answer = reject)));
+    mount();
+    await clickAttach();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(m.attach).toHaveBeenCalledTimes(1);
+    // No Cancel while sending: a request already on its way cannot be unsent.
+    expect(screen.getByRole("button", { name: tr("imported_sending") })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: tr("cancel") })).toBeNull();
+    // The proof's own remaining lifetime is the send's deadline.
+    const proof = m.attach.mock.calls[0]![0] as { expires_at: number };
+    const remaining = proof.expires_at * 1000 - Date.now();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(remaining - 1);
+    });
+    expect(screen.queryByRole("alert")).toBeNull();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(screen.getByRole("alert").textContent).toBe(
+      tr("imported_err_send_unknown", { address: short(BASE) }),
+    );
+    expect(attachButton()).toBeTruthy();
+    expect(m.list).not.toHaveBeenCalled(); // the sentence points at the list; it does not read it silently
+    // The request was on the wire all along: a late answer changes nothing on a
+    // screen that has already said the outcome is unknown, and is not left unhandled.
+    vi.useRealTimers();
+    const unhandled: unknown[] = [];
+    const onUnhandled = (r: unknown) => unhandled.push(r);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      await act(async () => {
+        answer(apiError(500, 9999));
+        await new Promise((r) => setTimeout(r, 20));
+      });
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+    expect(unhandled).toEqual([]);
+    expect(screen.getByRole("alert").textContent).toBe(
+      tr("imported_err_send_unknown", { address: short(BASE) }),
+    );
+  });
+
   it("leaving the screen while the wallet is signing sends nothing when the signature arrives later", async () => {
     let give!: (v: { signature: string; key: string }) => void;
     m.api.signData.mockReturnValue(new Promise((r) => (give = r)));
@@ -340,6 +388,34 @@ describe("ImportedWalletsPanel — attach", () => {
     expect((await screen.findByRole("status")).textContent).toBe(
       tr("imported_attached_list_failed", { address: short(BASE) }),
     );
+    expect(screen.queryByText(tr("imported_none"))).toBeNull();
+  });
+
+  it("an attach whose list re-read never answers ends on its own bound, not a spinner for good", async () => {
+    vi.useFakeTimers();
+    m.list.mockReturnValue(new Promise(() => {}));
+    mount();
+    await clickAttach();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(m.attach).toHaveBeenCalledTimes(1);
+    // The attach is confirmed; the wait that can still hang is the list re-read,
+    // and the button must not stay on "sending" for a wallet that is attached.
+    expect(screen.getByRole("button", { name: tr("imported_sending") })).toBeTruthy();
+    // ATTACH_REREAD_TIMEOUT_MS: the proof's expiry is not this read's clock.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000 - 1);
+    });
+    expect(screen.getByRole("button", { name: tr("imported_sending") })).toBeTruthy();
+    expect(screen.queryByRole("status")).toBeNull();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(screen.getByRole("status").textContent).toBe(
+      tr("imported_attached_list_failed", { address: short(BASE) }),
+    );
+    expect(attachButton()).toBeTruthy();
     expect(screen.queryByText(tr("imported_none"))).toBeNull();
   });
 });
