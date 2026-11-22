@@ -43,6 +43,14 @@ import {
  * address wait stops on its own after the connect timeout, and the sign wait when
  * the proof it would produce has expired anyway. Once a wait is cancelled no
  * further call goes to the wallet.
+ *
+ * The server, too, may never answer. That wait has no Cancel button — a request
+ * already on its way cannot be unsent — but it does not outlive the proof: at
+ * expires_at the wait ends, and the screen says the outcome is unknown and the
+ * list is the next thing to read. The list read after a confirmed attach can
+ * fall silent the same way, and the proof's expiry says nothing about it: it
+ * ends on a bound of its own, and the screen says the wallet is attached and
+ * the list could not be refreshed.
  */
 type Props = {
   /** DID of the signed-in user, supplied by the host session. */
@@ -65,6 +73,14 @@ const SLOW_HINT_AFTER_MS = 20_000;
  * expired: the user sees "took too long" and can start over with a fresh proof.
  */
 const SEND_MARGIN_MS = 30_000;
+
+/**
+ * How long the list re-read after a confirmed attach is worth waiting for. The
+ * proof's expiry does not measure it — a read that starts with a second of
+ * proof left is still a whole read — but a server that never answers must not
+ * keep the button on "sending" for a wallet that is already attached.
+ */
+const ATTACH_REREAD_TIMEOUT_MS = 60_000;
 
 function dataSignCode(err: unknown): number | null {
   if (!err || typeof err !== "object") return null;
@@ -262,21 +278,54 @@ function ImportedWalletsForDid({ did }: Props) {
       }
       setPhase("send");
       setSlow(false);
+      // The proof is the only clock left: the server refuses it after
+      // expires_at, so no answer that arrives later is worth its spinner. The
+      // request itself cannot be recalled — it may already be on the wire and
+      // may still be taken — so this ends the wait, not the send, and the
+      // sentence says the outcome is unknown, never that nothing was attached.
       try {
-        await attachImportedWallet(proof);
+        await untilStopped(
+          attachImportedWallet(proof),
+          ac.signal,
+          proof.expires_at * 1000 - Date.now(),
+          () => setSlow(true),
+        );
       } catch (err) {
+        if (err instanceof SignWaitStopped) {
+          // The send wait has no Cancel button of its own, so "cancelled" here
+          // is only the screen going away, which says nothing.
+          if (err.reason === "timeout") {
+            setNotice({
+              kind: "error",
+              key: "imported_err_send_unknown",
+              values: { address: short(proof.address) },
+            });
+          }
+          return;
+        }
         setNotice(failureNotice(err, proof.address));
         return;
       }
       const address = short(proof.address);
-      // The attach succeeded whatever the list read does next; a failed re-read
-      // shows its own notice and must not overwrite this one silently.
+      // The attach succeeded whatever the list read does next; a re-read that
+      // refuses or never answers shows its own notice and must not overwrite
+      // this one silently.
       let list: ImportedWallet[];
       try {
-        list = await listImportedWallets();
-      } catch {
-        setAttached(null);
-        setNotice({ kind: "success", key: "imported_attached_list_failed", values: { address } });
+        list = await untilStopped(
+          listImportedWallets(),
+          ac.signal,
+          ATTACH_REREAD_TIMEOUT_MS,
+          () => setSlow(true),
+        );
+      } catch (err) {
+        // "cancelled" here is only the screen going away, which says nothing;
+        // every other end — a refusal, or a silence past the bound — says the
+        // wallet is attached and the list could not be refreshed.
+        if (!(err instanceof SignWaitStopped && err.reason === "cancelled")) {
+          setAttached(null);
+          setNotice({ kind: "success", key: "imported_attached_list_failed", values: { address } });
+        }
         return;
       }
       setAttached(list);
