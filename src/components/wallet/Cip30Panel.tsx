@@ -261,6 +261,7 @@ export function Cip30Panel() {
         network={conn.networkId === 1 ? 1 : 0}
         address={receiveAddress}
         showReceive={receiveAddress !== null}
+        settled={!balanceFailed}
       />
 
       <button

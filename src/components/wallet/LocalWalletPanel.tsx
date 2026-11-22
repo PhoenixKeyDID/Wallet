@@ -723,7 +723,13 @@ export function LocalWalletPanel({ layout = "page" }: { layout?: "page" | "popup
                 <button
                   type="button"
                   disabled={busy}
-                  onClick={() => setSwitchTo(0)}
+                  onClick={() => {
+                    setSwitchTo(0);
+                    // The popup draws the switch form on Settings only; a
+                    // button on Home that set the field and stayed put did
+                    // nothing anyone could see.
+                    if (layout === "popup") setPopupView("settings");
+                  }}
                   className="rounded-brand-sm border border-border-soft px-3 py-1.5 text-text-hint hover:text-text-dim disabled:opacity-50"
                 >
                   {t("local_account_back_zero")}

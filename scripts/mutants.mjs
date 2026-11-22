@@ -114,6 +114,7 @@ const TESTS = [
   "extension/src/__tests__/TxSummaryView.test.tsx",
   "src/components/wallet/__tests__/SeedPhraseStep.test.tsx",
   "src/components/wallet/__tests__/LocalWalletPanel.context.test.tsx",
+  "src/components/wallet/__tests__/LocalWalletPanel.popup.test.tsx",
   "scripts/__tests__/checkPopupCss.test.ts",
   "scripts/__tests__/checkLocales.test.ts",
   "extension/background/__tests__/pending.test.ts",
@@ -297,6 +298,12 @@ const MUTANTS = [
     file: PANEL,
     from: '                    {isExtensionContext() ? (\n                      <p>{t("local_risk_ext")}</p>',
     to: '                    {false ? (\n                      <p>{t("local_risk_ext")}</p>',
+  },
+  {
+    name: "the popup's 'Back to Account 0' on Home sets the field and stays put",
+    file: PANEL,
+    from: '                    if (layout === "popup") setPopupView("settings");',
+    to: '                    if (layout === "popup") void "settings";',
   },
   {
     name: "the extension shows the web intro ('no extension needed') again",

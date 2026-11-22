@@ -31,7 +31,7 @@ const toastEls = () => [...document.querySelectorAll(".phoenix-toast")];
 /** The text of every banner currently on screen. */
 const banners = () => toastEls().map((el) => el.querySelector(".phoenix-toast-text")?.textContent ?? "");
 /** The `role` of the most recent banner — what a screen reader announces. */
-const lastRole = () => toastEls().at(-1)?.getAttribute("role");
+const lastRole = () => toastEls().at(-1)?.querySelector(".phoenix-toast-text")?.getAttribute("role");
 
 beforeEach(async () => {
   clearToasts();

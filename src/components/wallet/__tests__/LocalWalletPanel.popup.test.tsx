@@ -22,6 +22,8 @@ const ctx = vi.hoisted(() => ({
   wallets: [] as Record<string, unknown>[],
   /** The balance read fails instead of answering. */
   balanceFails: false,
+  /** What the balance read answers. */
+  lovelace: BigInt(12_345_678),
   /** How many times a vault was opened (an Argon2id run in the real one). */
   opens: 0,
   ADDRESS: "addr_test1qpopupframeaddress0000000000000000000000000000000000000000000",
@@ -69,7 +71,7 @@ vi.mock("@/lib/cardano", async (orig) => {
     ...real,
     fetchAddressBalance: async () => {
       if (ctx.balanceFails) throw new Error("indexer unreachable");
-      return { lovelace: BigInt(12_345_678), assets: [] };
+      return { lovelace: ctx.lovelace, assets: [] };
     },
   };
 });
@@ -82,6 +84,7 @@ afterEach(() => {
   cleanup();
   ctx.wallets = [];
   ctx.balanceFails = false;
+  ctx.lovelace = BigInt(12_345_678);
   ctx.opens = 0;
 });
 
@@ -347,5 +350,18 @@ describe("popup: Enter on an empty password", () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(ctx.opens).toBe(0);
     expect(screen.queryByRole("button", { name: en.local_lock_cta })).toBeNull();
+  });
+});
+
+describe("popup: an empty account other than Account 0", () => {
+  it("'Back to Account 0' on Home opens Settings with the switch form set to 0", async () => {
+    ctx.wallets = [{ ...wallet("w1", "Daily"), accountIndex: 1 }];
+    ctx.lovelace = BigInt(0);
+    await unlockFirst();
+    const back = await screen.findByRole("button", { name: en.local_account_back_zero });
+    expect(screen.queryByText(en.local_account_switch_help)).toBeNull();
+    fireEvent.click(back);
+    expect(await screen.findByText(en.local_account_switch_help)).toBeTruthy();
+    expect((screen.getByRole("spinbutton") as HTMLInputElement).value).toBe("0");
   });
 });

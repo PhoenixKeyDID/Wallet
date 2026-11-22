@@ -97,8 +97,8 @@ export function PhoenixMark({ large = false }: { large?: boolean }) {
  * Which network the wallet is on, in a colour per network.
  *
  * The two test networks are amber and violet and say "test" in their tooltip;
- * mainnet is the calm one. A badge that is loud on mainnet would teach people
- * to tune it out on the network where it matters least to notice.
+ * mainnet is the calm one. A badge that shouts on every screen teaches people
+ * to stop reading it, and then the day it says "test" goes unnoticed too.
  */
 export function NetworkBadge({ network }: { network: PhoenixNetwork }) {
   const { t } = useTranslation("wallet");
@@ -260,9 +260,10 @@ export function StepProgress({ labels, current }: { labels: string[]; current: n
       <p className="pw-steps-caption">
         {t("popup_step_progress", { n: current + 1, total: labels.length })} · {labels[current]}
       </p>
-      <ol className="pw-steps-bar">
-        {labels.map((l, i) => (
-          <li key={i} className={i <= current ? "pw-step pw-step-done" : "pw-step"} aria-label={l} />
+      {/* Decoration: the caption above already says the step in words. */}
+      <ol className="pw-steps-bar" aria-hidden="true">
+        {labels.map((_, i) => (
+          <li key={i} className={i <= current ? "pw-step pw-step-done" : "pw-step"} />
         ))}
       </ol>
     </div>

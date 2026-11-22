@@ -63,10 +63,12 @@ function paint(kind: ToastKind, message: string): void {
   if (typeof document === "undefined" || !document.body) return;
   listenForStale();
   const el = document.createElement("div");
-  el.setAttribute("role", kind === "error" ? "alert" : "status");
   el.className = TOAST_CLASS[kind];
   const text = document.createElement("span");
   text.className = "phoenix-toast-text";
+  // On the text, not the banner: a live region around the close button reads
+  // its label out as part of the message.
+  text.setAttribute("role", kind === "error" ? "alert" : "status");
   text.textContent = message;
   el.appendChild(text);
   // A banner that can only wait out its timer sits over whatever is under it
