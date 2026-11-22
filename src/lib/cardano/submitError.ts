@@ -183,8 +183,13 @@ const WRAPPED_RULE = /(?<![\w./@:=\\&?-])([A-Z][A-Za-z]*) \((?=([A-Z][A-Za-z]*)(
  * KoiosPrimaryReplica` and `… UtxoFailure InternalRelaySecret`. Every
  * measured node body that wraps in `ApplyTxError (` carries
  * `ShelleyTxValidationError` ahead of the wrapper (`… ShelleyTxValidationError
- * ShelleyBasedEraConway (ApplyTxError (…`; the cardano-submit-api JSON quotes
- * it as a kind), so that is what earns the wrapper. Without it the wrapper
+ * ShelleyBasedEraConway (ApplyTxError (…`), so that is what earns the
+ * wrapper, and only from ahead of it: the same word after the wrapper earns
+ * nothing. The cardano-submit-api JSON body carries no `ApplyTxError (` at
+ * all: its `error` list starts at the era's own wrapper (`ConwayUtxowFailure
+ * (…`), which opens without this gate, and its `"kind":
+ * "ShelleyTxValidationError"` comes after that list, where it earns nothing
+ * and goes out as one more name. Without it the wrapper
  * stays closed: the names that stand on their own still travel (`ApplyTxError
  * (ConwayUtxowFailure (BadInputsUTxO` gives all three), and a chain that hangs
  * only off the lone `ApplyTxError` stays home with it.

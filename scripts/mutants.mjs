@@ -2939,14 +2939,14 @@ const MUTANTS = [
     marker: "MUTSUBMITESCAPE",
   },
   {
-    name: "MUT-SUBMIT-INNERDIGIT: a numbered host inside a ledger wrapper (ApplyTxError (ConwayRelay01)) reaches the site",
+    name: "MUT-SUBMIT-INNERDIGIT: a numbered host inside an earned ConwayUtxowFailure wrapper (ConwayUtxowFailure (ConwayRelay01)) reaches the site",
     file: SUBMIT_ERROR,
     from: " \\((?=([A-Z][A-Za-z]*)(?![\\w./@=-]|:\\w))/g;\n",
     to: " \\((?=([A-Z][A-Za-z0-9]*)(?!MUTSUBMITINNERDIGIT)(?![\\w./@=-]|:\\w))/g;\n",
     marker: "MUTSUBMITINNERDIGIT",
   },
   {
-    name: "MUT-SUBMIT-INNERCOLON: a `host:database` pair inside a ledger wrapper (ApplyTxError (PgPrimary:cexplorer)) reaches the site",
+    name: "MUT-SUBMIT-INNERCOLON: a `host:database` pair inside an earned ConwayUtxowFailure wrapper (ConwayUtxowFailure (PgPrimary:cexplorer)) reaches the site",
     file: SUBMIT_ERROR,
     from: " \\((?=([A-Z][A-Za-z]*)(?![\\w./@=-]|:\\w))/g;\n",
     to: " \\((?=([A-Z][A-Za-z]*)(?![\\w./@=-]|:\\d|MUTSUBMITINNERCOLON))/g;\n",
@@ -2968,6 +2968,13 @@ const MUTANTS = [
     from: "      if (m[1] === \"ApplyTxError\" && !shelleyAt.some((at) => at < m.index)) continue;\n",
     to: "      if (m[1] === \"ApplyTxError\") continue; /* MUT75APPLYTXEARNED */\n",
     marker: "MUT75APPLYTXEARNED",
+  },
+  {
+    name: "MUT-SUBMIT-APPLYTXAHEAD: a ShelleyTxValidationError anywhere in the body, even after the wrapper, opens a lone ApplyTxError",
+    file: SUBMIT_ERROR,
+    from: "      if (m[1] === \"ApplyTxError\" && !shelleyAt.some((at) => at < m.index)) continue;\n",
+    to: "      if (m[1] === \"ApplyTxError\" && !shelleyAt.some(() => true /* MUTSUBMITAPPLYTXAHEAD */)) continue;\n",
+    marker: "MUTSUBMITAPPLYTXAHEAD",
   },
   {
     name: "MUT-SUBMIT-PURPOSE: a redeemer's purpose tag (ConwaySpending) counts as a ledger reason",

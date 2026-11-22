@@ -359,6 +359,18 @@ describe("submit > the reason a site receives for a rejection", () => {
     ).toBe("HTTP 400: ShelleyTxValidationError ApplyTxError UtxowFailure BabbageOutputTooSmallUTxO");
   });
 
+  // What earns the wrapper is `ShelleyTxValidationError` AHEAD of it, not
+  // anywhere in the body: the same word after the wrapper opens nothing, so a
+  // provider message cannot open a lone `ApplyTxError (` by naming it later.
+  it.each([
+    ["upstream ApplyTxError (KoiosPrimaryReplica) at pg; ShelleyTxValidationError", "KoiosPrimaryReplica"],
+    ["ApplyTxError (UtxoFailure (InternalRelaySecret)) ShelleyTxValidationError", "InternalRelaySecret"],
+  ])("a ShelleyTxValidationError after an ApplyTxError wrapper does not open it: %s", (detail, leak) => {
+    const reason = rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"));
+    expect(reason).toBe("HTTP 400: ApplyTxError ShelleyTxValidationError");
+    expect(reason).not.toContain(leak);
+  });
+
   // Without the ShelleyTxValidationError ahead of it, the names that stand on
   // their own still travel: the chain re-enters at the era-prefixed wrapper.
   it("names that stand on their own still travel without a ShelleyTxValidationError ahead", () => {
