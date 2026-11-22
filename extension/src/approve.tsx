@@ -689,13 +689,16 @@ export function Approve() {
       answer({ ok: true, value: hash }, req);
     } catch (e) {
       if (isDefiniteRejection(e) && !resend) {
-        // A 4xx: this transaction did not get in. What the site hears depends
-        // on the body (`rejectionReasonForSite`): a 400 forwards the ledger
-        // rule names in it and nothing else of the body, the one thing the
-        // site's developer can act on; anything else gets a fixed reason, because a
-        // 401/402/403/429 body is about the person's provider account, other
-        // 400 bodies can describe the provider's internals, and the endpoint
-        // label names the provider.
+        // A 4xx is answered as: this transaction did not get in. The status
+        // alone decides that (`isDefiniteRejection`); only one 400 has been
+        // measured as never reaching a node, and whether the others should
+        // keep the id to look up instead is issue #71's open question. What
+        // the site hears depends on the body (`rejectionReasonForSite`): a
+        // 400 forwards the ledger rule names in it and nothing else of the
+        // body, the one thing the site's developer can act on; anything else
+        // gets a fixed reason, because a 401/402/403/429 body is about the
+        // person's provider account, other 400 bodies can describe the
+        // provider's internals, and the endpoint label names the provider.
         answer({ ok: false, error: sendFailed(rejectionReasonForSite(e)) }, req);
       } else {
         // No answer, a 5xx, a dropped connection — or a 4xx for bytes whose

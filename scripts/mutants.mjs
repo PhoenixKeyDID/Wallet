@@ -2991,19 +2991,62 @@ const MUTANTS = [
     to: "/(?<![\\w./@:=-])(?!MUTSUBMITESCAPE)(?:(?:Shelley",
     marker: "MUTSUBMITESCAPE",
   },
+  // No MUT-SUBMIT-INNERDIGIT: letting digits into the inner capture only
+  // makes the captured word longer, and no longer word is a NESTING_WRAPPER,
+  // an UNPREFIXED_RULE or a name LEDGER_REASON accepts on its own, so no input
+  // can tell that mutant apart. `ConwayUtxowFailure (ConwayRelay01)` stays
+  // home through the closed sets; its case is kept.
   {
-    name: "MUT-SUBMIT-INNERDIGIT: a numbered host inside a ledger wrapper (ApplyTxError (ConwayRelay01)) reaches the site",
-    file: SUBMIT_ERROR,
-    from: " \\((?=([A-Z][A-Za-z]*)(?![\\w./@=-]|:\\w))/g;\n",
-    to: " \\((?=([A-Z][A-Za-z0-9]*)(?!MUTSUBMITINNERDIGIT)(?![\\w./@=-]|:\\w))/g;\n",
-    marker: "MUTSUBMITINNERDIGIT",
-  },
-  {
-    name: "MUT-SUBMIT-INNERCOLON: a `host:database` pair inside a ledger wrapper (ApplyTxError (PgPrimary:cexplorer)) reaches the site",
+    name: "MUT-SUBMIT-INNERCOLON: a `host:database` pair inside an earned ConwayUtxowFailure wrapper (ConwayUtxowFailure (PgPrimary:cexplorer)) reaches the site",
     file: SUBMIT_ERROR,
     from: " \\((?=([A-Z][A-Za-z]*)(?![\\w./@=-]|:\\w))/g;\n",
     to: " \\((?=([A-Z][A-Za-z]*)(?![\\w./@=-]|:\\d|MUTSUBMITINNERCOLON))/g;\n",
     marker: "MUTSUBMITINNERCOLON",
+  },
+  // Issue #75, point 2: the letters-only counterpart of the two guards above.
+  // A provider word inside a lone `ApplyTxError (` wrapper, and the wrapper a
+  // body earned that must still open.
+  {
+    name: "MUT75-APPLYTX-GATE: a lone ApplyTxError opens its wrapper, so ApplyTxError (UtxoFailure (NoCollateralInputs)) reaches the site with its inner names",
+    file: SUBMIT_ERROR,
+    from: "      if (m[1] === \"ApplyTxError\" && !APPLY_TX_ERROR_AHEAD.test(detail.slice(0, m.index))) continue;\n",
+    to: "      if (false /* MUT75APPLYTXGATE */ && !APPLY_TX_ERROR_AHEAD.test(detail.slice(0, m.index))) continue;\n",
+    marker: "MUT75APPLYTXGATE",
+  },
+  {
+    name: "MUT75-APPLYTX-EARNED: an ApplyTxError that follows ShelleyTxValidationError does not open its wrapper either",
+    file: SUBMIT_ERROR,
+    from: "      if (m[1] === \"ApplyTxError\" && !APPLY_TX_ERROR_AHEAD.test(detail.slice(0, m.index))) continue;\n",
+    to: "      if (m[1] === \"ApplyTxError\") continue; /* MUT75APPLYTXEARNED */\n",
+    marker: "MUT75APPLYTXEARNED",
+  },
+  {
+    name: "MUT-SUBMIT-APPLYTXAHEAD: a ShelleyTxValidationError anywhere ahead in the body, with other text between, opens a lone ApplyTxError",
+    file: SUBMIT_ERROR,
+    from: "      if (m[1] === \"ApplyTxError\" && !APPLY_TX_ERROR_AHEAD.test(detail.slice(0, m.index))) continue;\n",
+    to: "      if (m[1] === \"ApplyTxError\" && !/ShelleyTxValidationError/.test(detail.slice(0, m.index) /* MUTSUBMITAPPLYTXAHEAD */)) continue;\n",
+    marker: "MUTSUBMITAPPLYTXAHEAD",
+  },
+  {
+    name: "MUT-SUBMIT-ERACLOSED: any letters after ShelleyBasedEra (ShelleyBasedEraKoios) open a lone ApplyTxError",
+    file: SUBMIT_ERROR,
+    from: "ShelleyTxValidationError ShelleyBasedEra(?:Shelley|Allegra|Mary|Alonzo|Babbage|Conway) \\($/;",
+    to: "ShelleyTxValidationError ShelleyBasedEra[A-Za-z]+ \\($/; /* MUTSUBMITERACLOSED */",
+    marker: "MUTSUBMITERACLOSED",
+  },
+  {
+    name: "MUT-SUBMIT-BRIDGECLOSED: any XInYUtxoPredFailure-shaped word (SecretInHostUtxoPredFailure) counts as a wrapper",
+    file: SUBMIT_ERROR,
+    from: "|AlonzoInBabbageUtxoPredFailure|AlonzoInBabbageUtxowPredFailure|ShelleyInAlonzoUtxowPredFailure)$/;",
+    to: "|[A-Z][a-z]+In[A-Z][a-z]+(?:Utxow|Utxos|Utxo)PredFailure)$/; /* MUTSUBMITBRIDGECLOSED */",
+    marker: "MUTSUBMITBRIDGECLOSED",
+  },
+  {
+    name: "MUT-SUBMIT-INNERKNOWN: a letters-only provider word inside an era-prefixed wrapper (ConwayUtxowFailure (KoiosPrimaryReplica)) reaches the site",
+    file: SUBMIT_ERROR,
+    from: "      if (!(NESTING_WRAPPER.test(inner) || UNPREFIXED_RULE.test(inner) || accepted.get(innerAt) === inner)) continue;\n",
+    to: "      if (false /* MUTSUBMITINNERKNOWN */) continue;\n",
+    marker: "MUTSUBMITINNERKNOWN",
   },
   {
     name: "MUT-SUBMIT-PURPOSE: a redeemer's purpose tag (ConwaySpending) counts as a ledger reason",

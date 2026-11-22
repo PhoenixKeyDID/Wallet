@@ -25,9 +25,12 @@
  *
  * ## The 4xx / 5xx line
  *
- * `4xx` means this transaction did not get in: usually the node saying no,
- * sometimes the provider failing before it reached one (see
- * `rejectionReasonForSite`). `5xx` is the node or a proxy failing, and a
+ * Every `4xx` is *answered* as this transaction did not get in: usually the
+ * node saying no, sometimes the provider failing before it reached one. Only
+ * one 400 of that second kind has been measured as never reaching a node (see
+ * `rejectionReasonForSite`); the rest are not proven pre-node either way, and
+ * whether they should keep the id to look up instead is the open question in
+ * issue #71. `5xx` is the node or a proxy failing, and a
  * failure on the way back cannot tell you whether the transaction got through
  * on the way in — so `5xx` stays **unknown**, along with timeouts and dropped
  * connections. The split is deliberately on the side of caution: a rejection
@@ -128,8 +131,11 @@ export const SUBMIT_DETAIL_LIMIT = 300;
  * The ledger rules that wrap another rule's failure: `ApplyTxError`, a rule's
  * `…Failure` that carries the failure of the rule below it
  * (`ConwayUtxowFailure (UtxoFailure (UtxosFailure (…`, `ConwayCertsFailure
- * (CertFailure (DelegFailure (…`), and the Babbage-era bridge
- * (`AlonzoInBabbageUtxoPredFailure`).
+ * (CertFailure (DelegFailure (…`), and the three bridges the ledger defines
+ * between eras (`AlonzoInBabbageUtxoPredFailure`,
+ * `AlonzoInBabbageUtxowPredFailure`, `ShelleyInAlonzoUtxowPredFailure`),
+ * named one by one: a provider word of the same shape
+ * (`SecretInHostUtxoPredFailure`) opens nothing.
  *
  * A closed set, unlike `LEDGER_REASON`: this decides whose *argument* is read,
  * and a provider's own `…Failure` (`ConwayRelayFailure`, `DbFailure`) must not
@@ -137,7 +143,7 @@ export const SUBMIT_DETAIL_LIMIT = 300;
  * text, not a rule.
  */
 const NESTING_WRAPPER =
-  /^(?:ApplyTxError|(?:Shelley|Allegra|Mary|Alonzo|Babbage|Conway)?(?:Utxow|Utxos|Utxo|Certs|Cert|Delegs|Deleg|Delpl|Pool|GovCert|Gov|Ledgers|Ledger|Ppup|Mir|Bbody)Failure|[A-Z][a-z]+In[A-Z][a-z]+(?:Utxow|Utxos|Utxo)PredFailure)$/;
+  /^(?:ApplyTxError|(?:Shelley|Allegra|Mary|Alonzo|Babbage|Conway)?(?:Utxow|Utxos|Utxo|Certs|Cert|Delegs|Deleg|Delpl|Pool|GovCert|Gov|Ledgers|Ledger|Ppup|Mir|Bbody)Failure|AlonzoInBabbageUtxoPredFailure|AlonzoInBabbageUtxowPredFailure|ShelleyInAlonzoUtxowPredFailure)$/;
 
 /**
  * A name, then ` (`, then the constructor inside it. The inner name is a
@@ -155,9 +161,45 @@ const NESTING_WRAPPER =
  * even after a real `ApplyTxError` in the same body.
  *
  * The inner name is letters only and stands as a token by the same rules as
- * `LEDGER_REASON`, so a numbered host (`ApplyTxError (ConwayRelay01)`) or a
- * `host:database` pair (`ApplyTxError (PgPrimary:cexplorer)`) gives nothing.
+ * `LEDGER_REASON`, so a numbered host (`ConwayUtxowFailure (ConwayRelay01)`)
+ * or a `host:database` pair (`ConwayUtxowFailure (PgPrimary:cexplorer)`)
+ * gives nothing. A letters-only word passes that test, and every wrapper that
+ * also stands alone as a name (`ApplyTxError`, and each era-prefixed one:
+ * `ConwayUtxowFailure`, `BabbageUtxowFailure`, `ConwayLedgerFailure`,
+ * `AlonzoInBabbageUtxoPredFailure`) can be written by a provider with any word
+ * behind it. So the inner name must also be one `UNPREFIXED_RULE` knows, or a
+ * `NESTING_WRAPPER`, or a name `LEDGER_REASON` accepts on its own:
+ * `ConwayUtxowFailure (KoiosPrimaryReplica)` gives only the wrapper.
  */
+/**
+ * The ledger failures that carry no era prefix and no rule suffix, so
+ * `LEDGER_REASON` cannot see them: the only names read from inside a wrapper
+ * besides another wrapper and a name `LEDGER_REASON` accepts on its own.
+ * A closed set, as `NESTING_WRAPPER` is: a rule left out reaches the site as
+ * its wrapper alone, never as a provider's word.
+ *
+ * Every constructor of every `…PredFailure` type in cardano-ledger
+ * (`eras/<era>/impl/src`, commit eccb3eaaa53a49a078d9183563e952d67b8b52a0) that
+ * neither `LEDGER_REASON` nor `NESTING_WRAPPER` accepts, plus three names
+ * that commit no longer defines and nodes still running an older ledger
+ * print: `InvalidPolicyHash` (now `InvalidGuardrailsScriptHash`),
+ * `TriesToForgeADA` and `MissingRequiredSigners`. `PoolMedataHashTooBig` is
+ * spelled as the ledger spells it.
+ */
+const UNPREFIXED_RULE =
+  /^(?:BodyRefScriptsSizeTooBig|CollateralContainsNonADA|CollectErrors|ConflictingCommitteeUpdate|ConflictingMetadataHash|DelegAccountAlreadyRegistered|DisallowedProposalDuringBootstrap|DisallowedVoters|DisallowedVotesDuringBootstrap|DuplicateGenesisVRFDELEG|ExpirationEpochTooSmall|ExtraRedeemers|GovActionsDoNotExist|HeaderProtVerTooHigh|IncorrectTotalCollateralField|InsufficientCollateral|InvalidBodyHashBBODY|InvalidGuardrailsScriptHash|InvalidMetadata|InvalidPolicyHash|InvalidPrevGovActionId|MIRNegativeTransfer|MIRNegativesNotCurrentlyAllowed|MIRProducesNegativeUpdate|MIRTransferNotCurrentlyAllowed|MalformedProposal|MalformedReferenceScripts|MalformedScriptWitnesses|MissingRedeemers|MissingRequiredDatums|MissingRequiredSigners|MissingTxBodyMetadataHash|MissingTxMetadata|NoCollateralInputs|NotAllowedSupplementalDatums|OutputBootAddrAttrsTooBig|OutsideForecast|PPUpdateWrongEpoch|PPViewHashesDontMatch|PoolMedataHashTooBig|ProposalCantFollow|ProposalDepositIncorrect|ProposalProcedureNetworkIdMismatch|ProposalReturnAccountDoesNotExist|ScriptIntegrityHashMismatch|TooManyCollateralInputs|TooManyExUnits|TreasuryWithdrawalReturnAccountsDoNotExist|TreasuryWithdrawalsNetworkIdMismatch|TriesToForgeADA|UnelectedCommitteeVoters|UnspendableUTxONoDatumHash|UpdateFailure|VRFKeyHashAlreadyRegistered|VotersDoNotExist|VotingOnExpiredGovAction|WrongBlockBodySizeBBODY|WrongNetwork|WrongNetworkInTxBody|WrongNetworkWithdrawal|ZeroTreasuryWithdrawals)$/;
+
+/**
+ * How `ApplyTxError (` opens in a node body: right behind
+ * `ShelleyTxValidationError` and the era tag, nothing between. The era is a
+ * closed set, so `ShelleyBasedEraKoios (` opens nothing. This is a test of
+ * shape, not of origin: a provider that writes the node's words exactly can
+ * still open the wrapper, and what keeps its own words home then is that a
+ * name inside must be a known rule.
+ */
+const APPLY_TX_ERROR_AHEAD =
+  /(?<![\w./@:=\\&?-])ShelleyTxValidationError ShelleyBasedEra(?:Shelley|Allegra|Mary|Alonzo|Babbage|Conway) \($/;
+
 const WRAPPED_RULE = /(?<![\w./@:=\\&?-])([A-Z][A-Za-z]*) \((?=([A-Z][A-Za-z]*)(?![\w./@=-]|:\w))/g;
 
 /**
@@ -166,13 +208,38 @@ const WRAPPED_RULE = /(?<![\w./@:=\\&?-])([A-Z][A-Za-z]*) \((?=([A-Z][A-Za-z]*)(
  * A body cut at `SUBMIT_DETAIL_LIMIT` may end inside a word, and the trailing
  * guard matches at the end of the string, so `…ValidationTa` would pass as a
  * name. When the body is that long, a name that touches its end is dropped.
+ *
+ * `ApplyTxError` opens its wrapper only right behind
+ * `ShelleyTxValidationError ShelleyBasedEra<Era> (` (`APPLY_TX_ERROR_AHEAD`).
+ * Like the era-prefixed wrappers it stands alone as a name, and unlike them
+ * nothing in its spelling ties it to the ledger, so a provider's own message
+ * can carry the word with any word in brackets behind it: measured, `upstream ApplyTxError
+ * (KoiosPrimaryReplica) at pg` and `ApplyTxError (UtxoFailure
+ * (InternalRelaySecret))` reached the site as `HTTP 400: ApplyTxError
+ * KoiosPrimaryReplica` and `… UtxoFailure InternalRelaySecret`. Every
+ * measured node body that wraps in `ApplyTxError (` carries
+ * `ShelleyTxValidationError` ahead of the wrapper (`… ShelleyTxValidationError
+ * ShelleyBasedEraConway (ApplyTxError (…`), so that is what earns the
+ * wrapper, and only right ahead of it: the same word after the wrapper, or
+ * earlier in the body with other text between, earns nothing. The cardano-submit-api JSON body carries no `ApplyTxError (` at
+ * all: its `error` list starts at the era's own wrapper (`ConwayUtxowFailure
+ * (…`), which opens without this gate, and its `"kind":
+ * "ShelleyTxValidationError"` comes after that list, where it earns nothing
+ * and goes out as one more name. Without it the wrapper
+ * stays closed: the names that stand on their own still travel (`ApplyTxError
+ * (ConwayUtxowFailure (BadInputsUTxO` gives all three), and a chain that hangs
+ * only off the lone `ApplyTxError` stays home with it.
  */
 function ledgerNames(detail: string): string[] {
   const accepted = new Map<number, string>();
   for (const m of detail.matchAll(LEDGER_REASON)) accepted.set(m.index, m[0]);
   for (const m of detail.matchAll(WRAPPED_RULE)) {
     if (accepted.get(m.index) === m[1] && NESTING_WRAPPER.test(m[1])) {
-      accepted.set(m.index + m[1].length + 2, m[2]);
+      if (m[1] === "ApplyTxError" && !APPLY_TX_ERROR_AHEAD.test(detail.slice(0, m.index))) continue;
+      const innerAt = m.index + m[1].length + 2;
+      const inner = m[2];
+      if (!(NESTING_WRAPPER.test(inner) || UNPREFIXED_RULE.test(inner) || accepted.get(innerAt) === inner)) continue;
+      accepted.set(innerAt, inner);
     }
   }
   const found = [...accepted].sort((a, b) => a[0] - b[0]);
@@ -187,9 +254,15 @@ function ledgerNames(detail: string): string[] {
  * When the body names **ledger** rules, the site gets those names, each once,
  * in the order they appear in the body (`ShelleyTxValidationError ApplyTxError
  * ConwayUtxowFailure FeeTooSmallUTxO`) — the one thing its developer can act
- * on — and none of the text between them: the arguments are this transaction's
- * own data, which the site already has, and any other words in the body are the
- * provider's. A body with no such name gets a fixed sentence, as does:
+ * on — and none of the text between them. That loses information, not only
+ * words. Some of the dropped arguments are this transaction's own data, which
+ * the site already has, but others are the ledger's own findings, and they go
+ * with them: `FeeTooSmallUTxO (Mismatch {supplied = Coin 170000, required =
+ * Coin 171234})` reaches the site without the required fee the ledger worked
+ * out, and a `PlutusFailure` without its script trace. The names tell the
+ * site which rule to fix; the numbers and the trace stay in the wallet's own
+ * copy of the error. Any other words in the body are the provider's. A body
+ * with no such name gets a fixed sentence, as does:
  *
  * - 401/403 an invalid or revoked project token, 402 a plan limit, 429 a rate
  *   limit. That body describes the person's account with the provider, not the
@@ -209,8 +282,10 @@ function ledgerNames(detail: string): string[] {
  * This shapes the text only. Whether an error is a rejection at all is still
  * `isDefiniteRejection`'s call, made before this is reached. That call stays on
  * the status. Only the socket 400 above was measured as never reaching a
- * node; other non-ledger 400s are not proven pre-node, they are simply not
- * something the site is told. A ledger refusal that a proxy turns into a 5xx
+ * node; other non-ledger 400s are not proven pre-node either way — they are
+ * still answered as a rejection, just not with the provider's words, and
+ * whether they should keep the id to look up instead is the open question in
+ * issue #71. A ledger refusal that a proxy turns into a 5xx
  * stays *unknown* — the direction that cannot cost a second payment.
  */
 export function rejectionReasonForSite(err: SubmitRejectedError): string {
