@@ -25,8 +25,8 @@
   /*
    * The popup's scale. Spacing steps are 4 · 8 · 12 · 16 · 24; type steps are
    * 12 (fine print) · 13 (secondary) · 14 (body) · 16 (screen title) · 22
-   * (welcome) · 34 (balance). Every control a finger or a mouse aims at is at
-   * least `--control-h` tall.
+   * (welcome) · 34 (balance). Primary controls (buttons in the body,
+   * inputs, tabs) are `--control-h` tall; small icon and inline buttons are 40px.
    */
   --radius-card: 16px;
   --radius-control: 12px;

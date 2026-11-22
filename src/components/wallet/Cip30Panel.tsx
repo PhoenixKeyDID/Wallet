@@ -76,6 +76,12 @@ export function Cip30Panel() {
    */
   const [slow, setSlow] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  /**
+   * Bumped on every connect and disconnect. A Refresh still in flight when the
+   * user disconnects and connects another wallet must not write the old
+   * wallet's balance under the new wallet's name.
+   */
+  const sessionRef = useRef(0);
 
   const connect = async (key: string, name: string) => {
     const ac = new AbortController();
@@ -89,6 +95,7 @@ export function Cip30Panel() {
     setAssets([]);
     setBalanceFailed(false);
     setBalanceRead(false);
+    sessionRef.current += 1;
     try {
       const api = await enableWallet(key, {
         signal: ac.signal,
@@ -158,14 +165,17 @@ export function Cip30Panel() {
 
   const refresh = async () => {
     if (!conn) return;
+    const session = sessionRef.current;
     try {
       const bal = await readBalance(conn.api);
+      if (session !== sessionRef.current) return;
       setLovelace(bal.lovelace);
       setAssets(bal.assets);
       setBalanceFailed(false);
       // The first read may have failed; a Refresh that lands is the first read.
       setBalanceRead(true);
     } catch (err) {
+      if (session !== sessionRef.current) return;
       setBalanceFailed(true);
       toastApiError(err);
     }
@@ -247,6 +257,7 @@ export function Cip30Panel() {
         <button
           type="button"
           onClick={() => {
+            sessionRef.current += 1;
             setConn(null);
             setLovelace(BigInt("0"));
             setAssets([]);

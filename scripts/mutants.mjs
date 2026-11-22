@@ -331,6 +331,12 @@ const MUTANTS = [
     to: "      // The first read may have failed; a Refresh that lands is the first read.",
   },
   {
+    name: "a Refresh from the wallet before writes its balance under the wallet connected after",
+    file: "src/components/wallet/Cip30Panel.tsx",
+    from: "      if (session !== sessionRef.current) return;\n      setLovelace(bal.lovelace);",
+    to: "      setLovelace(bal.lovelace);",
+  },
+  {
     name: "the popup flashes its welcome screen before the saved wallets are read",
     file: PANEL,
     from: "} else if (!listed) {",
