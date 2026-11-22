@@ -213,9 +213,10 @@ type Phase =
        */
       view?: WalletView;
       /**
-       * The withdrawals from accounts that are not this wallet's that the
-       * person ticked, one by one, by reward account (hex). Lives on this
-       * request's phase, so a new request starts with none confirmed.
+       * The foreign entries the person ticked, one by one: withdrawals from
+       * accounts that are not this wallet's by reward account (hex), created
+       * tokens by `mintConfirmKey(unit)`. Lives on this request's phase, so a
+       * new request starts with none confirmed.
        */
       confirmed?: ReadonlySet<string>;
       undescribable?: string;
@@ -800,17 +801,18 @@ export function Approve() {
     const { summary, undescribable, readFailed, readFailedWhy, req, dataSign } = phase;
     const describesTx = req.method === "signTx" || req.method === "submitTx";
     const confirmed = phase.confirmed ?? new Set<string>();
-    // Signing gives this wallet's authority to every withdrawal in the body,
-    // so `signTx` stays locked until each one that is not this wallet's has
-    // been ticked. `submitTx` adds no signature — the authority was given
+    // Signing gives this wallet's authority to every withdrawal and every
+    // created token in the body, so `signTx` stays locked until each
+    // withdrawal that is not this wallet's, and each created unit, has been
+    // ticked. `submitTx` adds no signature — the authority was given
     // when it was signed — and shows the same list without the lock.
     const signLocked = req.method === "signTx" && !!summary && unconfirmedForeignActions(summary, confirmed).length > 0;
-    const setConfirmed = (rewardAccountHex: string, checked: boolean) =>
+    const setConfirmed = (key: string, checked: boolean) =>
       setPhase((cur) => {
         if (cur.at !== "decide" || cur.req !== req) return cur;
         const next = new Set(cur.confirmed ?? []);
-        if (checked) next.add(rewardAccountHex);
-        else next.delete(rewardAccountHex);
+        if (checked) next.add(key);
+        else next.delete(key);
         return { ...cur, confirmed: next };
       });
     return (

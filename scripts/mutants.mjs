@@ -130,6 +130,7 @@ const TESTS = [
   "src/lib/keystore/__tests__/signForeign.test.ts",
   // Clear signing of foreign withdrawals, votes, proposals and script inputs.
   "src/lib/keystore/__tests__/foreignActions.test.ts",
+  "src/lib/keystore/__tests__/foreignMint.test.ts",
   // Conway sets read bare or under tag 258, on the screen and in the signer.
   "src/lib/keystore/__tests__/tag258Sets.test.ts",
   "extension/background/__tests__/worker.test.ts",
@@ -1483,12 +1484,57 @@ const MUTANTS = [
     to: "if (false /* MUT_SF_CERT */) throw",
     marker: "MUT_SF_CERT",
   },
+  // ── Tokens a website's transaction creates: listed per unit, each one
+  // holding the signature until the person ticks that unit. foreignMint.test.ts
+  // pins the summary and the signer, TxSummaryView.test.tsx the boxes. ──
   {
-    name: "signer: a mint that creates tokens is signed",
+    name: "mint-confirm: the signer signs a created token nobody confirmed",
     file: SIGN_FOREIGN,
-    from: "if (!isNegativeInteger(qty)) throw",
-    to: "if (false /* MUT_SF_MINT */) throw",
-    marker: "MUT_SF_MINT",
+    from: "if (unconfirmedMints.length > 0) throw",
+    to: "if (false /* MUT_MINT_SIGNER */) throw",
+    marker: "MUT_MINT_SIGNER",
+  },
+  {
+    name: "mint-confirm: a created token does not hold the Sign button",
+    file: TX_SUMMARY,
+    from: "    ...summary.foreignMintList.map((m) => mintConfirmKey(m.unit)),\n",
+    to: "    /* MUT_MINT_SCREEN */\n",
+    marker: "MUT_MINT_SCREEN",
+  },
+  {
+    name: "mint-confirm: the created tokens are never shown",
+    file: TX_SUMMARY_VIEW,
+    from: "{summary.foreignMintList.length > 0 && (",
+    to: "{/* MUT_MINT_VIEW */ false && summary.foreignMintList.length > 0 && (",
+    marker: "MUT_MINT_VIEW",
+  },
+  {
+    name: "mint-confirm: one confirmation per policy instead of per unit",
+    file: TX_SUMMARY,
+    from: "export const mintConfirmKey = (unit: string): string => `mint:${unit}`;",
+    to: "export const mintConfirmKey = (unit: string): string => `mint:${unit.slice(0, 56)}`; /* MUT_MINT_POLICY */",
+    marker: "MUT_MINT_POLICY",
+  },
+  {
+    name: "mint-confirm: a token's confirmation shares its key with a withdrawal's",
+    file: TX_SUMMARY,
+    from: "export const mintConfirmKey = (unit: string): string => `mint:${unit}`;",
+    to: "export const mintConfirmKey = (unit: string): string => unit; /* MUT_MINT_SHARED_KEY */",
+    marker: "MUT_MINT_SHARED_KEY",
+  },
+  {
+    name: "mint-confirm: a mint redeemer is placed by body order, not ledger order",
+    file: TX_SUMMARY,
+    from: '.map((k) => Buffer.from(k as Uint8Array).toString("hex")).sort()',
+    to: '.map((k) => Buffer.from(k as Uint8Array).toString("hex")) /* MUT_MINT_ORDER */',
+    marker: "MUT_MINT_ORDER",
+  },
+  {
+    name: "mint-confirm: a mint of zero is described",
+    file: TX_SUMMARY,
+    from: "if (qty === BigInt(0)) bad(",
+    to: "if (false /* MUT_MINT_ZERO */) bad(",
+    marker: "MUT_MINT_ZERO",
   },
   {
     name: "signer: a body for another network is signed",
@@ -1542,13 +1588,6 @@ const MUTANTS = [
     from: 'if (n !== 0) bad("this transaction carries a certificate',
     to: 'if (false /* MUT_TS_CERT */) bad("this transaction carries a certificate',
     marker: "MUT_TS_CERT",
-  },
-  {
-    name: "screen: a mint that creates tokens is described",
-    file: TX_SUMMARY,
-    from: "if (qty >= BigInt(0)) bad(",
-    to: "if (false /* MUT_TS_MINT */) bad(",
-    marker: "MUT_TS_MINT",
   },
   {
     name: "screen: a body for another network is described",
@@ -2720,7 +2759,7 @@ const MUTANTS = [
   {
     name: "MUTCS-APPROVE-UNTICK: unticking a foreign withdrawal leaves it confirmed",
     file: APPROVE,
-    from: "        else next.delete(rewardAccountHex);\n",
+    from: "        else next.delete(key);\n",
     to: "        else void 0 /* MUTCS-APPROVE-UNTICK */;\n",
     marker: "MUTCS-APPROVE-UNTICK",
   },
@@ -2748,8 +2787,8 @@ const MUTANTS = [
   {
     name: "MUTCS-MINT-BOUND: a mint redeemer pointing past the last policy is accepted",
     file: TX_SUMMARY,
-    from: "if (r.index >= mintPolicies) bad(",
-    to: "if (false /* MUTCS-MINT-BOUND */) bad(",
+    from: 'if (policyId === undefined) bad("a script in this transaction points at a mint',
+    to: 'if (false /* MUTCS-MINT-BOUND */) bad("a script in this transaction points at a mint',
     marker: "MUTCS-MINT-BOUND",
   },
   {
