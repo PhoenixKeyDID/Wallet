@@ -101,6 +101,13 @@ export function LocalWalletPanel({ layout = "page" }: { layout?: "page" | "popup
 
   const [step, setStep] = useState<Step>("list");
   const [wallets, setWallets] = useState<StoredWallet[]>([]);
+  /**
+   * False until the saved-wallet list has been read once. Before that `wallets`
+   * is the empty list it started as, which is also what "no wallet yet" looks
+   * like — and the popup would flash its welcome screen at someone who has a
+   * wallet, every time it opens.
+   */
+  const [listed, setListed] = useState(false);
   const [busy, setBusy] = useState(false);
 
   // create / restore
@@ -216,6 +223,7 @@ export function LocalWalletPanel({ layout = "page" }: { layout?: "page" | "popup
 
   const refresh = useCallback(async () => {
     setWallets(await store.list());
+    setListed(true);
   }, [store]);
 
   useEffect(() => {
@@ -449,6 +457,11 @@ export function LocalWalletPanel({ layout = "page" }: { layout?: "page" | "popup
     // and with the epoch it wipes *this* one instead if the wallet was locked
     // while we were deriving.
     if (!session.unlock(w.id, acct, epoch)) return;
+    // The wallet whose keys are now open is the active one, whatever the picker
+    // was moved to during the derivation. Otherwise the header, Settings,
+    // reveal and export name the wallet picked meanwhile over this one's
+    // address and balance.
+    setActiveId(w.id);
     // "That password did not open this wallet" from a try before this one is
     // now false; clear it rather than leave it over the open wallet.
     announceNoticesStale();
@@ -1167,6 +1180,9 @@ export function LocalWalletPanel({ layout = "page" }: { layout?: "page" | "popup
           {step === "password" && passwordCard}
         </div>
       );
+    } else if (!listed) {
+      // Nothing to decide yet: the saved wallets are still being read.
+      body = <div className="pw-welcome" aria-busy="true" />;
     } else if (wallets.length === 0) {
       // A mark, a title, one line — then the decisions, grouped at the bottom
       // where the thumb is. The longer "what is this" text is the first
@@ -1207,6 +1223,7 @@ export function LocalWalletPanel({ layout = "page" }: { layout?: "page" | "popup
               <select
                 className="pw-select"
                 value={chosenId ?? ""}
+                disabled={busy}
                 onChange={(e) => {
                   setActiveId(e.target.value);
                   setPw("");

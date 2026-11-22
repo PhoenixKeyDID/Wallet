@@ -26,6 +26,10 @@ const ctx = vi.hoisted(() => ({
   lovelace: BigInt(12_345_678),
   /** How many times a vault was opened (an Argon2id run in the real one). */
   opens: 0,
+  /** When set, opening a vault waits for this — the ~1.4 s of Argon2id. */
+  openGate: null as Promise<void> | null,
+  /** When set, listing the saved wallets waits for this. */
+  listGate: null as Promise<void> | null,
   ADDRESS: "addr_test1qpopupframeaddress0000000000000000000000000000000000000000000",
 }));
 
@@ -35,7 +39,10 @@ vi.mock("@/lib/keystore/storage", async (orig) => {
     ...real,
     isExtensionContext: () => true,
     vaultStore: () => ({
-      list: async () => ctx.wallets,
+      list: async () => {
+        if (ctx.listGate) await ctx.listGate;
+        return ctx.wallets;
+      },
       get: async (id: string) => ctx.wallets.find((w) => w.id === id),
       put: async () => {},
       remove: async () => {},
@@ -48,6 +55,7 @@ vi.mock("@/lib/keystore", async (orig) => {
     ...real,
     openVault: async () => {
       ctx.opens += 1;
+      if (ctx.openGate) await ctx.openGate;
       return new Uint8Array(16);
     },
     accountFromEntropy: async (_e: Uint8Array, index: number, network: number) => ({
@@ -86,6 +94,8 @@ afterEach(() => {
   ctx.balanceFails = false;
   ctx.lovelace = BigInt(12_345_678);
   ctx.opens = 0;
+  ctx.openGate = null;
+  ctx.listGate = null;
 });
 
 const wallet = (id: string, label: string) => ({
@@ -153,7 +163,29 @@ describe("popup: before any wallet exists", () => {
   });
 });
 
+describe("popup: opening with a wallet already saved", () => {
+  it("does not flash the welcome screen while the saved wallets are being read", async () => {
+    ctx.wallets = [wallet("w1", "Daily")];
+    let release!: () => void;
+    ctx.listGate = new Promise<void>((r) => (release = r));
+    const view = await renderPopup();
+    const text = () => view.container.textContent ?? "";
+    expect(text()).not.toContain(en.popup_welcome_title);
+    expect(screen.queryByRole("button", { name: en.local_create_cta })).toBeNull();
+    release();
+    await screen.findByLabelText(en.local_password);
+    expect(text()).not.toContain(en.popup_welcome_title);
+  });
+});
+
 describe("popup: an open wallet", () => {
+  it("the wallet button in the top bar is named by the wallet it shows", async () => {
+    ctx.wallets = [wallet("w1", "Daily")];
+    await unlockFirst();
+    // The visible text is the name a voice-control user says to press it.
+    expect(screen.getByRole("button", { name: /Daily/ })).toBeTruthy();
+  });
+
   it("shows the balance large, the four actions and the bottom tabs — and not the page's tab row", async () => {
     ctx.wallets = [wallet("w1", "Daily")];
     const view = await unlockFirst();
@@ -202,6 +234,27 @@ describe("popup: an open wallet", () => {
     const select = (await screen.findByLabelText(en.popup_choose_wallet)) as HTMLSelectElement;
     expect(select.value).toBe("w2");
     expect((screen.getByLabelText(en.local_password) as HTMLInputElement).value).toBe("");
+  });
+
+  it("the wallet picked while unlocking does not take the opened wallet's name", async () => {
+    ctx.wallets = [wallet("w1", "Daily"), wallet("w2", "Savings")];
+    let release!: () => void;
+    ctx.openGate = new Promise<void>((r) => (release = r));
+    await renderPopup();
+    const select = (await screen.findByLabelText(en.popup_choose_wallet)) as HTMLSelectElement;
+    expect(select.value).toBe("w1");
+    fireEvent.change(screen.getByLabelText(en.local_password), { target: { value: "correct horse battery staple" } });
+    fireEvent.click(screen.getByRole("button", { name: en.local_unlock_cta }));
+    await waitFor(() => expect(ctx.opens).toBe(1));
+    // The picker is closed while Daily's keys are being derived…
+    expect(select.disabled).toBe(true);
+    // …and a change that reaches it anyway does not rename what opens.
+    fireEvent.change(select, { target: { value: "w2" } });
+    release();
+    await screen.findByRole("button", { name: en.local_lock_cta });
+    const title = () => document.querySelector(".pw-head .pw-head-title")?.textContent ?? "";
+    await waitFor(() => expect(title()).toContain("Daily"));
+    expect(title()).not.toContain("Savings");
   });
 });
 
@@ -285,8 +338,7 @@ describe("popup: choosing a password", () => {
       target: { value: VECTOR },
     });
     fireEvent.click(screen.getByRole("button", { name: en.local_words_next }));
-    // Another field on the page is also labelled with the password key; read the
-    // two fields from the card that chooses the password.
+    // Read the two fields from the card that chooses the password.
     const card = within((await screen.findByRole("heading", { name: en.local_password_title })).parentElement!);
     fireEvent.change(card.getByLabelText(en.local_password), { target: { value: FIRST } });
     return card.getByLabelText(en.local_password_again);

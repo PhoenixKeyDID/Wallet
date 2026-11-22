@@ -149,7 +149,7 @@ export function PopupHeader({
     <header className="pw-head">
       <PhoenixMark />
       {onTitle ? (
-        <button type="button" className="pw-head-name pw-head-name-button" onClick={onTitle} aria-label={t("popup_wallet_menu")}>
+        <button type="button" className="pw-head-name pw-head-name-button" onClick={onTitle} title={t("popup_wallet_menu")}>
           {name}
         </button>
       ) : (

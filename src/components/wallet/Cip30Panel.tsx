@@ -48,6 +48,13 @@ export function Cip30Panel() {
    * is not enough to tell them apart.
    */
   const [balanceFailed, setBalanceFailed] = useState(false);
+  /**
+   * True once a balance read for the connected wallet has come back. `connect`
+   * shows the wallet before the read finishes, and until then the figures are
+   * the `0n` it reset them to — the same "0 ADA" an empty wallet shows. The
+   * balance card must not present that zero as measured.
+   */
+  const [balanceRead, setBalanceRead] = useState(false);
   const [assets, setAssets] = useState<
     { unit: string; policyId: string; assetNameHex: string; quantity: bigint }[]
   >([]);
@@ -81,6 +88,7 @@ export function Cip30Panel() {
     setLovelace(BigInt("0"));
     setAssets([]);
     setBalanceFailed(false);
+    setBalanceRead(false);
     try {
       const api = await enableWallet(key, {
         signal: ac.signal,
@@ -96,6 +104,7 @@ export function Cip30Panel() {
         setLovelace(bal.lovelace);
         setAssets(bal.assets);
         setBalanceFailed(false);
+        setBalanceRead(true);
       } catch {
         // Connecting succeeded; only the balance read failed. Keep the session
         // and say so, instead of tearing down a working connection.
@@ -261,7 +270,7 @@ export function Cip30Panel() {
         network={conn.networkId === 1 ? 1 : 0}
         address={receiveAddress}
         showReceive={receiveAddress !== null}
-        settled={!balanceFailed}
+        settled={balanceRead && !balanceFailed}
       />
 
       <button
