@@ -51,6 +51,7 @@ function shown(overrides: Partial<TxSummary> = {}) {
     totalInputs: 1,
     foreignInputs: 0,
     burns: [],
+    foreignMintList: [],
     collateral: null,
     withdrawals: 0,
     foreignWithdrawals: 0,
@@ -92,6 +93,7 @@ function withBoxes(summaryOverrides: Partial<TxSummary>, wired = true) {
     totalInputs: 2,
     foreignInputs: 1,
     burns: [],
+    foreignMintList: [],
     collateral: null,
     withdrawals: 0,
     foreignWithdrawals: 0,
@@ -319,6 +321,7 @@ describe("TxSummaryView — foreign actions are named one by one and lock signin
       totalInputs: 1,
       foreignInputs: 0,
       burns: [],
+      foreignMintList: [],
       collateral: null,
       withdrawals: 1,
       foreignWithdrawals: 1,
@@ -345,6 +348,81 @@ describe("TxSummaryView — foreign actions are named one by one and lock signin
   it("no foreign withdrawal: no list, no lock note", () => {
     const text = shown({ withdrawals: 1, withdrawalLovelace: BigInt(5_000_000) });
     expect(text).not.toContain(en.cip30_foreign_actions_heading);
+    expect(text).not.toContain(en.cip30_sign_locked);
+  });
+});
+
+describe("TxSummaryView — created tokens are named one by one, by unit, and lock signing", () => {
+  const POLICY_A = "a1".repeat(28);
+  const POLICY_B = "b2".repeat(28);
+  const GOLD = Buffer.from("GOLD", "utf8").toString("hex");
+  const SILVER = Buffer.from("SILVER", "utf8").toString("hex");
+  const mint = (policyId: string, assetNameHex: string, quantity: bigint, script = false) => ({
+    unit: policyId + assetNameHex,
+    policyId,
+    assetNameHex,
+    quantity,
+    script,
+  });
+  const UNIT_A_GOLD = POLICY_A + GOLD;
+  const UNIT_A_SILVER = POLICY_A + SILVER;
+
+  it("prints each created token with its amount, name, short policy id and the script line", () => {
+    const text = shown({ foreignMintList: [mint(POLICY_A, GOLD, BigInt(7), true), mint(POLICY_B, SILVER, BigInt(1))] });
+    expect(text).toContain(en.cip30_mints_heading);
+    expect(text).toContain(en.cip30_mints_note);
+    expect(text).toContain(`7 GOLD · ${policyIdShort(POLICY_A)}`);
+    expect(text).toContain(`1 SILVER · ${policyIdShort(POLICY_B)}`);
+    // The script line appears once: only policy A has a mint redeemer.
+    expect(text.split(en.cip30_mint_script).length - 1).toBe(1);
+    expect(text).toContain(en.cip30_sign_locked);
+  });
+
+  it("two tokens under one policy get two boxes; ticking one leaves Sign locked", () => {
+    const { getByTestId, queryByTestId, calls, rerenderNow } = withBoxes({
+      foreignMintList: [mint(POLICY_A, GOLD, BigInt(1)), mint(POLICY_A, SILVER, BigInt(2))],
+    });
+    expect(getByTestId("sign-locked")).toBeTruthy();
+    fireEvent.click(getByTestId(`confirm-mint-${UNIT_A_GOLD}`));
+    expect(calls).toEqual([[`mint:${UNIT_A_GOLD}`, true]]);
+    rerenderNow();
+    // Same policy, other unit: not confirmed by the first tick.
+    expect((getByTestId(`confirm-mint-${UNIT_A_SILVER}`) as HTMLInputElement).checked).toBe(false);
+    expect(queryByTestId("sign-locked")).not.toBeNull();
+    fireEvent.click(getByTestId(`confirm-mint-${UNIT_A_SILVER}`));
+    rerenderNow();
+    expect(queryByTestId("sign-locked")).toBeNull();
+    fireEvent.click(getByTestId(`confirm-mint-${UNIT_A_GOLD}`));
+    expect(calls.at(-1)).toEqual([`mint:${UNIT_A_GOLD}`, false]);
+    rerenderNow();
+    expect(queryByTestId("sign-locked")).not.toBeNull();
+  });
+
+  it("a withdrawal and a token in one transaction: Sign unlocks only when both are ticked", () => {
+    const { getByTestId, queryByTestId, rerenderNow } = withBoxes({
+      withdrawals: 1,
+      foreignWithdrawals: 1,
+      foreignWithdrawalList: [foreignWd(SCRIPT_REWARD, true)],
+      foreignMintList: [mint(POLICY_A, GOLD, BigInt(1))],
+    });
+    fireEvent.click(getByTestId(`confirm-${SCRIPT_REWARD}`));
+    rerenderNow();
+    expect(queryByTestId("sign-locked")).not.toBeNull();
+    fireEvent.click(getByTestId(`confirm-mint-${UNIT_A_GOLD}`));
+    rerenderNow();
+    expect(queryByTestId("sign-locked")).toBeNull();
+  });
+
+  it("with no handler wired the token box cannot be ticked, so nothing unlocks", () => {
+    const { getByTestId } = withBoxes({ foreignMintList: [mint(POLICY_A, GOLD, BigInt(1))] }, false);
+    expect((getByTestId(`confirm-mint-${UNIT_A_GOLD}`) as HTMLInputElement).disabled).toBe(true);
+    expect(getByTestId("sign-locked")).toBeTruthy();
+  });
+
+  it("no created token: no list, no box", () => {
+    const text = shown({ burns: [token(REAL, BigInt(1))] });
+    expect(text).not.toContain(en.cip30_mints_heading);
+    expect(text).not.toContain(en.cip30_mint_confirm);
     expect(text).not.toContain(en.cip30_sign_locked);
   });
 });

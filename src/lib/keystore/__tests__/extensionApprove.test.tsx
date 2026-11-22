@@ -1021,3 +1021,58 @@ describe("signTx with a withdrawal from a script account that is not this wallet
     await waitFor(() => expect(send.disabled).toBe(false));
   });
 });
+
+describe("signTx with tokens a website's transaction creates", () => {
+  // An ordinary spend of this wallet's coin, with two tokens created under one
+  // policy. Each unit is its own box; Sign waits for both.
+  const POLICY = "a1".repeat(28);
+  const GOLD = Buffer.from("GOLD", "utf8").toString("hex");
+  const SILVER = Buffer.from("SILVER", "utf8").toString("hex");
+  const minting = () =>
+    Encoder.encode([
+      new Map<number, unknown>([
+        [0, [[Buffer.from("77".repeat(32), "hex"), 1]]],
+        [1, [[Buffer.from((tyUtils.getAddressFromString(OUTSIDER) as tyTypes.ShelleyAddress).getHex(), "hex"), 2_000_000]]],
+        [2, 300_000],
+        [9, new Map([[Buffer.from(POLICY, "hex"), new Map([[Buffer.from(GOLD, "hex"), 1], [Buffer.from(SILVER, "hex"), 2]])]])],
+      ]),
+      new Map<number, unknown>(),
+      true,
+      null,
+    ]).toString("hex");
+  const ticks = async () => {
+    for (let i = 0; i < 5; i++) await act(async () => void (await new Promise((r) => setTimeout(r, 0))));
+  };
+
+  it("lists each token, keeps Sign locked until every unit is ticked, then signs", async () => {
+    mocks.fetchUtxos.mockResolvedValue(ourInputs());
+    const { port, view } = await unlocked();
+    act(() => port.deliver({ type: "request", id: "mt1", origin: ORIGIN, method: "signTx", params: [minting(), true] }));
+    await view.findByText(en.cip30_mints_heading);
+    expect(view.container.textContent).toContain("1 GOLD");
+    expect(view.container.textContent).toContain("2 SILVER");
+    const approve = view.getByText(en.cip30_approve) as HTMLButtonElement;
+    await ticks();
+    expect(approve.disabled).toBe(true);
+    expect(view.getByTestId("sign-locked")).toBeTruthy();
+
+    // One of two units under the same policy: still locked, and a click sends nothing.
+    fireEvent.click(view.getByTestId(`confirm-mint-${POLICY}${GOLD}`));
+    await ticks();
+    expect(approve.disabled).toBe(true);
+    fireEvent.click(approve);
+    await ticks();
+    expect(port.sent.find((m) => m.id === "mt1")).toBeUndefined();
+
+    fireEvent.click(view.getByTestId(`confirm-mint-${POLICY}${SILVER}`));
+    await waitFor(() => expect(approve.disabled).toBe(false));
+    fireEvent.click(approve);
+    await waitFor(() => expect(port.sent.find((m) => m.id === "mt1")).toBeDefined());
+    const res = port.sent.find((m) => m.id === "mt1")!.result!;
+    expect(res.ok).toBe(true);
+    const ws = Decoder.decode(Buffer.from(res.value as string, "hex")).value as Map<number, [Buffer, Buffer][]>;
+    expect(Array.from(ws.get(0)!).map(([pub]) => Buffer.from(blake2b224(pub)).toString("hex"))).toEqual([
+      acct1.external[0]!.keyHashHex,
+    ]);
+  });
+});

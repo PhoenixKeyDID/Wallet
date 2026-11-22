@@ -132,6 +132,40 @@ export type ForeignWithdrawal = {
   redeemer: boolean;
 };
 
+/**
+ * One token this transaction creates, by unit (policy id + asset name).
+ *
+ * Listed one by one, and each one blocks the signature until the person ticks
+ * that very unit. A minting policy that asks for this wallet's key counts the
+ * signature as its yes, and this wallet cannot read what the policy checks or
+ * what the token stands for. So it says only what the body says — this unit,
+ * this many, under this policy — and leaves the decision to the person, one
+ * asset at a time: one box for a whole policy would let a click carry a token
+ * the person never read.
+ */
+export type ForeignMint = {
+  /** `policyId + assetNameHex`. A confirmation is recorded under `mintConfirmKey(unit)`. */
+  unit: string;
+  policyId: string;
+  assetNameHex: string;
+  /** How many are created; always above zero. */
+  quantity: bigint;
+  /**
+   * A `mint` redeemer points at this policy: a Plutus script runs for it. False
+   * is not "no script" — a native script leaves no redeemer, and the page can
+   * add redeemers after signing when the body commits to script data.
+   */
+  script: boolean;
+};
+
+/**
+ * The key a confirmation of a created token is recorded under. Prefixed so it
+ * can never equal a reward account: a 29-byte reward account and a unit with a
+ * one-byte asset name are both 58 hex characters, and one shared key would let
+ * ticking the withdrawal tick the token too.
+ */
+export const mintConfirmKey = (unit: string): string => `mint:${unit}`;
+
 export type TxSummary = {
   /** What each asset costs this wallet, fee included for ADA. */
   net: NetChange[];
@@ -201,8 +235,14 @@ export type TxSummary = {
    * produced for rewards the screen did not count as leaving this wallet.
    */
   ownRewardKeyHashes: string[];
-  /** Tokens this transaction destroys, `amount` positive. Creating tokens is refused. */
+  /** Tokens this transaction destroys, `amount` positive. */
   burns: NetChange[];
+  /**
+   * Every token this transaction creates, one entry per unit, in field 9's
+   * order. Each one blocks the signature until the person confirms that unit
+   * (`unconfirmedForeignActions`); the signer reads the same list.
+   */
+  foreignMintList: ForeignMint[];
   /** Present when the transaction puts up collateral. */
   collateral: CollateralRisk | null;
   /**
@@ -518,24 +558,38 @@ function readCollateral(
   return { riskLovelace: risk, inputs: list.length };
 }
 
-/** Read field 9, refusing any token created, and return what is destroyed. */
-function readBurns(raw: unknown): NetChange[] {
-  if (raw === undefined) return [];
+/**
+ * Read field 9: what the transaction destroys and what it creates, unit by
+ * unit. A quantity of zero is refused — the ledger does not accept one, and a
+ * line that creates nothing and destroys nothing is not something this screen
+ * can put into words. The signer reads mint only through this function (it runs
+ * `summariseTx`), so the screen and the signature cannot read a mint two ways.
+ */
+function readMint(raw: unknown): { burns: NetChange[]; mints: ForeignMint[] } {
+  if (raw === undefined) return { burns: [], mints: [] };
   if (!(raw instanceof Map)) bad("this transaction mints in a shape this wallet cannot read");
   const burns: NetChange[] = [];
+  const mints: ForeignMint[] = [];
   for (const [policyRaw, namesRaw] of raw as Map<unknown, unknown>) {
-    const policyId = Buffer.from(policyRaw as Buffer).toString("hex");
+    if (!(policyRaw instanceof Uint8Array)) bad("this transaction mints under a malformed policy id");
+    const policyId = Buffer.from(policyRaw).toString("hex");
     if (!/^[0-9a-f]{56}$/.test(policyId)) bad("this transaction mints under a malformed policy id");
     if (!(namesRaw instanceof Map)) bad("this transaction mints in a shape this wallet cannot read");
     for (const [nameRaw, qtyRaw] of namesRaw as Map<unknown, unknown>) {
+      if (!(nameRaw instanceof Uint8Array) || nameRaw.length > 32) {
+        bad("this transaction mints a token whose name this wallet cannot read");
+      }
+      const assetNameHex = Buffer.from(nameRaw).toString("hex");
       const qty = asSignedBigInt(qtyRaw, "a mint quantity");
-      // Creating tokens is a minting policy saying yes, and a policy that asks
-      // for this wallet's key asks for a reason this screen cannot read.
-      if (qty >= BigInt(0)) bad("this transaction creates tokens — this wallet only signs transactions that destroy them");
-      burns.push(toNetChange(policyId + Buffer.from(nameRaw as Buffer).toString("hex"), -qty));
+      if (qty === BigInt(0)) bad("this transaction mints zero of a token, which the ledger does not accept", "sign_foreign_mint");
+      if (qty < BigInt(0)) {
+        burns.push(toNetChange(policyId + assetNameHex, -qty));
+        continue;
+      }
+      mints.push({ unit: policyId + assetNameHex, policyId, assetNameHex, quantity: qty, script: false });
     }
   }
-  return burns;
+  return { burns, mints };
 }
 
 /**
@@ -637,13 +691,19 @@ function compareRewardAccounts(a: string, b: string): number {
 
 /**
  * The foreign actions in `summary` the person has not yet confirmed, by the key
- * each confirmation is recorded under (the reward account, hex). Signing stays
- * blocked while this is non-empty — the approval screen disables its Sign
- * button on it, and `signForeignTx` refuses on the same list
- * (`sign_foreign_withdrawal_unconfirmed`).
+ * each confirmation is recorded under: the reward account (hex) for a foreign
+ * withdrawal, `mintConfirmKey(unit)` for a created token — one per unit, never
+ * one per policy. Signing stays blocked while this is non-empty — the approval
+ * screen disables its Sign button on it, and `signForeignTx` refuses on the
+ * same keys (`sign_foreign_withdrawal_unconfirmed`,
+ * `sign_foreign_mint_unconfirmed`).
  */
 export function unconfirmedForeignActions(summary: TxSummary, confirmed: ReadonlySet<string>): string[] {
-  return summary.foreignWithdrawalList.map((w) => w.rewardAccountHex).filter((k) => !confirmed.has(k));
+  const keys = [
+    ...summary.foreignWithdrawalList.map((w) => w.rewardAccountHex),
+    ...summary.foreignMintList.map((m) => mintConfirmKey(m.unit)),
+  ];
+  return keys.filter((k) => !confirmed.has(k));
 }
 
 /**
@@ -953,7 +1013,12 @@ export function summariseTx(
   const redeemers = readRedeemers(decoded.length >= 2 ? decoded[1] : undefined);
   const sortedInputs = [...seenInputs].sort(compareInputRefs);
   const sortedRewardAccounts = [...rewardAccountsHex].sort(compareRewardAccounts);
-  const mintPolicies = b.get(9) instanceof Map ? (b.get(9) as Map<unknown, unknown>).size : 0;
+  // Mint redeemers point into field 9's policies in ledger order: sorted by
+  // policy id bytes, which lowercase hex sorts the same way.
+  const { burns, mints: foreignMintList } = readMint(b.get(9));
+  const sortedPolicies = b.get(9) instanceof Map
+    ? [...(b.get(9) as Map<unknown, unknown>).keys()].map((k) => Buffer.from(k as Uint8Array).toString("hex")).sort()
+    : [];
   for (const r of redeemers) {
     if (r.purpose === "spend") {
       const ref = sortedInputs[r.index];
@@ -966,7 +1031,9 @@ export function summariseTx(
       const hit = foreignWithdrawalList.find((f) => f.rewardAccountHex === acct);
       if (hit) hit.redeemer = true;
     } else if (r.purpose === "mint") {
-      if (r.index >= mintPolicies) bad("a script in this transaction points at a mint it does not have");
+      const policyId = sortedPolicies[r.index];
+      if (policyId === undefined) bad("a script in this transaction points at a mint it does not have");
+      for (const m of foreignMintList) if (m.policyId === policyId) m.script = true;
     } else {
       // cert, vote, propose: the body has none — certificates, votes and
       // proposals are refused above — so the pointer names nothing.
@@ -1014,7 +1081,8 @@ export function summariseTx(
     redeemers,
     scriptDataCommitted: b.has(11),
     ownRewardKeyHashes,
-    burns: readBurns(b.get(9)),
+    burns,
+    foreignMintList,
     collateral: readCollateral(b, own, ownInputs, networkId),
     withdrawalLovelace: withdrawnLovelace,
   };
