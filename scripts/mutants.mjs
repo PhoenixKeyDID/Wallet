@@ -280,8 +280,23 @@ const MUTANTS = [
   {
     name: "the extension shows the web page's long risk paragraph again",
     file: PANEL,
-    from: "      {isExtensionContext() ? (",
-    to: "      {false ? (",
+    // The web layout's own branch. The popup layout has two more sites with
+    // the same condition, each its own mutant below — the line after the
+    // condition is what tells the three apart.
+    from: '      {isExtensionContext() ? (\n        <p className="rounded-brand',
+    to: '      {false ? (\n        <p className="rounded-brand',
+  },
+  {
+    name: "the popup's 'Learn more' body shows the web page's risk paragraphs again",
+    file: PANEL,
+    from: '          {isExtensionContext() ? (\n            <p>{t("local_risk_ext")}</p>',
+    to: '          {false ? (\n            <p>{t("local_risk_ext")}</p>',
+  },
+  {
+    name: "the popup's open risk notice shows the web page's risk paragraphs again",
+    file: PANEL,
+    from: '                    {isExtensionContext() ? (\n                      <p>{t("local_risk_ext")}</p>',
+    to: '                    {false ? (\n                      <p>{t("local_risk_ext")}</p>',
   },
   {
     name: "the extension shows the web intro ('no extension needed') again",
