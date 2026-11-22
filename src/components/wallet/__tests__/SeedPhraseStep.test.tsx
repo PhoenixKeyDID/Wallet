@@ -620,7 +620,7 @@ describe("recovery phrase screen", () => {
         // State any other way than `[state, setState]` — `const st = useState(…)`,
         // `{ 0: s, 1: set }` — has a setter the test cannot follow: the state
         // holds `UNSEEN`. The hook handed on or renamed fails the clipboard test.
-        if (ts.isCallExpression(n) && isStateHook(n.expression) && !statePair(n)) for (const x of unseen()) out.add(x);
+        if (ts.isCallExpression(n) && isStateHook(n.expression) && !statePair(n)) for (const x of setterUnseen()) out.add(x);
         // `useContext(Ctx)`, `use(Ctx)`: whatever any provider above was handed.
         if (ts.isCallExpression(n) && /(^|\.)(useContext|use)$/.test(bare(n.expression).getText())) out.add(KEPT);
         if (ts.isPropertyAccessExpression(n)) return go(n.expression, shadow);
@@ -843,6 +843,13 @@ describe("recovery phrase screen", () => {
      * Otherwise `UNSEEN`.
      */
     const unseen = () => new Set<string>(namedProps ?? (fn.parameters.length ? [UNSEEN] : []));
+    /**
+     * What a state may hold once its setter is out of the test's sight. Not
+     * narrowed to the named props: a setter handed away can be called by
+     * whatever code ends up holding it, with that code's own values, so with
+     * any props at all it holds `UNSEEN`.
+     */
+    const setterUnseen = () => new Set<string>(fn.parameters.length ? [UNSEEN] : []);
     /** What one use of a function, the function itself or a name for it, calls it with. */
     const callsWith = (use: ts.Node): Set<string> => {
       const p = use.parent;
@@ -1055,7 +1062,7 @@ describe("recovery phrase screen", () => {
             // Without props there is nothing of the caller's it could be handed.
             // `<Field onChange={setShown} … />`: handed what that element is.
             const el = ts.isJsxExpression(call) && ts.isJsxAttribute(call.parent) ? call.parent.parent.parent : undefined;
-            const t = el ? valueAt(ts.isJsxOpeningElement(el) ? el.parent : el) : unseen();
+            const t = el ? valueAt(ts.isJsxOpeningElement(el) ? el.parent : el) : setterUnseen();
             if (t.size) changed = bind(setters.get(n.text)!, t) || changed;
           }
         }

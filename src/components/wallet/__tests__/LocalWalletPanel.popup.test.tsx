@@ -22,6 +22,8 @@ const ctx = vi.hoisted(() => ({
   wallets: [] as Record<string, unknown>[],
   /** The balance read fails instead of answering. */
   balanceFails: false,
+  /** How many times a vault was opened (an Argon2id run in the real one). */
+  opens: 0,
   ADDRESS: "addr_test1qpopupframeaddress0000000000000000000000000000000000000000000",
 }));
 
@@ -42,7 +44,10 @@ vi.mock("@/lib/keystore", async (orig) => {
   const real = (await orig()) as Record<string, unknown>;
   return {
     ...real,
-    openVault: async () => new Uint8Array(16),
+    openVault: async () => {
+      ctx.opens += 1;
+      return new Uint8Array(16);
+    },
     accountFromEntropy: async (_e: Uint8Array, index: number, network: number) => ({
       index,
       network,
@@ -77,6 +82,7 @@ afterEach(() => {
   cleanup();
   ctx.wallets = [];
   ctx.balanceFails = false;
+  ctx.opens = 0;
 });
 
 const wallet = (id: string, label: string) => ({
@@ -305,5 +311,41 @@ describe("popup: choosing a password", () => {
     fireEvent.change(again, { target: { value: FIRST } });
     expect(screen.queryByText(en.local_password_mismatch)).toBeNull();
     expect(save().disabled).toBe(false);
+  });
+});
+
+// The header badge is the one network signal on every screen, so before a
+// wallet is open it names the wallet the unlock screen is about — not the
+// picker for a new wallet's network, which defaults to Preprod.
+describe("popup: the network badge before a wallet is open", () => {
+  const badge = () => document.querySelector(".pw-head .pw-net")?.textContent ?? "";
+
+  it("names a saved Mainnet wallet's network on the unlock screen", async () => {
+    ctx.wallets = [{ ...wallet("m1", "Main"), network: 1 }];
+    await renderPopup();
+    await screen.findByLabelText(en.local_password);
+    expect(badge()).toContain(en.network_mainnet);
+    expect(badge()).not.toContain(en.popup_net_preprod);
+  });
+
+  it("follows the wallet picked to unlock", async () => {
+    ctx.wallets = [wallet("t1", "Test"), { ...wallet("m1", "Main"), network: 1 }];
+    await renderPopup();
+    await screen.findByLabelText(en.local_password);
+    expect(badge()).toContain(en.popup_net_preprod);
+    fireEvent.change(screen.getByLabelText(en.popup_choose_wallet), { target: { value: "m1" } });
+    await waitFor(() => expect(badge()).toContain(en.network_mainnet));
+  });
+});
+
+describe("popup: Enter on an empty password", () => {
+  it("opens no vault", async () => {
+    ctx.wallets = [wallet("w1", "Daily")];
+    await renderPopup();
+    const pw = await screen.findByLabelText(en.local_password);
+    fireEvent.keyDown(pw, { key: "Enter" });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(ctx.opens).toBe(0);
+    expect(screen.queryByRole("button", { name: en.local_lock_cta })).toBeNull();
   });
 });

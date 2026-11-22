@@ -11,7 +11,7 @@
  * Icons are inline SVG: the popup runs under `script-src 'self'` with no remote
  * fonts or images, and an icon font would be one more file to ship and audit.
  */
-import type { ReactNode } from "react";
+import { useId, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { formatAda, type PhoenixNetwork } from "@/lib/cardano";
 import { FiatValue } from "./FiatValue";
@@ -68,6 +68,9 @@ export function Icon({ name }: { name: IconName }) {
 
 /** The phoenix mark: a flame-shaped wing in the brand amber. */
 export function PhoenixMark({ large = false }: { large?: boolean }) {
+  // One id per mark: the header and the welcome screen draw one each, and a
+  // `url(#…)` that two gradients answer to takes whichever comes first.
+  const fill = `pw-mark-fill-${useId().replace(/:/g, "")}`;
   return (
     <svg
       className={large ? "pw-mark pw-mark-large" : "pw-mark"}
@@ -76,7 +79,7 @@ export function PhoenixMark({ large = false }: { large?: boolean }) {
       focusable="false"
     >
       <defs>
-        <linearGradient id="pw-mark-fill" x1="0" y1="1" x2="1" y2="0">
+        <linearGradient id={fill} x1="0" y1="1" x2="1" y2="0">
           <stop offset="0" stopColor="#d9612b" />
           <stop offset="1" stopColor="#f2c14e" />
         </linearGradient>
@@ -84,7 +87,7 @@ export function PhoenixMark({ large = false }: { large?: boolean }) {
       <rect width="32" height="32" rx="9" fill="#1e2128" />
       <path
         d="M16 5c1.6 3.4 5.8 5.6 6.4 10.2.5 4.2-2.4 8-6.4 8.8 2-1.8 2.4-4.4 1-6.4-.6 2-2 3-3.4 3.4.8-2.6-.4-4.6-2.2-5.8-.6 3.2-2.8 4.6-2.6 7.4C6.4 23.6 5 20 6 16.4 7.4 11.2 13 9.6 16 5Z"
-        fill="url(#pw-mark-fill)"
+        fill={`url(#${fill})`}
       />
     </svg>
   );
@@ -259,7 +262,7 @@ export function StepProgress({ labels, current }: { labels: string[]; current: n
       </p>
       <ol className="pw-steps-bar">
         {labels.map((l, i) => (
-          <li key={l} className={i <= current ? "pw-step pw-step-done" : "pw-step"} aria-label={l} />
+          <li key={i} className={i <= current ? "pw-step pw-step-done" : "pw-step"} aria-label={l} />
         ))}
       </ol>
     </div>

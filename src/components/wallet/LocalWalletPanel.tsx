@@ -483,7 +483,9 @@ export function LocalWalletPanel({ layout = "page" }: { layout?: "page" | "popup
    * hang their own tab, or an extension popup, at the moment they open a wallet.
    */
   const unlock = async (id: string | null = activeId) => {
-    if (!id || busy) return;
+    // An empty password cannot open anything, and Enter reaches here even
+    // while the button is disabled for it: refuse before the Argon2id run.
+    if (!id || busy || !pw) return;
     // The popup picks the wallet on the unlock screen itself instead of on a
     // list before it, so the id arrives here; the page passes nothing and gets
     // the one it already chose. Either way it becomes the active wallet before
@@ -893,6 +895,15 @@ export function LocalWalletPanel({ layout = "page" }: { layout?: "page" | "popup
     const chosenId =
       activeId !== null && wallets.some((w) => w.id === activeId) ? activeId : (wallets[0]?.id ?? null);
     const chosen = wallets.find((w) => w.id === chosenId);
+    // The badge names the wallet the screen is about: the open one, else the
+    // one picked to unlock. The picker for a new wallet's network speaks only
+    // while a new wallet is being made, or when there is none to name.
+    const making = step === "words" || step === "confirm" || step === "restore" || step === "password";
+    const headerNetwork: PhoenixNetwork = account
+      ? account.network
+      : !making && chosen
+        ? (chosen.network as PhoenixNetwork)
+        : network;
     const ready = Boolean(port && changeAddrHex);
     const openTab: WalletTab | null =
       popupView === "home" || popupView === "settings" ? null : popupView;
@@ -1214,7 +1225,7 @@ export function LocalWalletPanel({ layout = "page" }: { layout?: "page" | "popup
     return (
       <div className="pw-app" onPointerDown={() => session.touch()}>
         <PopupHeader
-          network={account ? account.network : network}
+          network={headerNetwork}
           title={account && openWallet ? openWallet.label : t("popup_title")}
           subtitle={account ? t("local_account_n", { n: accountIndex }) : undefined}
           onTitle={account ? () => setPopupView("settings") : undefined}
