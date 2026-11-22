@@ -688,6 +688,13 @@ export function LocalWalletPanel({ layout = "page" }: { layout?: "page" | "popup
               {t("vault_password_too_short", { defaultValue: "vault_password_too_short" })}
             </p>
           )}
+          {/* The save button is disabled while the two fields differ; say why, but only once
+              the second field can no longer grow into the first (not while it is half typed). */}
+          {pw2.length > 0 && !pw.startsWith(pw2) && (
+            <p className="text-xs text-amber-brand" data-testid="password-mismatch-hint">
+              {t("local_password_mismatch")}
+            </p>
+          )}
           <div className="flex gap-2">
             <button
               className={primaryCls}

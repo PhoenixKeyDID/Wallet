@@ -12,7 +12,7 @@
  * overrides stay untyped so this file does not widen check:keystore-boundary.
  */
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { render, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import i18next from "i18next";
 import type { ReactElement } from "react";
 import { I18nextProvider, initReactI18next } from "react-i18next";
@@ -260,5 +260,50 @@ describe("popup: what it does not make up", () => {
     } finally {
       window.removeEventListener(NOTICES_STALE_EVENT, count);
     }
+  });
+});
+
+describe("popup: choosing a password", () => {
+  // The public BIP-39 test vector; nothing in this file derives a real key from it.
+  const VECTOR =
+    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+  const FIRST = "TestPopup-2026!";
+
+  async function reachPasswordStep() {
+    await renderPopup();
+    fireEvent.click(await screen.findByRole("button", { name: en.local_restore_cta }));
+    fireEvent.change(await screen.findByPlaceholderText(en.local_restore_placeholder), {
+      target: { value: VECTOR },
+    });
+    fireEvent.click(screen.getByRole("button", { name: en.local_words_next }));
+    // Another field on the page is also labelled with the password key; read the
+    // two fields from the card that chooses the password.
+    const card = within((await screen.findByRole("heading", { name: en.local_password_title })).parentElement!);
+    fireEvent.change(card.getByLabelText(en.local_password), { target: { value: FIRST } });
+    return card.getByLabelText(en.local_password_again);
+  }
+
+  it("says why Save is disabled once the second password has gone a different way", async () => {
+    const again = await reachPasswordStep();
+    const save = () => screen.getByRole("button", { name: en.local_save_cta }) as HTMLButtonElement;
+
+    // Half typed: still a prefix of the first, so no complaint yet.
+    fireEvent.change(again, { target: { value: FIRST.slice(0, 6) } });
+    expect(screen.queryByText(en.local_password_mismatch)).toBeNull();
+    expect(save().disabled).toBe(true);
+
+    // Diverged: the button stays disabled and the reason is on screen.
+    fireEvent.change(again, { target: { value: "TestPopup-2027!" } });
+    expect(screen.getByText(en.local_password_mismatch)).toBeTruthy();
+    expect(save().disabled).toBe(true);
+
+    // Longer than the first is also a mismatch, not a half-typed copy.
+    fireEvent.change(again, { target: { value: `${FIRST}x` } });
+    expect(screen.getByText(en.local_password_mismatch)).toBeTruthy();
+
+    // Equal: the reason goes away and Save is enabled.
+    fireEvent.change(again, { target: { value: FIRST } });
+    expect(screen.queryByText(en.local_password_mismatch)).toBeNull();
+    expect(save().disabled).toBe(false);
   });
 });
