@@ -917,6 +917,9 @@ export function LocalWalletPanel({ layout = "page" }: { layout?: "page" | "popup
           <span className="pw-link">{t("popup_learn_more")}</span>
         </summary>
         <div className="pw-notice-body">
+          {/* What this wallet is, for the first screen only: moved here from
+              above the buttons, where four lines of it buried the two choices. */}
+          {wallets.length === 0 && <p>{isExtensionContext() ? t("local_intro_ext") : t("local_intro")}</p>}
           {isExtensionContext() ? (
             <p>{t("local_risk_ext")}</p>
           ) : (
@@ -931,21 +934,29 @@ export function LocalWalletPanel({ layout = "page" }: { layout?: "page" | "popup
       </details>
     );
 
+    // One compact row with short names that fit at 360px; what the choice
+    // means sits on the line under it, in full, instead of inside an option
+    // the select cuts off. Test networks say "no real value"; mainnet says
+    // "real funds" — the two facts a newcomer must not get backwards.
     const networkPicker = (
-      <div className="pw-field">
-        <label className="pw-field-row">
-          <span className="pw-field-label">{t("popup_new_wallet_network")}</span>
+      <div className="pw-setting">
+        <label className="pw-setting-row">
+          <span className="pw-setting-label">{t("popup_new_wallet_network")}</span>
           <select
             className="pw-select"
             value={network}
             onChange={(e) => setNetwork(Number(e.target.value) as PhoenixNetwork)}
           >
-            <option value={0}>{t("network_preprod")}</option>
-            <option value={2}>{t("network_preview")}</option>
+            <option value={0}>{t("popup_net_preprod")}</option>
+            <option value={2}>{t("popup_net_preview")}</option>
             <option value={1}>{t("network_mainnet")}</option>
           </select>
         </label>
-        {network === 1 && <p className="pw-warn">{t("local_mainnet_warning")}</p>}
+        {network === 1 ? (
+          <p className="pw-warn">{t("local_mainnet_warning")}</p>
+        ) : (
+          <p className="pw-setting-hint">{t("network_testnet_badge", { name: netName(network) })}</p>
+        )}
       </div>
     );
 
@@ -1033,7 +1044,7 @@ export function LocalWalletPanel({ layout = "page" }: { layout?: "page" | "popup
                 </div>
                 {!ready && <p className="pw-muted">{t("local_tabs_preparing")}</p>}
               </section>
-              <TestnetBadge network={account.network} />
+              {/* The header badge already names the network on every popup screen. */}
               {emptyAccountNote}
               {assets.length > 0 && (
                 <section className="pw-card">
@@ -1092,7 +1103,9 @@ export function LocalWalletPanel({ layout = "page" }: { layout?: "page" | "popup
                 <p className="pw-muted">{t("popup_network_fixed", { name: netName(account.network) })}</p>
               </section>
 
-              <section className="pw-stack">
+              {/* A card like the three above; the security controls inside it
+                  drop their own frame (`.pw-card > .rounded-brand` in popup.css). */}
+              <section className="pw-card">
                 <h2 className="pw-section-title">{t("popup_settings_security")}</h2>
                 {securityCard}
                 <div className="pw-notice pw-notice-open">
@@ -1114,8 +1127,10 @@ export function LocalWalletPanel({ layout = "page" }: { layout?: "page" | "popup
         </>
       );
     } else if (step === "words" || step === "confirm" || step === "restore" || step === "password") {
+      // `pw-flow`: the shared step cards lose their frame and their button
+      // rows stack full width (popup.css) — the page's markup is unchanged.
       body = (
-        <div className="pw-stack">
+        <div className="pw-stack pw-flow">
           <StepProgress labels={flowLabels} current={flowAt} />
           {step === "words" && (
             <SeedPhraseStep
@@ -1147,24 +1162,40 @@ export function LocalWalletPanel({ layout = "page" }: { layout?: "page" | "popup
         </div>
       );
     } else if (wallets.length === 0) {
+      // A mark, a title, one line — then the decisions, grouped at the bottom
+      // where the thumb is. The longer "what is this" text is the first
+      // paragraph under "Learn more" (see `riskNotice`), not a wall above the
+      // buttons.
       body = (
         <div className="pw-welcome">
-          <PhoenixMark large />
-          <h1 className="pw-welcome-title">{t("popup_welcome_title")}</h1>
-          <p className="pw-welcome-tagline">{t("popup_welcome_tagline")}</p>
-          <p className="pw-muted">{isExtensionContext() ? t("local_intro_ext") : t("local_intro")}</p>
-          {riskNotice}
-          {networkPicker}
-          {createButtons}
-          <p className="pw-fineprint">{t("popup_tagline")}</p>
+          <div className="pw-welcome-hero">
+            <PhoenixMark large />
+            <h1 className="pw-welcome-title">{t("popup_welcome_title")}</h1>
+            <p className="pw-welcome-tagline">{t("popup_welcome_tagline")}</p>
+          </div>
+          <div className="pw-welcome-actions">
+            {riskNotice}
+            {networkPicker}
+            {createButtons}
+            <p className="pw-fineprint">{t("popup_tagline")}</p>
+          </div>
         </div>
       );
     } else {
       body = (
         <div className="pw-welcome">
-          <PhoenixMark large />
-          <h1 className="pw-welcome-title">{t("popup_welcome_back")}</h1>
-          {wallets.length > 1 ? (
+          <div className="pw-welcome-hero">
+            <PhoenixMark large />
+            <h1 className="pw-welcome-title">{t("popup_welcome_back")}</h1>
+            {/* One wallet: its name under the title. Several: the picker below. */}
+            {wallets.length === 1 && chosen && (
+              <p className="pw-welcome-tagline">
+                {chosen.label} · {netName(chosen.network)}
+              </p>
+            )}
+          </div>
+          <div className="pw-welcome-actions">
+          {wallets.length > 1 && (
             <label className="pw-field">
               <span className="pw-field-label">{t("popup_choose_wallet")}</span>
               <select
@@ -1182,12 +1213,6 @@ export function LocalWalletPanel({ layout = "page" }: { layout?: "page" | "popup
                 ))}
               </select>
             </label>
-          ) : (
-            chosen && (
-              <p className="pw-muted">
-                {chosen.label} · {netName(chosen.network)}
-              </p>
-            )
           )}
           <input
             className="pw-input pw-input-large"
@@ -1209,15 +1234,17 @@ export function LocalWalletPanel({ layout = "page" }: { layout?: "page" | "popup
             {busy ? t("local_unlocking") : t("local_unlock_cta")}
           </button>
           {riskNotice}
-          <details className="pw-notice">
-            <summary className="pw-notice-summary">
+          {/* Not a warning, so not dressed as one: a quiet disclosure. */}
+          <details className="pw-disclosure">
+            <summary className="pw-disclosure-summary">
               <span>{t("popup_add_wallet")}</span>
             </summary>
-            <div className="pw-notice-body pw-stack">
+            <div className="pw-disclosure-body pw-stack">
               {networkPicker}
               {createButtons}
             </div>
           </details>
+          </div>
         </div>
       );
     }
