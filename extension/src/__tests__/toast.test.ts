@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 /**
  * The extension shows sentences, not keys.
  *
@@ -16,62 +17,24 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { i18n } from "../i18n";
-import { toastSuccess, toastInfo, toastError, toastApiError } from "../toast";
+import { toastSuccess, toastInfo, toastError, toastApiError, clearToasts } from "../toast";
+import { NOTICES_STALE_EVENT, announceNoticesStale } from "@/components/wallet/moneyNotice";
 
 /**
- * A DOM small enough to fit the two things this module does to one.
- *
- * The suite runs under `environment: "node"` (`vitest.config.ts:22`) and this
- * repo installs no DOM implementation. Rather than add one — a dependency
- * bought for four assertions — the test supplies exactly the surface
- * `toast.ts` touches. That is not a shortcut: what these cases are about is
- * whether the key became a sentence and whether the values travelled, and both
- * are properties of the string handed to `textContent`.
+ * The banners on screen, read from a real DOM (happy-dom, opted into on the
+ * first line). A hand-made stand-in used to do here, while a banner was one
+ * `div` with text; it now has a text span and a close button inside a column,
+ * and what these cases are about — whether the key became a sentence and
+ * whether the values travelled — is still the text a person reads.
  */
-type FakeEl = {
-  className: string;
-  textContent: string;
-  attrs: Record<string, string>;
-  setAttribute(k: string, v: string): void;
-  remove(): void;
-};
-
-let painted: FakeEl[] = [];
-
-function installFakeDom(): void {
-  painted = [];
-  const body = {
-    appendChild(el: FakeEl) {
-      painted.push(el);
-      return el;
-    },
-  };
-  (globalThis as { document?: unknown }).document = {
-    body,
-    createElement(): FakeEl {
-      const el: FakeEl = {
-        className: "",
-        textContent: "",
-        attrs: {},
-        setAttribute(k, v) {
-          el.attrs[k] = v;
-        },
-        remove() {
-          painted = painted.filter((p) => p !== el);
-        },
-      };
-      return el;
-    },
-  };
-}
-
+const toastEls = () => [...document.querySelectorAll(".phoenix-toast")];
 /** The text of every banner currently on screen. */
-const banners = () => painted.map((el) => el.textContent);
+const banners = () => toastEls().map((el) => el.querySelector(".phoenix-toast-text")?.textContent ?? "");
 /** The `role` of the most recent banner — what a screen reader announces. */
-const lastRole = () => painted[painted.length - 1]?.attrs.role;
+const lastRole = () => toastEls().at(-1)?.querySelector(".phoenix-toast-text")?.getAttribute("role");
 
 beforeEach(async () => {
-  installFakeDom();
+  clearToasts();
   vi.spyOn(console, "info").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
   await i18n.changeLanguage("en");
@@ -79,7 +42,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   vi.restoreAllMocks();
-  delete (globalThis as { document?: unknown }).document;
+  clearToasts();
 });
 
 describe("extension toast > a key becomes a sentence", () => {
@@ -110,7 +73,7 @@ describe("extension toast > a key becomes a sentence", () => {
     toastSuccess("send_submitted", { hash: "abc123" });
     const vi = banners()[0];
 
-    painted = [];
+    clearToasts();
     await i18n.changeLanguage("en");
     toastSuccess("send_submitted", { hash: "abc123" });
     const en = banners()[0];
@@ -136,7 +99,7 @@ describe("extension toast > the shape a person is looking at", () => {
     toastError("plain sentence");
     expect(lastRole()).toBe("alert");
 
-    painted = [];
+    clearToasts();
     toastSuccess("send_submitted", { hash: "x" });
     expect(lastRole()).toBe("status");
   });
@@ -187,5 +150,61 @@ describe("extension toast > a cancelled signature is not a failure", () => {
     const [text] = banners();
     expect(text).not.toBe("errors.generic");
     expect(text.length).toBeGreaterThan(20);
+  });
+});
+
+describe("extension toast > a banner never holds the popup hostage", () => {
+  it("can be closed by hand", () => {
+    // In the popup a banner sat over the tab bar for twelve seconds with no way
+    // to dismiss it. The close button is the way.
+    toastError("something to read");
+    const close = document.querySelector<HTMLButtonElement>(".phoenix-toast .phoenix-toast-close");
+    expect(close).not.toBeNull();
+    expect(close!.getAttribute("aria-label")).toBe(i18n.t("popup_toast_dismiss", { ns: "wallet" }));
+    close!.click();
+    expect(banners()).toEqual([]);
+  });
+
+  it("sits above the popup's tab bar, not on it", () => {
+    // Fixed to the bottom of the window, the banner covered the bar and took
+    // its clicks: `elementFromPoint` on a tab answered with the banner.
+    const bar = document.createElement("nav");
+    bar.className = "pw-tabbar";
+    document.body.appendChild(bar);
+    vi.spyOn(bar, "getBoundingClientRect").mockReturnValue({ height: 57 } as DOMRect);
+    try {
+      toastError("over the bar?");
+      const column = document.querySelector<HTMLElement>(".phoenix-toasts")!;
+      expect(column.style.bottom).toBe("65px");
+      expect(document.querySelector(".phoenix-toasts .phoenix-toast")).not.toBeNull();
+    } finally {
+      bar.remove();
+    }
+    // With no bar (the approval window), the stylesheet's own bottom applies.
+    toastError("no bar");
+    expect(document.querySelector<HTMLElement>(".phoenix-toasts")!.style.bottom).toBe("");
+  });
+
+  it("stacks two banners instead of laying one over the other", () => {
+    toastError("first");
+    toastError("second");
+    const column = document.querySelector(".phoenix-toasts")!;
+    expect(column.querySelectorAll(".phoenix-toast")).toHaveLength(2);
+    expect(document.querySelectorAll(".phoenix-toasts")).toHaveLength(1);
+  });
+
+  it("clears every banner when the wallet says what is open changed", () => {
+    // After a lock, a balance error about the wallet just locked sat over the
+    // next unlock screen; after the right password, "that password did not
+    // open this wallet" stayed over the open wallet.
+    toastError("That password did not open this wallet.");
+    toastSuccess("send_submitted", { hash: "x" });
+    expect(banners()).toHaveLength(2);
+    announceNoticesStale();
+    expect(banners()).toEqual([]);
+    // The event is the contract, not the helper: a host may fire it itself.
+    toastError("again");
+    window.dispatchEvent(new Event(NOTICES_STALE_EVENT));
+    expect(banners()).toEqual([]);
   });
 });

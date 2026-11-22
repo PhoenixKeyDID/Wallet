@@ -21,6 +21,7 @@
  * is a second place where wallet copy lives.
  */
 import { ApiError } from "@/lib/api";
+import { NOTICES_STALE_EVENT } from "@/components/wallet/moneyNotice";
 import { i18n } from "./i18n";
 
 type ToastKind = "error" | "success" | "info";
@@ -60,15 +61,71 @@ const TOAST_CLASS: Record<ToastKind, string> = {
  */
 function paint(kind: ToastKind, message: string): void {
   if (typeof document === "undefined" || !document.body) return;
+  listenForStale();
   const el = document.createElement("div");
-  el.setAttribute("role", kind === "error" ? "alert" : "status");
   el.className = TOAST_CLASS[kind];
-  el.textContent = message;
-  document.body.appendChild(el);
+  const text = document.createElement("span");
+  text.className = "phoenix-toast-text";
+  // On the text, not the banner: a live region around the close button reads
+  // its label out as part of the message.
+  text.setAttribute("role", kind === "error" ? "alert" : "status");
+  text.textContent = message;
+  el.appendChild(text);
+  // A banner that can only wait out its timer sits over whatever is under it
+  // for twelve seconds; in the popup that was the tab bar.
+  const close = document.createElement("button");
+  close.className = "phoenix-toast-close";
+  close.setAttribute("type", "button");
+  close.setAttribute("aria-label", say("popup_toast_dismiss"));
+  close.textContent = "×";
+  close.addEventListener("click", () => el.remove());
+  el.appendChild(close);
+  stack().appendChild(el);
   // Errors stay twice as long. A success message is a receipt you glance at; an
   // error is something you have to read and act on, and the popup can close
   // under you while you are still reading it.
   setTimeout(() => el.remove(), kind === "error" ? 12_000 : 6_000);
+}
+
+/**
+ * The one column every banner sits in, newest last, so two banners stack
+ * instead of covering each other. Above the popup's tab bar when there is one:
+ * fixed to the bottom of the window it covered the bar and took its clicks
+ * (`elementFromPoint` on a tab answered with the banner). Measured at each
+ * banner, since the bar comes and goes with the lock.
+ */
+function stack(): HTMLElement {
+  let s = document.getElementById(STACK_ID);
+  if (!s) {
+    s = document.createElement("div");
+    s.id = STACK_ID;
+    s.className = "phoenix-toasts";
+    document.body.appendChild(s);
+  }
+  const bar = document.querySelector(".pw-tabbar");
+  s.style.bottom = bar ? `${Math.ceil(bar.getBoundingClientRect().height) + 8}px` : "";
+  return s;
+}
+
+const STACK_ID = "phoenix-toasts";
+
+/** Remove every banner on screen. */
+export function clearToasts(): void {
+  if (typeof document === "undefined") return;
+  document.getElementById(STACK_ID)?.replaceChildren();
+}
+
+let listening = false;
+/**
+ * Banners outlive the screen that raised them, so the wallet says when what is
+ * open changed (`NOTICES_STALE_EVENT`): after a lock, a balance error about the
+ * wallet just locked sat over the next unlock screen; after a right password,
+ * "that password did not open this wallet" sat over the open wallet.
+ */
+function listenForStale(): void {
+  if (listening || typeof window === "undefined" || typeof window.addEventListener !== "function") return;
+  window.addEventListener(NOTICES_STALE_EVENT, clearToasts);
+  listening = true;
 }
 
 function emit(kind: ToastKind, key: string, values?: Record<string, unknown>): void {

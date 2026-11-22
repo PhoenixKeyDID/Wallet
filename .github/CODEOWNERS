@@ -55,6 +55,7 @@
 # repo where a bug loses funds that nobody else is holding for the user.
 /src/lib/keystore/                                @AladinContract @GreenSun-Tech
 /src/components/wallet/LocalWalletPanel.tsx       @AladinContract @GreenSun-Tech
+/src/components/wallet/PopupChrome.tsx            @AladinContract @GreenSun-Tech
 
 # The extension package. `manifest.json` decides which hosts the wallet may
 # reach and what may execute inside it; loosening either is a one-line diff.

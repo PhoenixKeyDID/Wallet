@@ -114,6 +114,8 @@ const TESTS = [
   "extension/src/__tests__/TxSummaryView.test.tsx",
   "src/components/wallet/__tests__/SeedPhraseStep.test.tsx",
   "src/components/wallet/__tests__/LocalWalletPanel.context.test.tsx",
+  "src/components/wallet/__tests__/LocalWalletPanel.popup.test.tsx",
+  "src/components/wallet/__tests__/Cip30Panel.balance.test.tsx",
   "scripts/__tests__/checkPopupCss.test.ts",
   "scripts/__tests__/checkLocales.test.ts",
   "extension/background/__tests__/pending.test.ts",
@@ -281,8 +283,77 @@ const MUTANTS = [
   {
     name: "the extension shows the web page's long risk paragraph again",
     file: PANEL,
-    from: "      {isExtensionContext() ? (",
-    to: "      {false ? (",
+    // The web layout's own branch. The popup layout has two more sites with
+    // the same condition, each its own mutant below — the line after the
+    // condition is what tells the three apart.
+    from: '      {isExtensionContext() ? (\n        <p className="rounded-brand',
+    to: '      {false ? (\n        <p className="rounded-brand',
+  },
+  {
+    name: "the popup's 'Learn more' body shows the web page's risk paragraphs again",
+    file: PANEL,
+    from: '          {isExtensionContext() ? (\n            <p>{t("local_risk_ext")}</p>',
+    to: '          {false ? (\n            <p>{t("local_risk_ext")}</p>',
+  },
+  {
+    name: "the popup's open risk notice shows the web page's risk paragraphs again",
+    file: PANEL,
+    from: '                    {isExtensionContext() ? (\n                      <p>{t("local_risk_ext")}</p>',
+    to: '                    {false ? (\n                      <p>{t("local_risk_ext")}</p>',
+  },
+  {
+    name: "the popup's 'Back to Account 0' on Home sets the field and stays put",
+    file: PANEL,
+    from: '                    if (layout === "popup") setPopupView("settings");',
+    to: '                    if (layout === "popup") void "settings";',
+  },
+  {
+    name: "the wallet picked while unlocking takes the opened wallet's name",
+    file: PANEL,
+    from: "    setActiveId(w.id);\n    // \"That password",
+    to: "    void w.id;\n    // \"That password",
+  },
+  {
+    name: "the popup's wallet picker stays open while a wallet is unlocking",
+    file: PANEL,
+    from: "                value={chosenId ?? \"\"}\n                disabled={busy}",
+    to: "                value={chosenId ?? \"\"}\n                disabled={false}",
+  },
+  {
+    name: "a browser wallet's balance card shows 0 ADA before its balance is read",
+    file: "src/components/wallet/Cip30Panel.tsx",
+    from: "settled={balanceRead && !balanceFailed}",
+    to: "settled={!balanceFailed}",
+  },
+  {
+    name: "a browser wallet's balance stays a dash after Refresh reads it",
+    file: "src/components/wallet/Cip30Panel.tsx",
+    from: "      // The first read may have failed; a Refresh that lands is the first read.\n      setBalanceRead(true);",
+    to: "      // The first read may have failed; a Refresh that lands is the first read.",
+  },
+  {
+    name: "a Refresh from the wallet before writes its balance under the wallet connected after",
+    file: "src/components/wallet/Cip30Panel.tsx",
+    from: "      if (session !== sessionRef.current) return;\n      setLovelace(bal.lovelace);",
+    to: "      setLovelace(bal.lovelace);",
+  },
+  {
+    name: "a failed Refresh from the wallet before marks the wallet connected after as unread",
+    file: "src/components/wallet/Cip30Panel.tsx",
+    from: "    } catch (err) {\n      if (session !== sessionRef.current) return;\n      setBalanceFailed(true);",
+    to: "    } catch (err) {\n      setBalanceFailed(true);",
+  },
+  {
+    name: "the popup flashes its welcome screen before the saved wallets are read",
+    file: PANEL,
+    from: "} else if (!listed) {",
+    to: "} else if (false) {",
+  },
+  {
+    name: "the top bar's wallet button loses the wallet's name to a fixed label",
+    file: "src/components/wallet/PopupChrome.tsx",
+    from: 'title={t("popup_wallet_menu")}',
+    to: 'aria-label={t("popup_wallet_menu")}',
   },
   {
     name: "the extension shows the web intro ('no extension needed') again",

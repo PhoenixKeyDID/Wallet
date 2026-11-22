@@ -19,7 +19,7 @@
  *    ones, because someone recovering a wallet is usually already frightened.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { toastApiError } from "@/lib/toast";
 import { CopyBtn } from "@/components/CopyBtn";
@@ -57,8 +57,20 @@ import {
 } from "@/lib/keystore/session";
 import { fetchAddressBalance, type PhoenixNetwork } from "@/lib/cardano";
 import { BalanceView, type DisplayAsset } from "./BalanceView";
-import type { BalanceState } from "./moneyNotice";
-import { WalletTabs } from "./WalletTabs";
+import { AssetList } from "./BalanceView";
+import { announceNoticesStale, type BalanceState } from "./moneyNotice";
+import { WalletTabs, type WalletTab } from "./WalletTabs";
+import {
+  ActionButton,
+  BalanceHero,
+  NetworkBadge,
+  PhoenixMark,
+  PopupHeader,
+  PopupTabBar,
+  ScreenHeader,
+  StepProgress,
+  type PopupView,
+} from "./PopupChrome";
 import { nextAccountIndex } from "./delegationFeedback";
 
 type Step = "list" | "words" | "confirm" | "password" | "restore" | "unlock" | "open";
@@ -73,7 +85,12 @@ const btnCls =
 const primaryCls =
   "rounded-brand-sm bg-amber-brand px-4 py-2 text-sm font-medium text-bg0 disabled:opacity-50";
 
-export function LocalWalletPanel() {
+/**
+ * `layout`: `"page"` (default) is the web page's single column; `"popup"` is the
+ * extension toolbar popup — top bar, one screen at a time, tab bar at the
+ * bottom. Both run the same state and handlers below; only the frame differs.
+ */
+export function LocalWalletPanel({ layout = "page" }: { layout?: "page" | "popup" } = {}) {
   const { t } = useTranslation("wallet");
   // Default to preprod, not mainnet. This mode is unaudited and holds the key
   // in the page; the safe default is the network where a mistake costs nothing,
@@ -84,6 +101,13 @@ export function LocalWalletPanel() {
 
   const [step, setStep] = useState<Step>("list");
   const [wallets, setWallets] = useState<StoredWallet[]>([]);
+  /**
+   * False until the saved-wallet list has been read once. Before that `wallets`
+   * is the empty list it started as, which is also what "no wallet yet" looks
+   * like — and the popup would flash its welcome screen at someone who has a
+   * wallet, every time it opens.
+   */
+  const [listed, setListed] = useState(false);
   const [busy, setBusy] = useState(false);
 
   // create / restore
@@ -141,6 +165,8 @@ export function LocalWalletPanel() {
   // the words without destroying them: see the `locked` subscriber below.
   const [concealed, setConcealed] = useState(false);
   const [lockMs, setLockMs] = useState<number>(DEFAULT_LOCK_TIMEOUT_MS);
+  /** Which screen the popup layout shows while a wallet is open. Unused on the page. */
+  const [popupView, setPopupView] = useState<PopupView>("home");
   /**
    * Change address for the feature tabs, hex, resolved once per unlock.
    *
@@ -197,6 +223,7 @@ export function LocalWalletPanel() {
 
   const refresh = useCallback(async () => {
     setWallets(await store.list());
+    setListed(true);
   }, [store]);
 
   useEffect(() => {
@@ -223,6 +250,9 @@ export function LocalWalletPanel() {
   // past the one that means something.
   useEffect(() => {
     const off = session.onLock(() => {
+      // A banner about the wallet just locked (a failed read of its balance)
+      // must not sit over the unlock screen of the next one.
+      announceNoticesStale();
       setAccount(null);
       // A balance read started before the lock must not paint the previous
       // wallet's money onto the screen after it.
@@ -243,6 +273,9 @@ export function LocalWalletPanel() {
       setSwitchPw("");
       setSwitchTo(null);
       setPw2("");
+      // The next wallet opened starts on its own home screen, not on the
+      // previous one's settings.
+      setPopupView("home");
       // A recovery phrase mid-creation is a different case: destroying it
       // would throw away a wallet the user is in the middle of writing down,
       // and a wallet that punishes you for opening your password manager
@@ -355,6 +388,7 @@ export function LocalWalletPanel() {
         resetDraft();
         return;
       }
+      announceNoticesStale();
       setActiveId(w.id);
       setAccount(acct);
       // A newly created wallet starts at account 0, whatever account the
@@ -423,6 +457,14 @@ export function LocalWalletPanel() {
     // and with the epoch it wipes *this* one instead if the wallet was locked
     // while we were deriving.
     if (!session.unlock(w.id, acct, epoch)) return;
+    // The wallet whose keys are now open is the active one, whatever the picker
+    // was moved to during the derivation. Otherwise the header, Settings,
+    // reveal and export name the wallet picked meanwhile over this one's
+    // address and balance.
+    setActiveId(w.id);
+    // "That password did not open this wallet" from a try before this one is
+    // now false; clear it rather than leave it over the open wallet.
+    announceNoticesStale();
     setAccount(acct);
     // Invalidate any read still in flight, in the same breath as clearing the
     // figures. Clearing alone leaves `balanceOk` true from the previous account,
@@ -453,13 +495,20 @@ export function LocalWalletPanel() {
    * ~1.4 s) plus a full account derivation. A user who is simply impatient can
    * hang their own tab, or an extension popup, at the moment they open a wallet.
    */
-  const unlock = async () => {
-    if (!activeId || busy) return;
+  const unlock = async (id: string | null = activeId) => {
+    // An empty password cannot open anything, and Enter reaches here even
+    // while the button is disabled for it: refuse before the Argon2id run.
+    if (!id || busy || !pw) return;
+    // The popup picks the wallet on the unlock screen itself instead of on a
+    // list before it, so the id arrives here; the page passes nothing and gets
+    // the one it already chose. Either way it becomes the active wallet before
+    // the slow part, which is what reveal and export read afterwards.
+    setActiveId(id);
     setBusy(true);
     try {
-      const w = await store.get(activeId);
+      const w = await store.get(id);
       if (!w) throw new Error("local_wallet_missing");
-      await openAccount(activeId, pw, w.accountIndex ?? 0);
+      await openAccount(id, pw, w.accountIndex ?? 0);
       setPw("");
     } catch (e) {
       err(e);
@@ -576,6 +625,669 @@ export function LocalWalletPanel() {
     URL.revokeObjectURL(a.href);
   };
 
+  // ── shared pieces ─────────────────────────────────────────────────────────
+  //
+  // Rendered by both layouts — the web page below and the extension popup — so
+  // that a form, a warning or a gate exists once. Each keeps the indentation it
+  // had inside the page tree it was lifted out of: `scripts/mutants.mjs` plants
+  // its mutants by exact text, and a reflow here would quietly stop them from
+  // landing.
+
+  const confirmCard = (
+        <div className="rounded-brand border border-border-soft bg-bg1 p-5 space-y-4">
+          <h3 className="text-sm font-medium">{t("local_confirm_title")}</h3>
+          <p className="text-xs text-text-dim">{t("local_confirm_intro")}</p>
+          <div className="space-y-2">
+            {confirmIdx.map((wordIdx, i) => (
+              <label key={wordIdx} className="block">
+                <span className="text-xs text-text-hint">
+                  {t("local_confirm_word", { n: wordIdx + 1 })}
+                </span>
+                <input
+                  className={`${inputCls} mono`}
+                  value={confirmVals[i] ?? ""}
+                  autoComplete="off"
+                  spellCheck={false}
+                  onChange={(e) => {
+                    const next = [...confirmVals];
+                    next[i] = e.target.value;
+                    setConfirmVals(next);
+                  }}
+                />
+              </label>
+            ))}
+          </div>
+          <div className="flex gap-2">
+            <button className={primaryCls} disabled={!confirmOk} onClick={() => setStep("password")}>
+              {t("local_words_next")}
+            </button>
+            <button className={btnCls} onClick={() => setStep("words")}>
+              {t("local_confirm_back")}
+            </button>
+          </div>
+        </div>
+  );
+
+  const passwordCard = (
+        <div className="rounded-brand border border-border-soft bg-bg1 p-5 space-y-4">
+          <h3 className="text-sm font-medium">{t("local_password_title")}</h3>
+          <p className="text-xs text-text-dim">
+            {t("local_password_intro", { n: MIN_PASSWORD_LENGTH })}
+          </p>
+          <label className="block">
+            <span className="text-xs text-text-hint">{t("local_wallet_label")}</span>
+            <input className={inputCls} value={label} onChange={(e) => setLabel(e.target.value)} />
+          </label>
+          <label className="block">
+            <span className="text-xs text-text-hint">{t("local_password")}</span>
+            <input
+              className={inputCls}
+              type="password"
+              value={pw}
+              autoComplete="new-password"
+              onChange={(e) => setPw(e.target.value)}
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs text-text-hint">{t("local_password_again")}</span>
+            <input
+              className={inputCls}
+              type="password"
+              value={pw2}
+              autoComplete="new-password"
+              onChange={(e) => setPw2(e.target.value)}
+            />
+          </label>
+          {pw.length > 0 && pw.length < MIN_PASSWORD_LENGTH && (
+            <p className="text-xs text-amber-brand">
+              {t("vault_password_too_short", { defaultValue: "vault_password_too_short" })}
+            </p>
+          )}
+          {/* The save button is disabled while the two fields differ; say why, but only once
+              the second field can no longer grow into the first (not while it is half typed). */}
+          {pw2.length > 0 && !pw.startsWith(pw2) && (
+            <p className="text-xs text-amber-brand" data-testid="password-mismatch-hint">
+              {t("local_password_mismatch")}
+            </p>
+          )}
+          <div className="flex gap-2">
+            <button
+              className={primaryCls}
+              disabled={busy || pw.length < MIN_PASSWORD_LENGTH || pw !== pw2}
+              onClick={() => void save()}
+            >
+              {busy ? t("local_saving") : t("local_save_cta")}
+            </button>
+            <button className={btnCls} onClick={() => setStep(restoreText ? "restore" : "confirm")}>
+              {t("local_confirm_back")}
+            </button>
+          </div>
+          <p className="text-xs text-text-hint">{t("local_kdf_note")}</p>
+        </div>
+  );
+
+  const emptyAccountNote = (
+          <>
+            {balanceOk && lovelace === BigInt("0") && assets.length === 0 && accountIndex > 0 && (
+              <div className="rounded-brand border border-border-soft bg-bg0 p-3 space-y-2 text-xs">
+                <p className="text-text-dim">
+                  {t("local_account_empty_note", { n: accountIndex })}
+                </p>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => {
+                    setSwitchTo(0);
+                    // The popup draws the switch form on Settings only; a
+                    // button on Home that set the field and stayed put did
+                    // nothing anyone could see.
+                    if (layout === "popup") setPopupView("settings");
+                  }}
+                  className="rounded-brand-sm border border-border-soft px-3 py-1.5 text-text-hint hover:text-text-dim disabled:opacity-50"
+                >
+                  {t("local_account_back_zero")}
+                </button>
+              </div>
+            )}
+          </>
+  );
+
+  const switchForm = (
+          <>
+            {switchTo !== null && (
+              <div className="rounded-brand border border-border-soft bg-bg0 p-3 space-y-2">
+                <p className="text-xs text-text-hint">{t("local_account_switch_help")}</p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="flex items-center gap-2 text-xs">
+                    <span className="text-text-hint">{t("local_account_label")}</span>
+                    <input
+                      type="number"
+                      min={0}
+                      step={1}
+                      value={switchTo}
+                      onChange={(e) => {
+                        const n = Number(e.target.value);
+                        // A hardened index must be a whole number below 2^31.
+                        // Clamping here rather than failing at derivation keeps
+                        // the error where the person can see what they typed.
+                        setSwitchTo(Number.isInteger(n) && n >= 0 && n < 2 ** 31 ? n : 0);
+                      }}
+                      className="w-20 rounded-brand-sm border border-border-soft bg-bg1 px-2 py-1 mono"
+                    />
+                  </label>
+                  <input
+                    className={`${inputCls} max-w-xs`}
+                    type="password"
+                    placeholder={t("local_password")}
+                    autoComplete="current-password"
+                    value={switchPw}
+                    onChange={(e) => setSwitchPw(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") void switchAccount();
+                    }}
+                  />
+                  <button
+                    className={primaryCls}
+                    disabled={busy || !switchPw}
+                    onClick={() => void switchAccount()}
+                  >
+                    {busy ? t("local_unlocking") : t("local_account_switch_cta")}
+                  </button>
+                  <button
+                    className={btnCls}
+                    onClick={() => {
+                      setSwitchTo(null);
+                      setSwitchPw("");
+                    }}
+                  >
+                    {t("local_cancel")}
+                  </button>
+                </div>
+              </div>
+            )}
+          </>
+  );
+
+  const balanceStatus = (
+          <>
+            {/* "Still reading" and "the read failed" are different facts about
+                the reader's money, and the second one is alarming. Saying the
+                alarming one during every ordinary wait is how it stops being
+                heard. */}
+            {balanceState === "loading" && (
+              <p className="text-xs text-text-hint">{t("local_balance_loading")}</p>
+            )}
+            {balanceState === "failed" && (
+              <p className="text-xs text-text-hint">{t("local_balance_unavailable")}</p>
+            )}
+            {balanceOk && balanceMayBePartial && (
+              <p className="text-xs text-amber-brand">{t("local_balance_partial")}</p>
+            )}
+          </>
+  );
+
+  const accountRow = (
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="rounded-brand-sm border border-border-soft px-2 py-0.5 text-text-hint">
+                {t("local_account_n", { n: accountIndex })}
+              </span>
+              <span className="mono text-text-hint">m/1852&apos;/1815&apos;/{accountIndex}&apos;</span>
+              {switchTo === null && (
+                <button
+                  className="text-text-hint underline hover:text-text-dim"
+                  onClick={() => setSwitchTo(nextAccountIndex(accountIndex))}
+                >
+                  {t("local_account_switch")}
+                </button>
+              )}
+            </div>
+  );
+
+  const securityCard = (
+          <div className="rounded-brand border border-border-soft bg-bg1 p-5 space-y-3">
+            <label className="flex items-center gap-2 text-xs">
+              <span className="text-text-hint">{t("local_autolock_label")}</span>
+              <select
+                className="rounded-brand border border-border-soft bg-bg1 px-2 py-1"
+                value={lockMs}
+                onChange={(e) => {
+                  const v = Number(e.target.value);
+                  setLockMs(v);
+                  session.setTimeout(v);
+                }}
+              >
+                {LOCK_TIMEOUT_OPTIONS_MS.map((ms) => (
+                  <option key={ms} value={ms}>
+                    {t("local_autolock_minutes", { n: ms / 60_000 })}
+                  </option>
+                ))}
+                <option value={NEVER_LOCK_MS}>{t("local_autolock_never")}</option>
+              </select>
+            </label>
+
+            <div className="flex flex-wrap gap-2">
+              <button className={btnCls} onClick={() => void exportVault()}>
+                {t("local_export_vault")}
+              </button>
+            </div>
+            <p className="text-xs text-text-hint">{t("local_export_note")}</p>
+
+            <div className="space-y-2 border-t border-border-soft pt-3">
+              <p className="text-xs text-amber-brand">{t("local_reveal_warning")}</p>
+              {revealed ? (
+                <div className="space-y-2">
+                  <code className="mono block break-words text-xs">{revealed}</code>
+                  <button className={btnCls} onClick={() => setRevealed(null)}>
+                    {t("local_hide_phrase")}
+                  </button>
+                </div>
+              ) : (
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    className={`${inputCls} max-w-xs`}
+                    type="password"
+                    placeholder={t("local_password")}
+                    value={pw}
+                    onChange={(e) => setPw(e.target.value)}
+                  />
+                  <button className={btnCls} disabled={!pw} onClick={() => void revealPhrase()}>
+                    {t("local_show_phrase")}
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+  );
+
+  // ── render: extension popup ───────────────────────────────────────────────
+  //
+  // Same state, same handlers, same gates as the page below — only the frame
+  // differs: a fixed top bar, one screen at a time in the middle, a fixed tab
+  // bar at the bottom. Every form a key passes through (create, confirm,
+  // password, restore, account switch, reveal) is the shared piece above or the
+  // same child component the page renders.
+
+  if (layout === "popup") {
+    const netName = (n: number) =>
+      n === 1 ? t("network_mainnet") : n === 2 ? t("popup_net_preview") : t("popup_net_preprod");
+    const openWallet = wallets.find((w) => w.id === activeId);
+    const chosenId =
+      activeId !== null && wallets.some((w) => w.id === activeId) ? activeId : (wallets[0]?.id ?? null);
+    const chosen = wallets.find((w) => w.id === chosenId);
+    // The badge names the wallet the screen is about: the open one, else the
+    // one picked to unlock. The picker for a new wallet's network speaks only
+    // while a new wallet is being made, or when there is none to name.
+    const making = step === "words" || step === "confirm" || step === "restore" || step === "password";
+    const headerNetwork: PhoenixNetwork = account
+      ? account.network
+      : !making && chosen
+        ? (chosen.network as PhoenixNetwork)
+        : network;
+    const ready = Boolean(port && changeAddrHex);
+    const openTab: WalletTab | null =
+      popupView === "home" || popupView === "settings" ? null : popupView;
+
+    // Collapsed to one line, never removed: the line above the buttons is the
+    // warning, the body under "Learn more" is the whole of it.
+    const riskNotice = (
+      <details className="pw-notice">
+        <summary className="pw-notice-summary">
+          <span>{t("popup_risk_summary")}</span>
+          <span className="pw-link">{t("popup_learn_more")}</span>
+        </summary>
+        <div className="pw-notice-body">
+          {/* What this wallet is, for the first screen only: moved here from
+              above the buttons, where four lines of it buried the two choices. */}
+          {wallets.length === 0 && <p>{isExtensionContext() ? t("local_intro_ext") : t("local_intro")}</p>}
+          {isExtensionContext() ? (
+            <p>{t("local_risk_ext")}</p>
+          ) : (
+            <>
+              <p>{t("local_risk_title")}</p>
+              <p>{t("local_risk_body")}</p>
+              <p>{t("local_risk_web")}</p>
+            </>
+          )}
+          <p>{t("popup_footer")}</p>
+        </div>
+      </details>
+    );
+
+    // One compact row with short names that fit at 360px; what the choice
+    // means sits on the line under it, in full, instead of inside an option
+    // the select cuts off. Test networks say "no real value"; mainnet says
+    // "real funds" — the two facts a newcomer must not get backwards.
+    const networkPicker = (
+      <div className="pw-setting">
+        <label className="pw-setting-row">
+          <span className="pw-setting-label">{t("popup_new_wallet_network")}</span>
+          <select
+            className="pw-select"
+            value={network}
+            onChange={(e) => setNetwork(Number(e.target.value) as PhoenixNetwork)}
+          >
+            <option value={0}>{t("popup_net_preprod")}</option>
+            <option value={2}>{t("popup_net_preview")}</option>
+            <option value={1}>{t("network_mainnet")}</option>
+          </select>
+        </label>
+        {network === 1 ? (
+          <p className="pw-warn">{t("local_mainnet_warning")}</p>
+        ) : (
+          <p className="pw-setting-hint">{t("network_testnet_badge", { name: netName(network) })}</p>
+        )}
+      </div>
+    );
+
+    const createButtons = (
+      <div className="pw-stack">
+        <button className="pw-btn pw-btn-primary pw-btn-block" onClick={startCreate}>
+          {t("local_create_cta")}
+        </button>
+        <button
+          className="pw-btn pw-btn-block"
+          onClick={() => {
+            resetDraft();
+            setStep("restore");
+          }}
+        >
+          {t("local_restore_cta")}
+        </button>
+      </div>
+    );
+
+    const restoreFlow = step === "restore" || (step === "password" && restoreText !== "");
+    const flowLabels = restoreFlow
+      ? [t("popup_step_phrase"), t("popup_step_password")]
+      : [t("popup_step_phrase"), t("popup_step_confirm"), t("popup_step_password")];
+    const flowAt =
+      step === "password" ? flowLabels.length - 1 : step === "confirm" ? 1 : 0;
+
+    let body: ReactNode;
+    if (step === "open" && account) {
+      body = (
+        <>
+          {(popupView === "send" || popupView === "receive") && (
+            <ScreenHeader
+              title={popupView === "send" ? t("tab_send") : t("tab_receive")}
+              onBack={() => setPopupView("home")}
+            />
+          )}
+          {/* Mounted on every screen, Home included, so the unconfirmed-submit
+              notice and the delegation records it keeps outlive a change of
+              screen; see `layout` in WalletTabs. */}
+          {port && changeAddrHex ? (
+            <WalletTabs
+              port={port}
+              network={account.network}
+              changeAddress={changeAddrHex}
+              layout="popup"
+              openTab={openTab}
+            />
+          ) : (
+            openTab !== null && <p className="pw-muted">{t("local_tabs_preparing")}</p>
+          )}
+
+          {popupView === "home" && (
+            <div className="pw-stack">
+              <section className="pw-hero">
+                <BalanceHero lovelace={lovelace} network={account.network} settled={balanceOk}>
+                  {balanceStatus}
+                </BalanceHero>
+                <div className="pw-address">
+                  <code className="mono pw-address-text" title={primaryAddress(account)}>
+                    {primaryAddress(account)}
+                  </code>
+                  <CopyBtn value={primaryAddress(account)} />
+                </div>
+                <div className="pw-actions">
+                  <ActionButton icon="send" label={t("tab_send")} disabled={!ready} onClick={() => setPopupView("send")} />
+                  <ActionButton
+                    icon="receive"
+                    label={t("tab_receive")}
+                    disabled={!ready}
+                    onClick={() => setPopupView("receive")}
+                  />
+                  <ActionButton
+                    icon="staking"
+                    label={t("tab_staking")}
+                    disabled={!ready}
+                    onClick={() => setPopupView("staking")}
+                  />
+                  <ActionButton
+                    icon="history"
+                    label={t("tab_history")}
+                    disabled={!ready}
+                    onClick={() => setPopupView("history")}
+                  />
+                </div>
+                {!ready && <p className="pw-muted">{t("local_tabs_preparing")}</p>}
+              </section>
+              {/* The header badge already names the network on every popup screen. */}
+              {emptyAccountNote}
+              {assets.length > 0 && (
+                <section className="pw-card">
+                  <h2 className="pw-section-title">{t("tokens_label")}</h2>
+                  <AssetList assets={assets} />
+                </section>
+              )}
+            </div>
+          )}
+
+          {popupView === "settings" && (
+            <div className="pw-stack">
+              <section className="pw-card">
+                <h2 className="pw-section-title">{t("popup_settings_account")}</h2>
+                {accountRow}
+                {switchForm}
+              </section>
+
+              <section className="pw-card">
+                <h2 className="pw-section-title">{t("popup_settings_wallets")}</h2>
+                <ul className="pw-list">
+                  {wallets.map((w) => (
+                    <li key={w.id} className="pw-list-row">
+                      <div className="pw-list-main">
+                        <span className="pw-list-title">{w.label}</span>
+                        <span className="mono pw-list-sub">{w.firstAddress}</span>
+                      </div>
+                      {w.id === activeId ? (
+                        // A status, not a control: "Currently open", never a verb
+                        // that reads as a button for the wallet already open.
+                        <span className="pw-pill" aria-current="true">
+                          {t("popup_wallet_current")}
+                        </span>
+                      ) : (
+                        <button
+                          className="pw-btn pw-btn-small"
+                          onClick={() => {
+                            // Lock first: one wallet's keys leave memory before
+                            // the next one's password is even asked for.
+                            session.lock();
+                            setActiveId(w.id);
+                            setStep("unlock");
+                          }}
+                        >
+                          {t("popup_wallet_switch")}
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </section>
+
+              <section className="pw-card">
+                <h2 className="pw-section-title">{t("network_label")}</h2>
+                <NetworkBadge network={account.network} />
+                <p className="pw-muted">{t("popup_network_fixed", { name: netName(account.network) })}</p>
+              </section>
+
+              {/* A card like the three above; the security controls inside it
+                  drop their own frame (`.pw-card > .rounded-brand` in popup.css). */}
+              <section className="pw-card">
+                <h2 className="pw-section-title">{t("popup_settings_security")}</h2>
+                {securityCard}
+                <div className="pw-notice pw-notice-open">
+                  <div className="pw-notice-body">
+                    {isExtensionContext() ? (
+                      <p>{t("local_risk_ext")}</p>
+                    ) : (
+                      <>
+                        <p>{t("local_risk_body")}</p>
+                        <p>{t("local_risk_web")}</p>
+                      </>
+                    )}
+                    <p>{t("popup_footer")}</p>
+                  </div>
+                </div>
+              </section>
+            </div>
+          )}
+        </>
+      );
+    } else if (step === "words" || step === "confirm" || step === "restore" || step === "password") {
+      // `pw-flow`: the shared step cards lose their frame and their button
+      // rows stack full width (popup.css) — the page's markup is unchanged.
+      body = (
+        <div className="pw-stack pw-flow">
+          <StepProgress labels={flowLabels} current={flowAt} />
+          {step === "words" && (
+            <SeedPhraseStep
+              phrase={phrase}
+              concealed={concealed}
+              onReveal={() => setConcealed(false)}
+              onNext={startConfirm}
+              onCancel={() => {
+                resetDraft();
+                setStep("list");
+              }}
+            />
+          )}
+          {step === "confirm" && confirmCard}
+          {step === "restore" && (
+            <RestoreForm
+              value={restoreText}
+              concealed={concealed}
+              onReveal={() => setConcealed(false)}
+              onChange={setRestoreText}
+              onCancel={() => {
+                resetDraft();
+                setStep("list");
+              }}
+              onNext={() => setStep("password")}
+            />
+          )}
+          {step === "password" && passwordCard}
+        </div>
+      );
+    } else if (!listed) {
+      // Nothing to decide yet: the saved wallets are still being read.
+      body = <div className="pw-welcome" aria-busy="true" />;
+    } else if (wallets.length === 0) {
+      // A mark, a title, one line — then the decisions, grouped at the bottom
+      // where the thumb is. The longer "what is this" text is the first
+      // paragraph under "Learn more" (see `riskNotice`), not a wall above the
+      // buttons.
+      body = (
+        <div className="pw-welcome">
+          <div className="pw-welcome-hero">
+            <PhoenixMark large />
+            <h1 className="pw-welcome-title">{t("popup_welcome_title")}</h1>
+            <p className="pw-welcome-tagline">{t("popup_welcome_tagline")}</p>
+          </div>
+          <div className="pw-welcome-actions">
+            {riskNotice}
+            {networkPicker}
+            {createButtons}
+            <p className="pw-fineprint">{t("popup_tagline")}</p>
+          </div>
+        </div>
+      );
+    } else {
+      body = (
+        <div className="pw-welcome">
+          <div className="pw-welcome-hero">
+            <PhoenixMark large />
+            <h1 className="pw-welcome-title">{t("popup_welcome_back")}</h1>
+            {/* One wallet: its name under the title. Several: the picker below. */}
+            {wallets.length === 1 && chosen && (
+              <p className="pw-welcome-tagline">
+                {chosen.label} · {netName(chosen.network)}
+              </p>
+            )}
+          </div>
+          <div className="pw-welcome-actions">
+          {wallets.length > 1 && (
+            <label className="pw-field">
+              <span className="pw-field-label">{t("popup_choose_wallet")}</span>
+              <select
+                className="pw-select"
+                value={chosenId ?? ""}
+                disabled={busy}
+                onChange={(e) => {
+                  setActiveId(e.target.value);
+                  setPw("");
+                }}
+              >
+                {wallets.map((w) => (
+                  <option key={w.id} value={w.id}>
+                    {w.label} · {netName(w.network)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          <input
+            className="pw-input pw-input-large"
+            type="password"
+            placeholder={t("local_password")}
+            aria-label={t("local_password")}
+            value={pw}
+            autoComplete="current-password"
+            onChange={(e) => setPw(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void unlock(chosenId);
+            }}
+          />
+          <button
+            className="pw-btn pw-btn-primary pw-btn-block"
+            disabled={busy || !pw || !chosenId}
+            onClick={() => void unlock(chosenId)}
+          >
+            {busy ? t("local_unlocking") : t("local_unlock_cta")}
+          </button>
+          {riskNotice}
+          {/* Not a warning, so not dressed as one: a quiet disclosure. */}
+          <details className="pw-disclosure">
+            <summary className="pw-disclosure-summary">
+              <span>{t("popup_add_wallet")}</span>
+            </summary>
+            <div className="pw-disclosure-body pw-stack">
+              {networkPicker}
+              {createButtons}
+            </div>
+          </details>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="pw-app" onPointerDown={() => session.touch()}>
+        <PopupHeader
+          network={headerNetwork}
+          title={account && openWallet ? openWallet.label : t("popup_title")}
+          subtitle={account ? t("local_account_n", { n: accountIndex }) : undefined}
+          onTitle={account ? () => setPopupView("settings") : undefined}
+          onLock={account ? () => session.lock() : undefined}
+          onSettings={account ? () => setPopupView("settings") : undefined}
+        />
+        <main className="pw-body">{body}</main>
+        {step === "open" && account && <PopupTabBar view={popupView} onSelect={setPopupView} />}
+      </div>
+    );
+  }
+
   // ── render ────────────────────────────────────────────────────────────────
 
   return (
@@ -674,40 +1386,7 @@ export function LocalWalletPanel() {
         />
       )}
 
-      {step === "confirm" && (
-        <div className="rounded-brand border border-border-soft bg-bg1 p-5 space-y-4">
-          <h3 className="text-sm font-medium">{t("local_confirm_title")}</h3>
-          <p className="text-xs text-text-dim">{t("local_confirm_intro")}</p>
-          <div className="space-y-2">
-            {confirmIdx.map((wordIdx, i) => (
-              <label key={wordIdx} className="block">
-                <span className="text-xs text-text-hint">
-                  {t("local_confirm_word", { n: wordIdx + 1 })}
-                </span>
-                <input
-                  className={`${inputCls} mono`}
-                  value={confirmVals[i] ?? ""}
-                  autoComplete="off"
-                  spellCheck={false}
-                  onChange={(e) => {
-                    const next = [...confirmVals];
-                    next[i] = e.target.value;
-                    setConfirmVals(next);
-                  }}
-                />
-              </label>
-            ))}
-          </div>
-          <div className="flex gap-2">
-            <button className={primaryCls} disabled={!confirmOk} onClick={() => setStep("password")}>
-              {t("local_words_next")}
-            </button>
-            <button className={btnCls} onClick={() => setStep("words")}>
-              {t("local_confirm_back")}
-            </button>
-          </div>
-        </div>
-      )}
+      {step === "confirm" && confirmCard}
 
       {step === "restore" && (
         <RestoreForm
@@ -723,56 +1402,7 @@ export function LocalWalletPanel() {
         />
       )}
 
-      {step === "password" && (
-        <div className="rounded-brand border border-border-soft bg-bg1 p-5 space-y-4">
-          <h3 className="text-sm font-medium">{t("local_password_title")}</h3>
-          <p className="text-xs text-text-dim">
-            {t("local_password_intro", { n: MIN_PASSWORD_LENGTH })}
-          </p>
-          <label className="block">
-            <span className="text-xs text-text-hint">{t("local_wallet_label")}</span>
-            <input className={inputCls} value={label} onChange={(e) => setLabel(e.target.value)} />
-          </label>
-          <label className="block">
-            <span className="text-xs text-text-hint">{t("local_password")}</span>
-            <input
-              className={inputCls}
-              type="password"
-              value={pw}
-              autoComplete="new-password"
-              onChange={(e) => setPw(e.target.value)}
-            />
-          </label>
-          <label className="block">
-            <span className="text-xs text-text-hint">{t("local_password_again")}</span>
-            <input
-              className={inputCls}
-              type="password"
-              value={pw2}
-              autoComplete="new-password"
-              onChange={(e) => setPw2(e.target.value)}
-            />
-          </label>
-          {pw.length > 0 && pw.length < MIN_PASSWORD_LENGTH && (
-            <p className="text-xs text-amber-brand">
-              {t("vault_password_too_short", { defaultValue: "vault_password_too_short" })}
-            </p>
-          )}
-          <div className="flex gap-2">
-            <button
-              className={primaryCls}
-              disabled={busy || pw.length < MIN_PASSWORD_LENGTH || pw !== pw2}
-              onClick={() => void save()}
-            >
-              {busy ? t("local_saving") : t("local_save_cta")}
-            </button>
-            <button className={btnCls} onClick={() => setStep(restoreText ? "restore" : "confirm")}>
-              {t("local_confirm_back")}
-            </button>
-          </div>
-          <p className="text-xs text-text-hint">{t("local_kdf_note")}</p>
-        </div>
-      )}
+      {step === "password" && passwordCard}
 
       {step === "unlock" && (
         <div className="rounded-brand border border-border-soft bg-bg1 p-5 space-y-4">
@@ -811,20 +1441,7 @@ export function LocalWalletPanel() {
                 itself. Account 2's address looks exactly like account 0's, so
                 the only thing separating "my receive address" from "someone
                 else's account" here is this line. */}
-            <div className="flex flex-wrap items-center gap-2 text-xs">
-              <span className="rounded-brand-sm border border-border-soft px-2 py-0.5 text-text-hint">
-                {t("local_account_n", { n: accountIndex })}
-              </span>
-              <span className="mono text-text-hint">m/1852&apos;/1815&apos;/{accountIndex}&apos;</span>
-              {switchTo === null && (
-                <button
-                  className="text-text-hint underline hover:text-text-dim"
-                  onClick={() => setSwitchTo(nextAccountIndex(accountIndex))}
-                >
-                  {t("local_account_switch")}
-                </button>
-              )}
-            </div>
+            {accountRow}
 
             {/*
               An empty account looks exactly like a robbed one, and this is the
@@ -834,72 +1451,8 @@ export function LocalWalletPanel() {
               distinguish it from loss but a grey chip sitting beside a
               derivation path. Say it plainly, and offer the one step back.
             */}
-            {balanceOk && lovelace === BigInt("0") && assets.length === 0 && accountIndex > 0 && (
-              <div className="rounded-brand border border-border-soft bg-bg0 p-3 space-y-2 text-xs">
-                <p className="text-text-dim">
-                  {t("local_account_empty_note", { n: accountIndex })}
-                </p>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => setSwitchTo(0)}
-                  className="rounded-brand-sm border border-border-soft px-3 py-1.5 text-text-hint hover:text-text-dim disabled:opacity-50"
-                >
-                  {t("local_account_back_zero")}
-                </button>
-              </div>
-            )}
-            {switchTo !== null && (
-              <div className="rounded-brand border border-border-soft bg-bg0 p-3 space-y-2">
-                <p className="text-xs text-text-hint">{t("local_account_switch_help")}</p>
-                <div className="flex flex-wrap items-center gap-2">
-                  <label className="flex items-center gap-2 text-xs">
-                    <span className="text-text-hint">{t("local_account_label")}</span>
-                    <input
-                      type="number"
-                      min={0}
-                      step={1}
-                      value={switchTo}
-                      onChange={(e) => {
-                        const n = Number(e.target.value);
-                        // A hardened index must be a whole number below 2^31.
-                        // Clamping here rather than failing at derivation keeps
-                        // the error where the person can see what they typed.
-                        setSwitchTo(Number.isInteger(n) && n >= 0 && n < 2 ** 31 ? n : 0);
-                      }}
-                      className="w-20 rounded-brand-sm border border-border-soft bg-bg1 px-2 py-1 mono"
-                    />
-                  </label>
-                  <input
-                    className={`${inputCls} max-w-xs`}
-                    type="password"
-                    placeholder={t("local_password")}
-                    autoComplete="current-password"
-                    value={switchPw}
-                    onChange={(e) => setSwitchPw(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") void switchAccount();
-                    }}
-                  />
-                  <button
-                    className={primaryCls}
-                    disabled={busy || !switchPw}
-                    onClick={() => void switchAccount()}
-                  >
-                    {busy ? t("local_unlocking") : t("local_account_switch_cta")}
-                  </button>
-                  <button
-                    className={btnCls}
-                    onClick={() => {
-                      setSwitchTo(null);
-                      setSwitchPw("");
-                    }}
-                  >
-                    {t("local_cancel")}
-                  </button>
-                </div>
-              </div>
-            )}
+            {emptyAccountNote}
+            {switchForm}
             <TestnetBadge network={account.network} />
             <div className="flex items-center gap-2">
               <code className="mono break-all text-xs">{primaryAddress(account)}</code>
@@ -910,20 +1463,9 @@ export function LocalWalletPanel() {
               assets={assets}
               network={account.network}
               address={primaryAddress(account)}
+              settled={balanceOk}
             />
-            {/* "Still reading" and "the read failed" are different facts about
-                the reader's money, and the second one is alarming. Saying the
-                alarming one during every ordinary wait is how it stops being
-                heard. */}
-            {balanceState === "loading" && (
-              <p className="text-xs text-text-hint">{t("local_balance_loading")}</p>
-            )}
-            {balanceState === "failed" && (
-              <p className="text-xs text-text-hint">{t("local_balance_unavailable")}</p>
-            )}
-            {balanceOk && balanceMayBePartial && (
-              <p className="text-xs text-amber-brand">{t("local_balance_partial")}</p>
-            )}
+            {balanceStatus}
           </div>
 
           {/* Send / Receive / Staking / Governance / Connect, driven by the
@@ -938,59 +1480,7 @@ export function LocalWalletPanel() {
             <p className="text-xs text-text-hint">{t("local_tabs_preparing")}</p>
           )}
 
-          <div className="rounded-brand border border-border-soft bg-bg1 p-5 space-y-3">
-            <label className="flex items-center gap-2 text-xs">
-              <span className="text-text-hint">{t("local_autolock_label")}</span>
-              <select
-                className="rounded-brand border border-border-soft bg-bg1 px-2 py-1"
-                value={lockMs}
-                onChange={(e) => {
-                  const v = Number(e.target.value);
-                  setLockMs(v);
-                  session.setTimeout(v);
-                }}
-              >
-                {LOCK_TIMEOUT_OPTIONS_MS.map((ms) => (
-                  <option key={ms} value={ms}>
-                    {t("local_autolock_minutes", { n: ms / 60_000 })}
-                  </option>
-                ))}
-                <option value={NEVER_LOCK_MS}>{t("local_autolock_never")}</option>
-              </select>
-            </label>
-
-            <div className="flex flex-wrap gap-2">
-              <button className={btnCls} onClick={() => void exportVault()}>
-                {t("local_export_vault")}
-              </button>
-            </div>
-            <p className="text-xs text-text-hint">{t("local_export_note")}</p>
-
-            <div className="space-y-2 border-t border-border-soft pt-3">
-              <p className="text-xs text-amber-brand">{t("local_reveal_warning")}</p>
-              {revealed ? (
-                <div className="space-y-2">
-                  <code className="mono block break-words text-xs">{revealed}</code>
-                  <button className={btnCls} onClick={() => setRevealed(null)}>
-                    {t("local_hide_phrase")}
-                  </button>
-                </div>
-              ) : (
-                <div className="flex flex-wrap items-center gap-2">
-                  <input
-                    className={`${inputCls} max-w-xs`}
-                    type="password"
-                    placeholder={t("local_password")}
-                    value={pw}
-                    onChange={(e) => setPw(e.target.value)}
-                  />
-                  <button className={btnCls} disabled={!pw} onClick={() => void revealPhrase()}>
-                    {t("local_show_phrase")}
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
+          {securityCard}
         </div>
       )}
     </div>

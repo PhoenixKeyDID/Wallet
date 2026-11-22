@@ -19,32 +19,19 @@
  */
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { I18nextProvider, useTranslation } from "react-i18next";
+import { I18nextProvider } from "react-i18next";
 import { i18n } from "./i18n";
 import { LocalWalletPanel } from "../../src/components/wallet/LocalWalletPanel";
 import "./popup.css";
 
+/**
+ * The popup draws its own frame (top bar, bottom tabs) through
+ * `layout="popup"`; the risk sentence and the beta notice that used to sit in a
+ * header and footer here are inside it, under the wallet's own controls, so
+ * they are on screen before a wallet exists and in Settings after.
+ */
 function App() {
-  const { t } = useTranslation("wallet");
-  return (
-    <div className="popup">
-      <header className="popup-head">
-        <span className="popup-mark" aria-hidden>
-          🔑
-        </span>
-        <div>
-          <h1>{t("popup_title")}</h1>
-          <p>{t("popup_tagline")}</p>
-        </div>
-      </header>
-      <main>
-        <LocalWalletPanel />
-      </main>
-      <footer>
-        <p>{t("popup_footer")}</p>
-      </footer>
-    </div>
-  );
+  return <LocalWalletPanel layout="popup" />;
 }
 
 const el = document.getElementById("root");

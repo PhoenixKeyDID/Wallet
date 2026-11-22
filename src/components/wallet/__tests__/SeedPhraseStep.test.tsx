@@ -140,6 +140,15 @@ describe("recovery phrase screen", () => {
     "src/components/wallet/WatchOnlyPanel.tsx#WatchOnlyPanel: a.address",
     "src/components/wallet/WatchOnlyPanel.tsx#WatchOnlyPanel: wallet.stakeAddress",
     "src/components/wallet/WatchOnlyPanel.tsx#WatchOnlyPanel: watched",
+    // The popup layout. `layout="popup"` is a constant string, the name of a
+    // layout: it picks which markup renders and is never a key, a phrase or a
+    // password. It reaches the copy buttons only because `layout` is a prop
+    // of the components that hold them (see FORWARDS).
+    "extension/src/popup.tsx#App: \"popup\"",
+    "src/components/wallet/LocalWalletPanel.tsx#LocalWalletPanel: \"popup\"",
+    // The tab the popup shows, derived from its own screen state — one of a
+    // fixed set of screen names (`WalletTab`), or null for home/settings.
+    "src/components/wallet/LocalWalletPanel.tsx#LocalWalletPanel: openTab",
     // Values read through code outside the component — a hook, a helper, a
     // store, the page. The test does not follow them there, so each stands
     // here on its own word: what that code hands back is an address, a hash,
@@ -151,6 +160,10 @@ describe("recovery phrase screen", () => {
     "src/components/wallet/Cip30Panel.tsx#Cip30Panel: receiveAddress reads what code outside the component keeps",
     "src/components/wallet/HistoryPanel.tsx#HistoryPanel: e.txHash reads what code outside the component keeps",
     "src/components/wallet/HistoryPanel.tsx#HistoryPanel: u.txHash reads what code outside the component keeps",
+    // The same two as above, on their own word like the rest of this block:
+    // a constant layout name and a screen name from the popup's own state.
+    "src/components/wallet/LocalWalletPanel.tsx#LocalWalletPanel: \"popup\" reads what code outside the component keeps",
+    "src/components/wallet/LocalWalletPanel.tsx#LocalWalletPanel: openTab reads what code outside the component keeps",
     "src/components/wallet/LocalWalletPanel.tsx#LocalWalletPanel: account.network reads what code outside the component keeps",
     "src/components/wallet/LocalWalletPanel.tsx#LocalWalletPanel: changeAddrHex reads what code outside the component keeps",
     "src/components/wallet/LocalWalletPanel.tsx#LocalWalletPanel: port reads what code outside the component keeps",
@@ -184,6 +197,9 @@ describe("recovery phrase screen", () => {
     // answer, so it counts as derived from the port and what it was asked with.
     "src/components/wallet/HistoryPanel.tsx#HistoryPanel: network",
     "src/components/wallet/HistoryPanel.tsx#HistoryPanel: port",
+    // Which layout to render, and so which markup holds the address copy
+    // button; it is a layout name, never a value a button copies.
+    "src/components/wallet/LocalWalletPanel.tsx#LocalWalletPanel: layout",
     "src/components/wallet/PhoenixCustodyPanel.tsx#PhoenixCustodyPanel: did",
     "src/components/wallet/ReceivePanel.tsx#AddressCard: address",
     "src/components/wallet/ReceivePanel.tsx#ReceivePanel: network",
@@ -201,6 +217,10 @@ describe("recovery phrase screen", () => {
     "src/components/wallet/WalletTabs.tsx#WalletTabs: changeAddress",
     "src/components/wallet/WalletTabs.tsx#WalletTabs: network",
     "src/components/wallet/WalletTabs.tsx#WalletTabs: networkId",
+    // The popup's layout name and the tab it has open: they choose which panel
+    // renders (and so which copy button exists), and carry nothing a button copies.
+    "src/components/wallet/WalletTabs.tsx#WalletTabs: layout",
+    "src/components/wallet/WalletTabs.tsx#WalletTabs: openTab",
     "src/components/wallet/WalletTabs.tsx#WalletTabs: port",
   ];
 
@@ -600,7 +620,7 @@ describe("recovery phrase screen", () => {
         // State any other way than `[state, setState]` — `const st = useState(…)`,
         // `{ 0: s, 1: set }` — has a setter the test cannot follow: the state
         // holds `UNSEEN`. The hook handed on or renamed fails the clipboard test.
-        if (ts.isCallExpression(n) && isStateHook(n.expression) && !statePair(n)) for (const x of unseen()) out.add(x);
+        if (ts.isCallExpression(n) && isStateHook(n.expression) && !statePair(n)) for (const x of setterUnseen()) out.add(x);
         // `useContext(Ctx)`, `use(Ctx)`: whatever any provider above was handed.
         if (ts.isCallExpression(n) && /(^|\.)(useContext|use)$/.test(bare(n.expression).getText())) out.add(KEPT);
         if (ts.isPropertyAccessExpression(n)) return go(n.expression, shadow);
@@ -795,7 +815,41 @@ describe("recovery phrase screen", () => {
       const el = ts.isJsxAttribute(x.parent) ? x.parent.parent.parent : x.parent;
       return valueAt(ts.isJsxOpeningElement(el) ? el.parent : el);
     };
-    const unseen = () => new Set(fn.parameters.length ? [UNSEEN] : []);
+    /**
+     * The props a component takes, when its one parameter names each of them —
+     * an object pattern with no `...rest` and no computed key
+     * (`{ layout = "page" }`). The props object itself is then out of reach
+     * (`arguments` is refused in shipped code by the clipboard test), so all a
+     * caller hands in is those props. Undefined for any other shape.
+     */
+    const namedProps = ((): string[] | undefined => {
+      if (fn.parameters.length !== 1) return undefined;
+      const [p] = fn.parameters;
+      if (p.dotDotDotToken || !ts.isObjectBindingPattern(p.name)) return undefined;
+      const out: string[] = [];
+      for (const el of p.name.elements) {
+        if (el.dotDotDotToken) return undefined;
+        const key = el.propertyName ?? el.name;
+        if (!ts.isIdentifier(key) && !ts.isStringLiteral(key)) return undefined;
+        out.push(key.text);
+      }
+      return out;
+    })();
+    /**
+     * What a value handed in out of the test's sight may hold. Without props,
+     * nothing of the caller's. With props named one by one, any of them: each
+     * is then followed out like any other, and every caller's value for it is
+     * held to COPYABLE — a narrower answer than `UNSEEN`, not a laxer one.
+     * Otherwise `UNSEEN`.
+     */
+    const unseen = () => new Set<string>(namedProps ?? (fn.parameters.length ? [UNSEEN] : []));
+    /**
+     * What a state may hold once its setter is out of the test's sight. Not
+     * narrowed to the named props: a setter handed away can be called by
+     * whatever code ends up holding it, with that code's own values, so with
+     * any props at all it holds `UNSEEN`.
+     */
+    const setterUnseen = () => new Set<string>(fn.parameters.length ? [UNSEEN] : []);
     /** What one use of a function, the function itself or a name for it, calls it with. */
     const callsWith = (use: ts.Node): Set<string> => {
       const p = use.parent;
@@ -1008,7 +1062,7 @@ describe("recovery phrase screen", () => {
             // Without props there is nothing of the caller's it could be handed.
             // `<Field onChange={setShown} … />`: handed what that element is.
             const el = ts.isJsxExpression(call) && ts.isJsxAttribute(call.parent) ? call.parent.parent.parent : undefined;
-            const t = el ? valueAt(ts.isJsxOpeningElement(el) ? el.parent : el) : new Set([UNSEEN]);
+            const t = el ? valueAt(ts.isJsxOpeningElement(el) ? el.parent : el) : setterUnseen();
             if (t.size) changed = bind(setters.get(n.text)!, t) || changed;
           }
         }
@@ -1306,7 +1360,17 @@ describe("recovery phrase screen", () => {
             }
             const prop = a.name.getText(sf);
             if (!props.has(prop) && !props.has("*")) continue;
-            const e = a.initializer && ts.isJsxExpression(a.initializer) ? a.initializer.expression : undefined;
+            // `layout="popup"` is the string itself, as `{"popup"}` is: it is
+            // listed in `seen` by its text and has to stand in COPYABLE like any
+            // other value. A bare attribute (`<X flag />`) or an element as the
+            // value is still unread.
+            const e = !a.initializer
+              ? undefined
+              : ts.isJsxExpression(a.initializer)
+                ? a.initializer.expression
+                : ts.isStringLiteral(a.initializer)
+                  ? a.initializer
+                  : undefined;
             if (!e) {
               seen.push(`${key}: <${tag} ${prop} not a {…} expression>`);
               continue;

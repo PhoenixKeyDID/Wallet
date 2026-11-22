@@ -37,6 +37,9 @@ import {
 
 type Tab = "send" | "receive" | "history" | "staking" | "governance" | "connect";
 
+/** The feature screens, named for a host that drives the choice itself (the extension popup). */
+export type WalletTab = Tab;
+
 /** The vote delegation in flight, and one that just ran past its watch limit. */
 type VoteSlot = { live: SentVoteDelegation | null; expired: SentVoteDelegation | null };
 
@@ -85,10 +88,26 @@ type NetworkSource =
 export function WalletTabs({
   port,
   changeAddress,
+  layout = "page",
+  openTab = null,
   ...source
 }: {
   port: WalletPort;
   changeAddress: string;
+  /**
+   * `"popup"`: the host draws its own navigation (the extension popup's bottom
+   * bar and action buttons) and says which screen is open through `openTab`.
+   * This component then draws no tab row of its own — but it is still mounted
+   * the whole time, on the home screen too (`openTab` = `null`), because the
+   * state it holds must outlive a change of screen: the unconfirmed-submit lock
+   * and its notice, and the delegation and vote records the Staking and
+   * Governance panels watch. Unmounting it to show a home screen would forget a
+   * transaction whose fate is unknown, which is the one thing the lock exists
+   * to remember.
+   */
+  layout?: "page" | "popup";
+  /** Which screen is open in the popup layout; `null` shows none. Ignored on a page. */
+  openTab?: Tab | null;
 } & NetworkSource) {
   const { t } = useTranslation("wallet");
   // Default to Receive: after connecting, most people want to view or get an
@@ -117,7 +136,11 @@ export function WalletTabs({
    */
   const tabs = port.kind === "local" ? TABS.filter((tb) => tb.id !== "connect") : TABS;
   // A tab that has just disappeared must not stay selected.
-  const activeTab = tabs.some((tb) => tb.id === tab) ? tab : "receive";
+  const pageTab: Tab = tabs.some((tb) => tb.id === tab) ? tab : "receive";
+  // In the popup the host's choice wins, but only among the tabs this port
+  // gets: a local wallet still never reaches Connect, whatever it is asked for.
+  const activeTab: Tab | null =
+    layout === "popup" ? (openTab !== null && tabs.some((tb) => tb.id === openTab) ? openTab : null) : pageTab;
 
   // `!== undefined` rather than `"network" in source`: both branches of the
   // union now *declare* `network` (one as `never`) so that passing both keys is
@@ -407,7 +430,8 @@ export function WalletTabs({
         </div>
       )}
 
-      {/* Tab bar */}
+      {/* Tab bar — the popup draws its own navigation instead */}
+      {layout === "page" && (
       <div className="flex gap-1 overflow-x-auto rounded-brand border border-border-soft bg-bg1 p-1">
         {tabs.map((tb) => {
           const active = tb.id === activeTab;
@@ -429,6 +453,7 @@ export function WalletTabs({
           );
         })}
       </div>
+      )}
 
       {/*
         Above the tab content, and outside every `&&` below, so switching tabs

@@ -55,6 +55,7 @@
       "src/components/CopyBtn.tsx",
       "src/components/night/NightRedeem.tsx",
       "src/components/wallet/LocalWalletPanel.tsx",
+      "src/components/wallet/PopupChrome.tsx",
       "src/components/wallet/ConfirmGate.tsx",
       "src/components/wallet/Cip30Panel.tsx",
       "src/components/wallet/SeedPhraseStep.tsx",

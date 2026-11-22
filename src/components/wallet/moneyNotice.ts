@@ -60,3 +60,28 @@ export function hasFiatPrice(network: PhoenixNetwork): boolean {
  * ignore it before the day it is real.
  */
 export type BalanceState = "loading" | "ok" | "failed";
+
+/**
+ * What stands where the ADA figure goes while the balance has not been read —
+ * loading or failed. Not `0`: the starting zero in state is not a reading, and
+ * "0 ADA" in large type over a line saying the read failed is the page making
+ * a number up. Shared by the page card (`BalanceView`) and the popup's hero.
+ */
+export const UNREAD_FIGURE = "—";
+
+/**
+ * Fired on `window` when what is open changes — the wallet locked, or a wallet
+ * opened with its password. Notices about the state before it no longer apply:
+ * a failed balance read of the wallet just locked, "that password did not open
+ * this wallet" once it did. A host whose notices outlive the screen that raised
+ * them (the extension popup's banners do) clears them on it; one that does not
+ * listen loses nothing. It carries no detail — what opened is none of the
+ * host's business here.
+ */
+export const NOTICES_STALE_EVENT = "phoenix-wallet:notices-stale";
+
+/** Tell the host its notices about the previous wallet state are stale. */
+export function announceNoticesStale(): void {
+  if (typeof window === "undefined" || typeof window.dispatchEvent !== "function") return;
+  window.dispatchEvent(new Event(NOTICES_STALE_EVENT));
+}
