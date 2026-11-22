@@ -232,7 +232,7 @@ session at all — they never touch the Phoenix backend.
 
 ```bash
 bun install
-bun run test          # 1855 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
+bun run test          # 1882 tests — golden vectors vs the Rust reference derivation, tx builders, safety guards
 bun run typecheck
 bun run check:locales # 4 languages × 2 namespaces must stay in step
 bun run check:i18n-keys # every key the code asks for has a string — locale parity cannot see a key missing from all four
@@ -277,7 +277,10 @@ no variables set is the reproducible one: anyone can rebuild it from the tag and
 diff it against what they were given.
 
 The popup mounts the same `LocalWalletPanel` the web page uses, so there is one
-implementation of key handling rather than two that can drift apart. What the
+implementation of key handling rather than two that can drift apart. It passes
+`layout="popup"`, which changes the frame only — a top bar with the network and
+Lock, one screen at a time, a tab bar at the bottom — and runs the same state,
+handlers and confirmation gates as the page. What the
 extension adds is a container the web page cannot give you:
 
 - **Its own origin.** An XSS anywhere on a website is an XSS in a wallet running

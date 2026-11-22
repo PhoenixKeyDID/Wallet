@@ -20,7 +20,19 @@
   --danger: #ff6b6b;
   --danger-bg: #2a1618;
   --teal: #2dd4bf;
+  --violet: #a78bfa;
   --border-teal: color-mix(in srgb, var(--teal) 40%, transparent);
+  /*
+   * The popup's scale. Spacing steps are 4 · 8 · 12 · 16 · 24; type steps are
+   * 12 (fine print) · 13 (secondary) · 14 (body) · 16 (screen title) · 22
+   * (welcome) · 34 (balance). Primary controls (buttons in the body,
+   * inputs, tabs) are `--control-h` tall; small icon and inline buttons are 40px.
+   */
+  --radius-card: 16px;
+  --radius-control: 12px;
+  --control-h: 44px;
+  --control-h-large: 48px;
+  --focus-ring: 0 0 0 3px color-mix(in srgb, var(--amber) 35%, transparent);
 }
 @media (prefers-color-scheme: light) {
   :root {
@@ -36,26 +48,23 @@
     --danger: #b3261e;
     --danger-bg: #fdeceb;
     --teal: #0f766e;
+    --violet: #6d28d9;
   }
 }
 
 * { box-sizing: border-box; }
 body {
   margin: 0;
-  width: 400px;
+  /* 380 sits inside the 360–400 range toolbar popups are drawn at; the frame
+     below is fluid, so a narrower panel reflows rather than scrolls sideways. */
+  width: 380px;
+  max-width: 100vw;
   max-height: 600px;
   overflow-y: auto;
   background: var(--bg0);
   color: var(--text);
   font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
-.popup { padding: 12px; }
-.popup-head { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; }
-.popup-mark { font-size: 24px; }
-.popup-head h1 { font-size: 15px; margin: 0; }
-.popup-head p { font-size: 11px; margin: 0; color: var(--text-hint); }
-.popup footer { margin-top: 14px; border-top: 1px solid var(--border-soft); padding-top: 8px; }
-.popup footer p { font-size: 11px; color: var(--text-hint); margin: 0; }
 
 /* Utility classes used by the shared wallet components. */
 .space-y-2 > * + * { margin-top: .5rem; }
@@ -117,7 +126,13 @@ body {
 
 input, textarea, select, button { font: inherit; color: inherit; }
 input, textarea, select { background: var(--bg0); border: 1px solid var(--border-soft); }
-input:focus, textarea:focus { border-color: var(--border-amber); outline: none; }
+input:focus, textarea:focus, select:focus { border-color: var(--border-amber); outline: none; }
+/* Keyboard focus is always visible: a ring on fields, an outline on everything else. */
+input:focus-visible, textarea:focus-visible, select:focus-visible { box-shadow: var(--focus-ring); }
+button:focus-visible, summary:focus-visible, a:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 2px;
+}
 button { cursor: pointer; background: transparent; }
 button:disabled { cursor: default; opacity: .5; }
 .hover\:border-border-amber:hover { border-color: var(--border-amber); }
@@ -227,6 +242,540 @@ button:disabled { cursor: default; opacity: .5; }
 ol, ul { margin: 0; padding: 0; list-style: none; }
 
 /*
+ * The popup frame (`layout="popup"` in LocalWalletPanel, `PopupChrome.tsx`).
+ *
+ * A fixed 600px column: top bar, a middle that is the only thing that scrolls,
+ * tab bar. Everything inside is fluid down to 360px — `min-width: 0` on every
+ * flex child that holds text, and long strings (addresses, token ids) wrap or
+ * ellipse inside their own box instead of pushing the column wider.
+ */
+.pw-app {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
+  height: 600px;
+  max-height: 100vh;
+  overflow: hidden;
+  background: var(--bg0);
+}
+.pw-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 56px;
+  padding: 8px 8px 8px 12px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--bg1);
+  flex-shrink: 0;
+}
+.pw-mark { width: 28px; height: 28px; flex-shrink: 0; display: block; }
+.pw-mark-large { width: 64px; height: 64px; }
+.pw-head-name {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+  flex: 1 1 auto;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 8px;
+  text-align: left;
+}
+.pw-head-name-button:hover { background: var(--bg2); }
+.pw-head-title {
+  font-size: 14px;
+  font-weight: 650;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pw-head-sub { font-size: 11px; color: var(--text-hint); }
+.pw-icon { width: 20px; height: 20px; display: block; flex-shrink: 0; }
+.pw-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+.pw-icon-btn:hover { background: var(--bg2); color: var(--text); }
+
+/* Network: amber for Preprod, violet for Preview, calm teal for mainnet. */
+.pw-net {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+  width: fit-content;
+}
+.pw-net-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.pw-net-preprod { color: var(--amber); background: color-mix(in srgb, var(--amber) 12%, transparent); }
+.pw-net-preview { color: var(--violet); background: color-mix(in srgb, var(--violet) 12%, transparent); }
+.pw-net-mainnet { color: var(--teal); background: color-mix(in srgb, var(--teal) 10%, transparent); }
+
+/* The middle: the only part that scrolls. */
+.pw-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 16px 16px 20px;
+}
+.pw-body > * + * { margin-top: 12px; }
+.pw-body input, .pw-body select, .pw-body textarea { max-width: 100%; }
+.pw-body .rounded-brand { border-radius: 14px; }
+.pw-body .p-5 { padding: 14px; }
+.pw-stack { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+
+.pw-tabbar {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  border-top: 1px solid var(--border-soft);
+  background: var(--bg1);
+  flex-shrink: 0;
+  padding: 4px 4px 6px;
+}
+.pw-tab {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-width: 0;
+  min-height: 50px;
+  padding: 6px 2px;
+  border: 0;
+  border-radius: 10px;
+  color: var(--text-hint);
+}
+.pw-tab:hover { color: var(--text-dim); background: var(--bg2); }
+.pw-tab-active { color: var(--amber); }
+.pw-tab-active .pw-tab-label { font-weight: 650; }
+.pw-tab-label {
+  font-size: 11px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Home */
+.pw-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 18px 14px 16px;
+  border-radius: 16px;
+  border: 1px solid var(--border-soft);
+  background:
+    radial-gradient(120% 90% at 50% 0%, color-mix(in srgb, var(--amber) 16%, transparent), transparent 70%),
+    var(--bg1);
+  text-align: center;
+  min-width: 0;
+}
+.pw-balance { display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 0; max-width: 100%; }
+.pw-balance p { margin: 0; }
+.pw-balance-label { font-size: 11px; color: var(--text-hint); text-transform: uppercase; letter-spacing: .08em; }
+.pw-balance-figure {
+  font-size: 34px;
+  line-height: 1.15;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+.pw-balance-pending { opacity: .45; }
+.pw-balance-unit { font-size: 16px; font-weight: 600; color: var(--text-dim); }
+.pw-address {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 2px 2px 2px 14px;
+  border-radius: 999px;
+  background: var(--bg2);
+}
+/* The copy button is the reason the pill exists: a full-size round target. */
+.pw-body .pw-address > button.text-xs.text-text-hint {
+  min-width: 40px;
+  min-height: 40px;
+  justify-content: center;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--bg1);
+}
+.pw-address-text {
+  font-size: 11px;
+  color: var(--text-dim);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pw-actions {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  width: 100%;
+}
+.pw-action {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  border: 0;
+  padding: 2px;
+}
+.pw-action-circle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--amber);
+  color: var(--bg0);
+}
+.pw-action:hover:not(:disabled) .pw-action-circle { filter: brightness(1.1); }
+.pw-action-label {
+  font-size: 11px;
+  color: var(--text-dim);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pw-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg1);
+  min-width: 0;
+}
+.pw-section-title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--text-hint);
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+.pw-muted { margin: 0; font-size: 12px; color: var(--text-hint); overflow-wrap: anywhere; }
+.pw-warn { margin: 0; font-size: 12px; color: var(--amber); }
+.pw-fineprint { margin: 0; font-size: 11px; color: var(--text-hint); text-align: center; }
+.pw-link { color: var(--amber); text-decoration: underline; white-space: nowrap; }
+
+.pw-screen-head { display: flex; align-items: center; gap: 6px; margin-left: -6px; }
+.pw-screen-title { margin: 0; font-size: 16px; font-weight: 650; }
+
+/* Saved wallets */
+.pw-list { display: flex; flex-direction: column; gap: 8px; }
+.pw-list-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--bg0);
+  border: 1px solid var(--border-soft);
+}
+.pw-list-main { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
+.pw-list-title { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pw-list-sub { font-size: 11px; color: var(--text-hint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pw-pill {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: var(--amber);
+  border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent);
+  white-space: nowrap;
+}
+
+/* Buttons and fields */
+.pw-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: var(--control-h);
+  padding: 10px 16px;
+  border-radius: var(--radius-control);
+  border: 1px solid color-mix(in srgb, var(--text) 22%, transparent);
+  background: transparent;
+  font-size: 14px;
+  font-weight: 600;
+}
+.pw-btn:hover:not(:disabled) { border-color: var(--border-amber); background: var(--bg1); }
+.pw-btn-primary {
+  background: var(--amber);
+  border-color: var(--amber);
+  color: var(--bg0);
+}
+.pw-btn-primary:hover:not(:disabled) { background: var(--amber); filter: brightness(1.08); }
+/* Full-width buttons are the screen's main choices: one height, one radius. */
+.pw-btn-block { width: 100%; min-height: var(--control-h-large); font-size: 15px; }
+.pw-btn-small { min-height: 40px; padding: 6px 14px; font-size: 13px; border-radius: 10px; flex-shrink: 0; }
+.pw-field { display: flex; flex-direction: column; gap: 6px; width: 100%; text-align: left; }
+.pw-field-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.pw-field-label { font-size: 13px; color: var(--text-dim); }
+.pw-select { padding: 8px 10px; border-radius: 10px; min-width: 0; max-width: 60%; }
+.pw-field > .pw-select { max-width: 100%; }
+.pw-input { width: 100%; padding: 10px 12px; border-radius: 12px; }
+
+/*
+ * Every field and every button inside the popup's middle, whichever component
+ * drew it: the shared panels write Tailwind classes sized for a web page
+ * (`py-2 text-sm`, 32–38px tall), which read cramped in a 360px panel and
+ * miss a fingertip. `:where()` keeps these rules at one class of weight, so a
+ * deliberate size further down (`.pw-input-large`) still wins.
+ */
+.pw-body :where(input:not([type="checkbox"], [type="radio"], [type="range"]), select) {
+  min-height: var(--control-h);
+  padding: 10px 12px;
+  border-radius: var(--radius-control);
+  font-size: 14px;
+}
+.pw-body :where(textarea) { padding: 10px 12px; border-radius: var(--radius-control); font-size: 14px; }
+.pw-body :where(button.bg-amber-brand, button.border.border-border-soft, button.border.border-border-amber) {
+  min-height: var(--control-h);
+  padding: 10px 16px;
+  border-radius: var(--radius-control);
+  font-size: 14px;
+  font-weight: 600;
+}
+.pw-body :where(button.border.border-border-soft:hover:not(:disabled)) { background: var(--bg2); }
+.pw-body .pw-input-large { min-height: var(--control-h-large); padding: 12px 14px; font-size: 16px; }
+.pw-body .text-xs { font-size: 12px; line-height: 1.5; }
+.pw-body .text-sm { font-size: 14px; line-height: 1.5; }
+
+/* A settings row: label left, control right, what the choice means under it. */
+.pw-setting { display: flex; flex-direction: column; gap: 4px; width: 100%; text-align: left; }
+.pw-setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 4px 4px 14px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border-soft);
+  background: var(--bg1);
+}
+.pw-setting-label { font-size: 14px; color: var(--text-dim); }
+.pw-setting-row .pw-select {
+  max-width: none;
+  border: 0;
+  background: transparent;
+  font-weight: 600;
+  text-align: right;
+}
+.pw-setting-hint, .pw-setting .pw-warn { padding: 0 4px; font-size: 12px; }
+.pw-setting-hint { margin: 0; color: var(--text-hint); }
+
+/*
+ * The panels the popup shares with the web page (Receive, Send, the account
+ * row) draw a few secondary controls as bare underlined or uppercase text,
+ * which reads as a different app inside the popup's frame. Restyled here, in
+ * the popup only (`.pw-body`), by the classes those controls already carry —
+ * the page's markup is not touched:
+ *   - small text buttons ("Refresh address", "+ Add token", "Switch account",
+ *     the "Derive by index" disclosure) wear the small secondary button;
+ *   - uppercase monospace labels ("Your receive address", "Recipients") wear
+ *     the section-title type instead of a code face.
+ */
+.pw-body button.text-xs.text-text-hint,
+.pw-body button.text-xs.text-teal-brand,
+.pw-body button.text-text-hint.underline {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: fit-content;
+  max-width: 100%;
+  min-height: 40px;
+  padding: 6px 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--bg1);
+  color: var(--text-dim);
+  font-size: 13px;
+  font-family: inherit;
+  letter-spacing: normal;
+  text-transform: none;
+  text-decoration: none;
+  white-space: normal;
+}
+.pw-body button.text-xs.text-text-hint:hover,
+.pw-body button.text-xs.text-teal-brand:hover,
+.pw-body button.text-text-hint.underline:hover { background: var(--bg2); color: var(--text); }
+.pw-body button.text-xs.text-teal-brand { color: var(--teal); }
+.pw-body button.text-xs.text-text-hint:disabled,
+.pw-body button.text-xs.text-teal-brand:disabled { opacity: .45; cursor: default; }
+.pw-body p.mono.uppercase.tracking-wider {
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: .08em;
+  color: var(--text-hint);
+}
+
+/*
+ * Welcome, unlock. Two groups: the hero (mark, title, one line) and the
+ * choices. The column is at least as tall as the scrolling middle, and the
+ * choices take `margin-top: auto`, so on a tall panel they sit at the bottom
+ * and on a short one they simply follow the hero — never off-screen sideways,
+ * never under a fixed footer.
+ */
+.pw-welcome {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  min-height: 100%;
+}
+.pw-welcome-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding-top: 12px;
+  text-align: center;
+}
+.pw-welcome-hero .pw-mark-large { margin-bottom: 8px; }
+.pw-welcome-title { margin: 0; font-size: 22px; line-height: 1.25; font-weight: 700; }
+.pw-welcome-tagline { margin: 0; font-size: 14px; color: var(--text-dim); text-align: center; overflow-wrap: anywhere; }
+.pw-welcome-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  margin-top: auto;
+}
+.pw-welcome-actions > .pw-stack { gap: 10px; }
+
+/* A quiet disclosure ("Add another wallet"): not a warning, so not amber. */
+.pw-disclosure { width: 100%; text-align: left; }
+.pw-disclosure-summary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 40px;
+  border-radius: var(--radius-control);
+  color: var(--text-dim);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+}
+.pw-disclosure-summary::-webkit-details-marker { display: none; }
+.pw-disclosure-summary::after { content: "▾"; font-size: 12px; color: var(--text-hint); }
+.pw-disclosure[open] > .pw-disclosure-summary::after { content: "▴"; }
+.pw-disclosure-summary:hover { background: var(--bg1); color: var(--text); }
+.pw-disclosure-body { padding-top: 8px; }
+
+/* The risk notice: one line, expandable; in Settings it is always open. */
+.pw-notice {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--amber) 40%, transparent);
+  background: color-mix(in srgb, var(--amber) 7%, var(--bg1));
+  font-size: 12px;
+  text-align: left;
+}
+.pw-notice-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 40px;
+  padding: 8px 12px;
+  color: var(--amber);
+  font-size: 13px;
+  line-height: 1.35;
+  cursor: pointer;
+  list-style: none;
+}
+.pw-notice-summary::-webkit-details-marker { display: none; }
+.pw-notice-body { padding: 0 12px 10px; color: var(--text-dim); }
+.pw-notice-body p { margin: 6px 0 0; }
+.pw-notice-open .pw-notice-body { padding-top: 4px; }
+
+/* Create / restore: step indicator */
+.pw-steps { display: flex; flex-direction: column; gap: 6px; }
+.pw-steps-caption { margin: 0; font-size: 12px; color: var(--text-hint); }
+.pw-steps-bar { display: flex; gap: 6px; }
+.pw-step { flex: 1 1 0; height: 4px; border-radius: 2px; background: var(--border-soft); }
+.pw-step-done { background: var(--amber); }
+
+/*
+ * Create / restore steps (`pw-flow`). The step components are shared with the
+ * web page, so they are restyled here by the classes they already carry:
+ *   - the step's card frame goes — the step IS the screen, a box inside the
+ *     screen is one frame too many;
+ *   - its heading reads as the screen title;
+ *   - its button row stacks full width, the main action first;
+ *   - an amber sentence (the "write it down" warning, a password hint) is a
+ *     callout box, not a line of small coloured text.
+ */
+.pw-flow > .rounded-brand.border.bg-bg1 { border: 0; background: none; padding: 0; border-radius: 0; }
+.pw-flow h3 { margin: 0; font-size: 18px; line-height: 1.3; font-weight: 700; }
+.pw-flow .flex:has(> button.bg-amber-brand) {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding-top: 4px;
+}
+.pw-flow .flex:has(> button.bg-amber-brand) > button { width: 100%; min-height: var(--control-h-large); font-size: 15px; }
+.pw-flow p.text-amber-brand {
+  padding: 10px 12px;
+  border-radius: var(--radius-control);
+  border: 1px solid color-mix(in srgb, var(--amber) 40%, transparent);
+  background: color-mix(in srgb, var(--amber) 8%, var(--bg0));
+  font-size: 13px;
+  line-height: 1.5;
+}
+.pw-flow label > span.text-xs { display: block; margin-bottom: 4px; font-size: 13px; color: var(--text-dim); }
+/* The recovery words: one tile, numbers dimmed, two even columns. */
+.pw-flow ol.grid {
+  padding: 12px 14px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border-soft);
+  background: var(--bg1);
+  column-gap: 12px;
+  row-gap: 6px;
+}
+/* Wrap, never ellipsis: a recovery word with its end cut off is a wrong word. */
+.pw-flow ol.grid > li { font-size: 14px; overflow-wrap: anywhere; }
+
+/* A card inside a popup card (Settings › Security) drops its own frame. */
+.pw-card > .rounded-brand.border.bg-bg1 { border: 0; background: none; padding: 0; border-radius: 0; }
+
+/* The test-network reminder on Home: a calm note, not a form field. */
+.pw-body p[role="note"].border-amber-brand\/40 {
+  padding: 8px 12px;
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--amber) 8%, transparent);
+  text-align: center;
+}
+
+/*
  * The approval window.
  *
  * A different page from the popup, in a different window, so it sizes itself:
@@ -251,7 +800,7 @@ body.approve-page {
   max-height: none;
   min-height: 100vh;
 }
-.approve { padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+.approve { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
 
 /* Who is asking — the first thing read, so it is the first thing rendered. */
 .approve-origin {
@@ -275,7 +824,7 @@ body.approve-page {
 }
 .approve p { margin: 0; }
 .approve-heading { font-size: 11px; color: var(--text-hint); text-transform: uppercase; letter-spacing: .04em; }
-.approve-note { font-size: 11px; color: var(--text-hint); }
+.approve-note { font-size: 12px; color: var(--text-hint); }
 
 .approve-summary {
   display: flex;
@@ -317,25 +866,47 @@ body.approve-page {
 .approve-actions { display: flex; gap: 10px; margin-top: 2px; }
 .approve-actions button {
   flex: 1 1 0; /* equal width: rejecting is never the harder target */
+  min-height: var(--control-h-large);
   padding: 10px;
-  border-radius: 10px;
-  border: 1px solid var(--border-soft);
-  background: var(--bg1);
-}
-.approve-actions button:hover:not(:disabled) { border-color: var(--border-amber); }
-.approve-actions .approve-primary {
-  background: var(--amber);
-  border-color: var(--border-amber);
-  color: var(--bg0);
+  border-radius: var(--radius-control);
+  border: 1px solid color-mix(in srgb, var(--text) 22%, transparent);
+  background: transparent;
+  font-size: 15px;
   font-weight: 600;
 }
-.approve input, .approve select { padding: 9px; border-radius: 10px; width: 100%; }
+.approve-actions button:hover:not(:disabled) { border-color: var(--border-amber); background: var(--bg1); }
+.approve-actions .approve-primary {
+  background: var(--amber);
+  border-color: var(--amber);
+  color: var(--bg0);
+}
+.approve-actions .approve-primary:hover:not(:disabled) { background: var(--amber); filter: brightness(1.08); }
+/* Text fields and the wallet picker. A checkbox keeps its own size: stretched
+   to the row's width it stops looking like something to tick. */
+.approve input:not([type="checkbox"]), .approve select {
+  min-height: var(--control-h);
+  padding: 10px 12px;
+  border-radius: var(--radius-control);
+  width: 100%;
+}
+/* "I confirm this item" — one row per item, the whole row is the target. */
+.approve label:has(> input[type="checkbox"]) {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.approve input[type="checkbox"] { width: 18px; height: 18px; margin: 0; flex-shrink: 0; accent-color: var(--amber); }
 .approve > button {
+  min-height: var(--control-h-large);
   padding: 10px;
-  border-radius: 10px;
-  border: 1px solid var(--border-amber);
+  border-radius: var(--radius-control);
+  border: 1px solid var(--amber);
   background: var(--amber);
   color: var(--bg0);
+  font-size: 15px;
   font-weight: 600;
 }
 
@@ -352,13 +923,26 @@ body.approve-page {
  * this file being a hand-typed second copy of the host's token table; the fix is
  * to stop hand-typing it, which is a separate change.
  */
-.phoenix-toast {
+/* The column the banners sit in. `bottom` is set from the popup's tab bar
+   height by `toast.ts`, so a banner never covers the bar. The column itself
+   takes no clicks; only the banners do. */
+.phoenix-toasts {
   position: fixed;
   z-index: 2147483647;
   left: 12px;
   right: 12px;
   bottom: 12px;
-  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  pointer-events: none;
+}
+.phoenix-toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 8px 10px 14px;
   border-radius: 10px;
   border: 1px solid var(--border-soft);
   background: var(--bg2);
@@ -371,6 +955,22 @@ body.approve-page {
   overflow-wrap: anywhere;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
 }
+.phoenix-toast-text { flex: 1 1 auto; min-width: 0; }
+.phoenix-toast-close {
+  flex-shrink: 0;
+  /* A 40px target drawn inside the banner's own padding, not beside it. */
+  width: 40px;
+  height: 40px;
+  margin: -8px -4px -8px 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.phoenix-toast-close:hover { background: color-mix(in srgb, currentColor 14%, transparent); }
 .phoenix-toast-error {
   border-color: var(--danger);
   background: var(--danger-bg);

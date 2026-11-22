@@ -731,7 +731,13 @@ export function Approve() {
   );
 
   if (!origin) {
-    return <p className="approve-error">{t("cip30_no_origin")}</p>;
+    return (
+      <div className="approve">
+        <p className="approve-error" role="alert">
+          {t("cip30_no_origin")}
+        </p>
+      </div>
+    );
   }
 
   if (!account) {
