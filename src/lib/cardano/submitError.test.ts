@@ -282,6 +282,8 @@ describe("submit > the reason a site receives for a rejection", () => {
     ["ConwayRelayFailure (Koios backend unreachable)", "ConwayRelayFailure", "Koios"],
     ["TxSubmitFail ApplyTxError cached; DbFailure (Postgres10 at db.internal)", "ApplyTxError", "Postgres10"],
     ["ConwayMempoolFailure (KoiosSecretRelay) at 10.0.0.1", "ConwayMempoolFailure", "KoiosSecretRelay"],
+    // Not even a known rule's name: only a ledger wrapper opens its argument.
+    ["ConwayRelayFailure (InsufficientCollateral) upstream", "ConwayRelayFailure", "InsufficientCollateral"],
   ])("a provider word inside a wrapper that is not a ledger wrapper stays home: %s", (detail, names, leak) => {
     const reason = rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"));
     expect(reason).toBe(`HTTP 400: ${names}`);
@@ -302,17 +304,34 @@ describe("submit > the reason a site receives for a rejection", () => {
     expect(rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"))).toBe(PROVIDER_REFUSED_REASON);
   });
 
-  // Inside a ledger wrapper the body earned — an era-prefixed rule's own
-  // wrapper, which the gate below does not close — the inner name stands as a
-  // token by the same rules: a numbered host or a `host:database` pair gives
-  // nothing.
+  // Inside an era-prefixed wrapper the inner name stands as a token by the
+  // same rules as a name on its own: a numbered host or a `host:database` pair
+  // gives nothing.
   it.each([
     ["upstream ConwayUtxowFailure (KoiosPrimaryDb02) at pg", "KoiosPrimary"],
     ["ConwayUtxowFailure (ConwayRelay01) refused", "ConwayRelay"],
     ["ConwayUtxowFailure (PgPrimary:cexplorer) failed", "PgPrimary"],
-  ])("a host inside an earned ledger wrapper stays home: %s", (detail, leak) => {
+    // A `host:database` pair whose host is spelled like a known rule is still a host.
+    ["ConwayUtxowFailure (MissingRedeemers:cexplorer) failed", "MissingRedeemers"],
+  ])("a host inside an era-prefixed ledger wrapper stays home: %s", (detail, leak) => {
     const reason = rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"));
     expect(reason).toBe("HTTP 400: ConwayUtxowFailure");
+    expect(reason).not.toContain(leak);
+  });
+
+  // An era-prefixed wrapper stands alone as a name too, so a provider can
+  // write one with a letters-only word of its own behind it. The inner name
+  // travels only when it is a known rule, another wrapper, or a name that
+  // stands on its own.
+  it.each([
+    ["upstream ConwayUtxowFailure (KoiosPrimaryReplica) at pg", "ConwayUtxowFailure", "KoiosPrimaryReplica"],
+    ["BabbageUtxowFailure (InternalRelaySecret)", "BabbageUtxowFailure", "InternalRelaySecret"],
+    ["ConwayLedgerFailure (PgBouncerPrimary) refused", "ConwayLedgerFailure", "PgBouncerPrimary"],
+    ["AlonzoInBabbageUtxoPredFailure (InternalRelaySecret)", "AlonzoInBabbageUtxoPredFailure", "InternalRelaySecret"],
+    ["ConwayUtxowFailure (UtxoFailure (InternalRelaySecret))", "ConwayUtxowFailure UtxoFailure", "InternalRelaySecret"],
+  ])("a letters-only provider word inside an era-prefixed wrapper stays home: %s", (detail, names, leak) => {
+    const reason = rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"));
+    expect(reason).toBe(`HTTP 400: ${names}`);
     expect(reason).not.toContain(leak);
   });
 
@@ -368,6 +387,19 @@ describe("submit > the reason a site receives for a rejection", () => {
   ])("a ShelleyTxValidationError after an ApplyTxError wrapper does not open it: %s", (detail, leak) => {
     const reason = rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"));
     expect(reason).toBe("HTTP 400: ApplyTxError ShelleyTxValidationError");
+    expect(reason).not.toContain(leak);
+  });
+
+  // Ahead is not enough: it must be right ahead, in the shape the node writes
+  // (`ShelleyTxValidationError ShelleyBasedEra<Era> (ApplyTxError (`). The
+  // same word earlier in the body, with other text between, opens nothing.
+  it.each([
+    ["ShelleyTxValidationError seen earlier; upstream ApplyTxError (KoiosPrimaryReplica) at pg", "KoiosPrimaryReplica"],
+    ["proxy: ShelleyTxValidationError retry; ApplyTxError (UtxoFailure (InternalRelaySecret))", "InternalRelaySecret"],
+    ["ShelleyTxValidationError ShelleyBasedEraConway; then ApplyTxError (UtxoFailure (NoCollateralInputs))", "NoCollateralInputs"],
+  ])("a ShelleyTxValidationError that is not right ahead of ApplyTxError does not open it: %s", (detail, leak) => {
+    const reason = rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"));
+    expect(reason).toBe("HTTP 400: ShelleyTxValidationError ApplyTxError");
     expect(reason).not.toContain(leak);
   });
 

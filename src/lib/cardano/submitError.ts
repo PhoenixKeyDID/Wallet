@@ -160,11 +160,33 @@ const NESTING_WRAPPER =
  * The inner name is letters only and stands as a token by the same rules as
  * `LEDGER_REASON`, so a numbered host (`ConwayUtxowFailure (ConwayRelay01)`)
  * or a `host:database` pair (`ConwayUtxowFailure (PgPrimary:cexplorer)`)
- * gives nothing — a wrapper the body earned, where the `ApplyTxError` gate in
- * `ledgerNames` is not what keeps the host home. A letters-only word
- * (`ApplyTxError (KoiosPrimaryReplica)`) is not kept out by that either; the
- * gate is what keeps it home.
+ * gives nothing. A letters-only word passes that test, and every wrapper that
+ * also stands alone as a name (`ApplyTxError`, and each era-prefixed one:
+ * `ConwayUtxowFailure`, `BabbageUtxowFailure`, `ConwayLedgerFailure`,
+ * `AlonzoInBabbageUtxoPredFailure`) can be written by a provider with any word
+ * behind it. So the inner name must also be one `UNPREFIXED_RULE` knows, or a
+ * `NESTING_WRAPPER`, or a name `LEDGER_REASON` accepts on its own:
+ * `ConwayUtxowFailure (KoiosPrimaryReplica)` gives only the wrapper.
  */
+/**
+ * The ledger failures that carry no era prefix and no rule suffix, so
+ * `LEDGER_REASON` cannot see them: the only names read from inside a wrapper
+ * besides another wrapper and a name `LEDGER_REASON` accepts on its own.
+ * A closed set, as `NESTING_WRAPPER` is: a rule left out reaches the site as
+ * its wrapper alone, never as a provider's word.
+ *
+ * Taken from the predicate failures of the Alonzo–Conway UTXO, UTXOW, UTXOS,
+ * GOV and POOL rules in cardano-ledger.
+ */
+const UNPREFIXED_RULE =
+  /^(?:InsufficientCollateral|NoCollateralInputs|TooManyCollateralInputs|CollateralContainsNonADA|IncorrectTotalCollateralField|WrongNetwork|WrongNetworkWithdrawal|WrongNetworkInTxBody|OutsideForecast|OutputBootAddrAttrsTooBig|MissingRedeemers|ExtraRedeemers|MissingRequiredDatums|NotAllowedSupplementalDatums|PPViewHashesDontMatch|MissingTxBodyMetadataHash|MissingTxMetadata|ConflictingMetadataHash|InvalidMetadata|MalformedScriptWitnesses|MalformedReferenceScripts|CollectErrors|GovActionsDoNotExist|MalformedProposal|ProposalProcedureNetworkIdMismatch|TreasuryWithdrawalsNetworkIdMismatch|ProposalDepositIncorrect|DisallowedVoters|ConflictingCommitteeUpdate|ExpirationEpochTooSmall|InvalidPrevGovActionId|VotingOnExpiredGovAction|ProposalCantFollow|InvalidPolicyHash|DisallowedProposalDuringBootstrap|DisallowedVotesDuringBootstrap|VotersDoNotExist|ZeroTreasuryWithdrawals|ProposalReturnAccountDoesNotExist|TreasuryWithdrawalReturnAccountsDoNotExist|UnelectedCommitteeVoters|PoolMedataHashTooBig|VRFKeyHashAlreadyRegistered)$/;
+
+/**
+ * How `ApplyTxError (` opens in a node body: right behind
+ * `ShelleyTxValidationError` and the era tag, nothing between.
+ */
+const APPLY_TX_ERROR_AHEAD = /(?<![\w./@:=\\&?-])ShelleyTxValidationError ShelleyBasedEra[A-Z][a-z]+ \($/;
+
 const WRAPPED_RULE = /(?<![\w./@:=\\&?-])([A-Z][A-Za-z]*) \((?=([A-Z][A-Za-z]*)(?![\w./@=-]|:\w))/g;
 
 /**
@@ -174,18 +196,19 @@ const WRAPPED_RULE = /(?<![\w./@:=\\&?-])([A-Z][A-Za-z]*) \((?=([A-Z][A-Za-z]*)(
  * guard matches at the end of the string, so `…ValidationTa` would pass as a
  * name. When the body is that long, a name that touches its end is dropped.
  *
- * `ApplyTxError` opens its wrapper only when `ShelleyTxValidationError` was
- * accepted ahead of it. It is the one wrapper that also stands alone as a
- * name, so a provider's own message can carry the word with any letters-only
- * word in brackets behind it: measured, `upstream ApplyTxError
+ * `ApplyTxError` opens its wrapper only right behind
+ * `ShelleyTxValidationError ShelleyBasedEra<Era> (` (`APPLY_TX_ERROR_AHEAD`).
+ * Like the era-prefixed wrappers it stands alone as a name, and unlike them
+ * nothing in its spelling ties it to the ledger, so a provider's own message
+ * can carry the word with any word in brackets behind it: measured, `upstream ApplyTxError
  * (KoiosPrimaryReplica) at pg` and `ApplyTxError (UtxoFailure
  * (InternalRelaySecret))` reached the site as `HTTP 400: ApplyTxError
  * KoiosPrimaryReplica` and `… UtxoFailure InternalRelaySecret`. Every
  * measured node body that wraps in `ApplyTxError (` carries
  * `ShelleyTxValidationError` ahead of the wrapper (`… ShelleyTxValidationError
  * ShelleyBasedEraConway (ApplyTxError (…`), so that is what earns the
- * wrapper, and only from ahead of it: the same word after the wrapper earns
- * nothing. The cardano-submit-api JSON body carries no `ApplyTxError (` at
+ * wrapper, and only right ahead of it: the same word after the wrapper, or
+ * earlier in the body with other text between, earns nothing. The cardano-submit-api JSON body carries no `ApplyTxError (` at
  * all: its `error` list starts at the era's own wrapper (`ConwayUtxowFailure
  * (…`), which opens without this gate, and its `"kind":
  * "ShelleyTxValidationError"` comes after that list, where it earns nothing
@@ -197,13 +220,13 @@ const WRAPPED_RULE = /(?<![\w./@:=\\&?-])([A-Z][A-Za-z]*) \((?=([A-Z][A-Za-z]*)(
 function ledgerNames(detail: string): string[] {
   const accepted = new Map<number, string>();
   for (const m of detail.matchAll(LEDGER_REASON)) accepted.set(m.index, m[0]);
-  // Where `ShelleyTxValidationError` was accepted — what earns an
-  // `ApplyTxError (` wrapper (see above).
-  const shelleyAt = [...accepted].filter(([, name]) => name === "ShelleyTxValidationError").map(([at]) => at);
   for (const m of detail.matchAll(WRAPPED_RULE)) {
     if (accepted.get(m.index) === m[1] && NESTING_WRAPPER.test(m[1])) {
-      if (m[1] === "ApplyTxError" && !shelleyAt.some((at) => at < m.index)) continue;
-      accepted.set(m.index + m[1].length + 2, m[2]);
+      if (m[1] === "ApplyTxError" && !APPLY_TX_ERROR_AHEAD.test(detail.slice(0, m.index))) continue;
+      const innerAt = m.index + m[1].length + 2;
+      const inner = m[2];
+      if (!(NESTING_WRAPPER.test(inner) || UNPREFIXED_RULE.test(inner) || accepted.get(innerAt) === inner)) continue;
+      accepted.set(innerAt, inner);
     }
   }
   const found = [...accepted].sort((a, b) => a[0] - b[0]);
