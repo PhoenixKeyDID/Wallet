@@ -525,6 +525,7 @@
   "imported_err_network": "このウォレットはPhoenixサーバーとは別のCardanoネットワークに設定されています。ウォレットでネットワークを切り替えてから、もう一度お試しください。",
   "imported_err_unavailable": "このPhoenixサーバーはまだ外部ウォレットに対応していません。",
   "imported_err_sign_timeout": "ウォレットが時間内に署名しなかったため、リクエストは失効しました。何も紐付けられていません。もう一度お試しください。",
+  "imported_err_send_unknown": "署名済みリクエストの有効期限が切れる前に応答が届かなかったため、{{address}}が紐付けられたかどうかは分かりません。「紐付け済みのウォレットを表示」を押して、現在紐付けられているものを確認してください。",
   "popup_nav_home": "ホーム",
   "popup_nav_activity": "アクティビティ",
   "popup_nav_settings": "設定",

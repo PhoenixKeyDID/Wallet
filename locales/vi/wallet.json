@@ -525,6 +525,7 @@
   "imported_err_network": "Ví này đang ở mạng Cardano khác với máy chủ Phoenix. Hãy đổi mạng trong ví rồi thử lại.",
   "imported_err_unavailable": "Máy chủ Phoenix này chưa hỗ trợ gắn ví ngoài.",
   "imported_err_sign_timeout": "Ví không ký kịp nên yêu cầu đã hết hạn. Chưa có gì được gắn. Hãy thử lại.",
+  "imported_err_send_unknown": "Câu trả lời chưa kịp tới trước khi yêu cầu đã ký hết hạn, nên chưa rõ {{address}} đã được gắn hay chưa. Bấm “Xem các ví đã gắn” để xem hiện đang gắn những gì.",
   "popup_nav_home": "Trang chủ",
   "popup_nav_activity": "Hoạt động",
   "popup_nav_settings": "Cài đặt",
