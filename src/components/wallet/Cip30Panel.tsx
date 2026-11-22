@@ -95,7 +95,7 @@ export function Cip30Panel() {
     setAssets([]);
     setBalanceFailed(false);
     setBalanceRead(false);
-    sessionRef.current += 1;
+    const session = ++sessionRef.current;
     try {
       const api = await enableWallet(key, {
         signal: ac.signal,
@@ -108,11 +108,13 @@ export function Cip30Panel() {
       setConn({ key, name, api, networkId, changeAddress });
       try {
         const bal = await readBalance(api);
+        if (session !== sessionRef.current) return;
         setLovelace(bal.lovelace);
         setAssets(bal.assets);
         setBalanceFailed(false);
         setBalanceRead(true);
       } catch {
+        if (session !== sessionRef.current) return;
         // Connecting succeeded; only the balance read failed. Keep the session
         // and say so, instead of tearing down a working connection.
         setBalanceFailed(true);

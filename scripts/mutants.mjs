@@ -337,6 +337,12 @@ const MUTANTS = [
     to: "      setLovelace(bal.lovelace);",
   },
   {
+    name: "a failed Refresh from the wallet before marks the wallet connected after as unread",
+    file: "src/components/wallet/Cip30Panel.tsx",
+    from: "    } catch (err) {\n      if (session !== sessionRef.current) return;\n      setBalanceFailed(true);",
+    to: "    } catch (err) {\n      setBalanceFailed(true);",
+  },
+  {
     name: "the popup flashes its welcome screen before the saved wallets are read",
     file: PANEL,
     from: "} else if (!listed) {",

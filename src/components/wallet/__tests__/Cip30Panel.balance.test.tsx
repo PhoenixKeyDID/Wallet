@@ -125,4 +125,27 @@ describe("Cip30Panel: the balance card before the first read", () => {
     expect(text).toContain(`${en.balance_label}${UNREAD_FIGURE}`);
     expect(text).toContain(en.balance_load_failed);
   });
+
+  it("does not mark the wallet connected after as unread when a Refresh from before fails", async () => {
+    const view = await renderWithI18n(<Cip30Panel />);
+    fireEvent.click(await screen.findByText("Slow"));
+    await screen.findByText(/12\.345678/);
+    // Refresh hangs and will fail; meanwhile the user disconnects and connects
+    // again, and that wallet's balance reads fine.
+    let release!: () => void;
+    ctx.balanceGate = new Promise<void>((r) => (release = r));
+    ctx.balanceFails = true;
+    fireEvent.click(screen.getByText(en.refresh));
+    ctx.balanceGate = null;
+    ctx.balanceFails = false;
+    fireEvent.click(screen.getByText(en.disconnect));
+    fireEvent.click(await screen.findByText("Slow"));
+    await screen.findByText(/12\.345678/);
+    release();
+    await new Promise((r) => setTimeout(r, 30));
+    const text = view.container.textContent ?? "";
+    expect(text).toMatch(/12\.345678/);
+    expect(text).not.toContain(`${en.balance_label}${UNREAD_FIGURE}`);
+    expect(text).not.toContain(en.balance_load_failed);
+  });
 });
