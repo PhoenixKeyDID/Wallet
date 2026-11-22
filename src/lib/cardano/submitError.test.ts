@@ -335,6 +335,43 @@ describe("submit > the reason a site receives for a rejection", () => {
     expect(reason).not.toContain(leak);
   });
 
+  // The closed set is the ledger's own: a rule with no era prefix and no rule
+  // suffix still reaches the site through the wrapper it hangs from,
+  // including names an older ledger prints (`TriesToForgeADA`,
+  // `MissingRequiredSigners`).
+  it.each([
+    [
+      "transaction submit error ShelleyTxValidationError ShelleyBasedEraConway (ApplyTxError (ConwayUtxowFailure (UnspendableUTxONoDatumHash (fromList [])) :| []))",
+      "ShelleyTxValidationError ApplyTxError ConwayUtxowFailure UnspendableUTxONoDatumHash",
+    ],
+    [
+      "transaction submit error ShelleyTxValidationError ShelleyBasedEraBabbage (ApplyTxError (UtxowFailure (UtxoFailure (AlonzoInBabbageUtxoPredFailure (TriesToForgeADA))) :| []))",
+      "ShelleyTxValidationError ApplyTxError UtxowFailure UtxoFailure AlonzoInBabbageUtxoPredFailure TriesToForgeADA",
+    ],
+    [
+      "transaction submit error ShelleyTxValidationError ShelleyBasedEraBabbage (ApplyTxError (UtxowFailure (AlonzoInBabbageUtxowPredFailure (MissingRequiredSigners (fromList []))) :| []))",
+      "ShelleyTxValidationError ApplyTxError UtxowFailure AlonzoInBabbageUtxowPredFailure MissingRequiredSigners",
+    ],
+    [
+      "transaction submit error ShelleyTxValidationError ShelleyBasedEraConway (ApplyTxError (ConwayUtxowFailure (UtxoFailure (TooManyExUnits (ExUnits 1 2) (ExUnits 0 0)))) :| []))",
+      "ShelleyTxValidationError ApplyTxError ConwayUtxowFailure UtxoFailure TooManyExUnits",
+    ],
+  ])("a ledger rule with no prefix and no suffix reaches the site: %s", (detail, names) => {
+    expect(rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"))).toBe(`HTTP 400: ${names}`);
+  });
+
+  // The bridges between eras are named one by one, not by their shape: a
+  // provider word spelled like one (`SecretInHostUtxoPredFailure`) is no
+  // wrapper and no rule, so it stays home.
+  it.each([
+    ["ConwayUtxowFailure (SecretInHostUtxoPredFailure)", "ConwayUtxowFailure", "SecretInHost"],
+    ["ConwayUtxowFailure (UtxoFailure (KoiosInRelayUtxowPredFailure (InsufficientCollateral 1 2)))", "ConwayUtxowFailure UtxoFailure", "KoiosInRelay"],
+  ])("a provider word shaped like an era bridge stays home: %s", (detail, names, leak) => {
+    const reason = rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"));
+    expect(reason).toBe(`HTTP 400: ${names}`);
+    expect(reason).not.toContain(leak);
+  });
+
   // Issue #75, point 2: the letters-only counterpart of the hosts above. The
   // wrapper match kept out only a word carrying digits or a `host:db` shape,
   // so a provider's own word travelled: measured, `upstream ApplyTxError
@@ -342,7 +379,12 @@ describe("submit > the reason a site receives for a rejection", () => {
   // KoiosPrimaryReplica` and `ApplyTxError (UtxoFailure (InternalRelaySecret))`
   // as `HTTP 400: ApplyTxError UtxoFailure InternalRelaySecret`. `ApplyTxError
   // (` now opens only when it follows `ShelleyTxValidationError`, which every
-  // measured node body that wraps in it carries ahead of it.
+  // measured node body that wraps in it carries ahead of it. Two guards now
+  // stop the first case: a letters-only word that is no known rule
+  // (`UNPREFIXED_RULE`) gives nothing even inside an open wrapper. So with the
+  // ApplyTxError gate removed the first case stays green, and what tells the
+  // gate is there is the second case and the chain test below
+  // (`UtxoFailure`, `NoCollateralInputs` both pass every other test).
   it.each([
     ["upstream ApplyTxError (KoiosPrimaryReplica) at pg", "KoiosPrimaryReplica"],
     ["ApplyTxError (UtxoFailure (InternalRelaySecret))", "InternalRelaySecret"],
@@ -398,6 +440,17 @@ describe("submit > the reason a site receives for a rejection", () => {
     ["proxy: ShelleyTxValidationError retry; ApplyTxError (UtxoFailure (InternalRelaySecret))", "InternalRelaySecret"],
     ["ShelleyTxValidationError ShelleyBasedEraConway; then ApplyTxError (UtxoFailure (NoCollateralInputs))", "NoCollateralInputs"],
   ])("a ShelleyTxValidationError that is not right ahead of ApplyTxError does not open it: %s", (detail, leak) => {
+    const reason = rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"));
+    expect(reason).toBe("HTTP 400: ShelleyTxValidationError ApplyTxError");
+    expect(reason).not.toContain(leak);
+  });
+
+  // The era between them is a closed set of the ledger's eras: a provider
+  // that writes the node's shape with an era of its own opens nothing.
+  it.each([
+    ["upstream ShelleyTxValidationError ShelleyBasedEraKoios (ApplyTxError (UtxoFailure (InternalRelaySecret)))", "InternalRelaySecret"],
+    ["ShelleyTxValidationError ShelleyBasedEraMainnetRelay (ApplyTxError (UtxoFailure (NoCollateralInputs)))", "NoCollateralInputs"],
+  ])("an era outside the ledger's eras does not open ApplyTxError: %s", (detail, leak) => {
     const reason = rejectionReasonForSite(new SubmitRejectedError(400, detail, "Koios /submittx"));
     expect(reason).toBe("HTTP 400: ShelleyTxValidationError ApplyTxError");
     expect(reason).not.toContain(leak);

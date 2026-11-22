@@ -2954,7 +2954,7 @@ const MUTANTS = [
   // A provider word inside a lone `ApplyTxError (` wrapper, and the wrapper a
   // body earned that must still open.
   {
-    name: "MUT75-APPLYTX-GATE: a provider word inside a lone ApplyTxError wrapper (upstream ApplyTxError (KoiosPrimaryReplica)) reaches the site",
+    name: "MUT75-APPLYTX-GATE: a lone ApplyTxError opens its wrapper, so ApplyTxError (UtxoFailure (NoCollateralInputs)) reaches the site with its inner names",
     file: SUBMIT_ERROR,
     from: "      if (m[1] === \"ApplyTxError\" && !APPLY_TX_ERROR_AHEAD.test(detail.slice(0, m.index))) continue;\n",
     to: "      if (false /* MUT75APPLYTXGATE */ && !APPLY_TX_ERROR_AHEAD.test(detail.slice(0, m.index))) continue;\n",
@@ -2973,6 +2973,20 @@ const MUTANTS = [
     from: "      if (m[1] === \"ApplyTxError\" && !APPLY_TX_ERROR_AHEAD.test(detail.slice(0, m.index))) continue;\n",
     to: "      if (m[1] === \"ApplyTxError\" && !/ShelleyTxValidationError/.test(detail.slice(0, m.index) /* MUTSUBMITAPPLYTXAHEAD */)) continue;\n",
     marker: "MUTSUBMITAPPLYTXAHEAD",
+  },
+  {
+    name: "MUT-SUBMIT-ERACLOSED: any letters after ShelleyBasedEra (ShelleyBasedEraKoios) open a lone ApplyTxError",
+    file: SUBMIT_ERROR,
+    from: "ShelleyTxValidationError ShelleyBasedEra(?:Shelley|Allegra|Mary|Alonzo|Babbage|Conway) \\($/;",
+    to: "ShelleyTxValidationError ShelleyBasedEra[A-Za-z]+ \\($/; /* MUTSUBMITERACLOSED */",
+    marker: "MUTSUBMITERACLOSED",
+  },
+  {
+    name: "MUT-SUBMIT-BRIDGECLOSED: any XInYUtxoPredFailure-shaped word (SecretInHostUtxoPredFailure) counts as a wrapper",
+    file: SUBMIT_ERROR,
+    from: "|AlonzoInBabbageUtxoPredFailure|AlonzoInBabbageUtxowPredFailure|ShelleyInAlonzoUtxowPredFailure)$/;",
+    to: "|[A-Z][a-z]+In[A-Z][a-z]+(?:Utxow|Utxos|Utxo)PredFailure)$/; /* MUTSUBMITBRIDGECLOSED */",
+    marker: "MUTSUBMITBRIDGECLOSED",
   },
   {
     name: "MUT-SUBMIT-INNERKNOWN: a letters-only provider word inside an era-prefixed wrapper (ConwayUtxowFailure (KoiosPrimaryReplica)) reaches the site",
