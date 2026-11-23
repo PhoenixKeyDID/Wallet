@@ -147,6 +147,24 @@ describe("checkImportAddress", () => {
     expect(checkImportAddress(pointer)).toEqual({ ok: false, reason: "not_an_address" });
     expect(checkImportAddress(pointer + "010203")).toMatchObject({ ok: true });
   });
+
+  it("parses a pointer's three variable-length integers and refuses a byte after them", () => {
+    const base = rawHex(acct.external[0]!.address); // 57 bytes, type 0
+    const head = "40" + base.slice(2, 58); // type 4: key payment + the stake pointer
+    // Three one-byte integers: slot 1, transaction 2, certificate 3.
+    expect(checkImportAddress(head + "010203")).toMatchObject({ ok: true });
+    // A byte with the high bit set continues its integer, so 0x82 0x2c is 300
+    // and 0x81 0x80 0x00 is 16384; multi-byte integers are fine in any position.
+    expect(checkImportAddress(head + "01822c03")).toMatchObject({ ok: true });
+    expect(checkImportAddress(head + "8180000102")).toMatchObject({ ok: true });
+    // A byte after the third integer belongs to nothing — before this check it
+    // passed, because the shape rule only set a floor on the length.
+    expect(checkImportAddress(head + "010203" + "00")).toEqual({ ok: false, reason: "not_an_address" });
+    expect(checkImportAddress(head + "010203" + "0000")).toEqual({ ok: false, reason: "not_an_address" });
+    // Two integers are not three, and an integer that runs past the end never ends.
+    expect(checkImportAddress(head + "0102")).toEqual({ ok: false, reason: "not_an_address" });
+    expect(checkImportAddress(head + "010280")).toEqual({ ok: false, reason: "not_an_address" });
+  });
 });
 
 describe("IMPORT_PROOF_LIFETIME_SEC", () => {
@@ -291,6 +309,24 @@ describe("the three routes", () => {
     await expect(listImportedWallets()).rejects.toThrow(/wallets array/);
     stubFetch({ code: 1000, message: "ok", result: { wallets: [{ kind: "imported" }] } });
     await expect(listImportedWallets()).rejects.toThrow(/address/);
+  });
+
+  it("list reads the kind from the response and refuses a row of a kind it does not know", async () => {
+    // A kind this screen has never heard of must not reach the list: the screen
+    // offers Detach for what it lists, and Detach may not mean for another kind
+    // what it means for an imported address.
+    stubFetch({
+      code: 1000,
+      message: "ok",
+      result: { wallets: [{ address: "addr_test1a", kind: "custody", attached_at: "t" }] },
+    });
+    await expect(listImportedWallets()).rejects.toThrow(/kind/);
+    stubFetch({
+      code: 1000,
+      message: "ok",
+      result: { wallets: [{ address: "addr_test1a", attached_at: "t" }] },
+    });
+    await expect(listImportedWallets()).rejects.toThrow(/kind/);
   });
 });
 

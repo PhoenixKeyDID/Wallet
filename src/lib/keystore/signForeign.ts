@@ -42,7 +42,7 @@ import { utils as tyUtils } from "@stricahq/typhonjs";
 import { assertNoDuplicateMapKeys, DuplicateMapKeyError } from "../cardano/cborDupKeys";
 import { CborSetError, readCborSet } from "../cardano/cborSet";
 import { blake2b256, toHex } from "../cardano/hash";
-import { isKeyRewardAccountOn, summariseTx, UndescribableTxError, type TxSummary } from "../cardano/txSummary";
+import { isKeyRewardAccountOn, mintConfirmKey, summariseTx, UndescribableTxError, type TxSummary } from "../cardano/txSummary";
 import { LocalSignError, type Account } from "./index";
 
 /** One UTxO the wallet holds, as the approval screen valued it. */
@@ -150,6 +150,12 @@ export type RequiredKeys = {
    * one on the screen, by this same key.
    */
   foreignRewardAccounts: string[];
+  /**
+   * The units (policy id + asset name, hex) of every token the body creates,
+   * read from the summary's `foreignMintList`. `signForeignTx` signs only when
+   * the person confirmed each unit on the screen (`mintConfirmKey`).
+   */
+  foreignMintUnits: string[];
 };
 
 /**
@@ -213,17 +219,6 @@ function setOf(v: unknown): unknown[] {
     if (e instanceof CborSetError) throw new LocalSignError("sign_foreign_not_a_tx");
     throw e;
   }
-}
-
-/** A mint quantity below zero — a burn. Zero and anything positive are not. */
-function isNegativeInteger(v: unknown): boolean {
-  if (typeof v === "number") return Number.isSafeInteger(v) && v < 0;
-  if (typeof v === "bigint") return v < BigInt(0);
-  // @stricahq/cbors hands large integers back as BigNumber-like objects.
-  if (v && typeof v === "object" && typeof (v as { toFixed?: unknown }).toFixed === "function") {
-    return /^-\d+$/.test((v as { toFixed(n: number): string }).toFixed(0)) && (v as { toFixed(n: number): string }).toFixed(0) !== "-0";
-  }
-  return false;
 }
 
 /**
@@ -317,19 +312,11 @@ export function requiredKeysFor(
   const certs = b.get(4);
   if (certs !== undefined && setOf(certs).length > 0) throw new LocalSignError("sign_foreign_certificate");
 
-  // Minting. A burn takes tokens out of existence and is shown on the screen;
-  // creating tokens is a policy saying yes, and a policy that wants this
-  // wallet's key wants it for a reason the screen cannot read.
-  const mint = b.get(9);
-  if (mint !== undefined) {
-    if (!(mint instanceof Map)) throw new LocalSignError("sign_foreign_not_a_tx");
-    for (const names of mint.values()) {
-      if (!(names instanceof Map)) throw new LocalSignError("sign_foreign_not_a_tx");
-      for (const qty of names.values()) {
-        if (!isNegativeInteger(qty)) throw new LocalSignError("sign_foreign_mint");
-      }
-    }
-  }
+  // Minting is read only through the screen's `summariseTx` below — one reader,
+  // so the screen and the signature cannot disagree on what is created. A burn
+  // is shown and signed; a zero quantity is refused there (`sign_foreign_mint`);
+  // each created unit is returned in `foreignMintUnits` and signed only once
+  // the person confirmed that unit (`signForeignTx`).
 
   const keyOfOwnInput = (i: unknown, what: "input" | "collateral"): string | null => {
     if (!Array.isArray(i) || i.length < 2) throw new LocalSignError("sign_foreign_not_a_tx");
@@ -454,7 +441,12 @@ export function requiredKeysFor(
     }
   }
 
-  return { keyHashes: need, bodyHashHex, foreignRewardAccounts: summary.foreignWithdrawalList.map((w) => w.rewardAccountHex) };
+  return {
+    keyHashes: need,
+    bodyHashHex,
+    foreignRewardAccounts: summary.foreignWithdrawalList.map((w) => w.rewardAccountHex),
+    foreignMintUnits: summary.foreignMintList.map((m) => m.unit),
+  };
 }
 
 /**
@@ -476,12 +468,19 @@ export function signForeignTx(
    * is somebody else's action riding on this signature — a script account runs
    * its script for it, and a contract can count that run as a vote — so it is
    * signed only after the person has seen and confirmed that very entry.
+   *
+   * The same set carries the created tokens the person confirmed, one per unit,
+   * under `mintConfirmKey(unit)`. A policy that asks for this wallet's key
+   * counts the signature as its yes, so each created unit is signed only after
+   * the person ticked that unit — not its policy, not the transaction.
    */
   confirmed: ReadonlySet<string> = new Set(),
 ): string {
-  const { keyHashes, bodyHashHex, foreignRewardAccounts } = requiredKeysFor(txCborHex, account, view);
+  const { keyHashes, bodyHashHex, foreignRewardAccounts, foreignMintUnits } = requiredKeysFor(txCborHex, account, view);
   const unconfirmed = foreignRewardAccounts.filter((k) => !confirmed.has(k));
   if (unconfirmed.length > 0) throw new LocalSignError("sign_foreign_withdrawal_unconfirmed", unconfirmed.join(","));
+  const unconfirmedMints = foreignMintUnits.filter((u) => !confirmed.has(mintConfirmKey(u)));
+  if (unconfirmedMints.length > 0) throw new LocalSignError("sign_foreign_mint_unconfirmed", unconfirmedMints.join(","));
 
   const bodyHash = Buffer.from(bodyHashHex, "hex");
   if (bodyHash.length !== 32) throw new LocalSignError("sign_bad_body_hash");

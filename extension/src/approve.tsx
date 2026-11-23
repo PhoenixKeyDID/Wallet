@@ -213,9 +213,10 @@ type Phase =
        */
       view?: WalletView;
       /**
-       * The withdrawals from accounts that are not this wallet's that the
-       * person ticked, one by one, by reward account (hex). Lives on this
-       * request's phase, so a new request starts with none confirmed.
+       * The foreign entries the person ticked, one by one: withdrawals from
+       * accounts that are not this wallet's by reward account (hex), created
+       * tokens by `mintConfirmKey(unit)`. Lives on this request's phase, so a
+       * new request starts with none confirmed.
        */
       confirmed?: ReadonlySet<string>;
       undescribable?: string;
@@ -689,13 +690,16 @@ export function Approve() {
       answer({ ok: true, value: hash }, req);
     } catch (e) {
       if (isDefiniteRejection(e) && !resend) {
-        // A 4xx: this transaction did not get in. What the site hears depends
-        // on the body (`rejectionReasonForSite`): a 400 forwards the ledger
-        // rule names in it and nothing else of the body, the one thing the
-        // site's developer can act on; anything else gets a fixed reason, because a
-        // 401/402/403/429 body is about the person's provider account, other
-        // 400 bodies can describe the provider's internals, and the endpoint
-        // label names the provider.
+        // A 4xx is answered as: this transaction did not get in. The status
+        // alone decides that (`isDefiniteRejection`); only one 400 has been
+        // measured as never reaching a node, and whether the others should
+        // keep the id to look up instead is issue #71's open question. What
+        // the site hears depends on the body (`rejectionReasonForSite`): a
+        // 400 forwards the ledger rule names in it and nothing else of the
+        // body, the one thing the site's developer can act on; anything else
+        // gets a fixed reason, because a 401/402/403/429 body is about the
+        // person's provider account, other 400 bodies can describe the
+        // provider's internals, and the endpoint label names the provider.
         answer({ ok: false, error: sendFailed(rejectionReasonForSite(e)) }, req);
       } else {
         // No answer, a 5xx, a dropped connection — or a 4xx for bytes whose
@@ -728,7 +732,13 @@ export function Approve() {
   );
 
   if (!origin) {
-    return <p className="approve-error">{t("cip30_no_origin")}</p>;
+    return (
+      <div className="approve">
+        <p className="approve-error" role="alert">
+          {t("cip30_no_origin")}
+        </p>
+      </div>
+    );
   }
 
   if (!account) {
@@ -797,17 +807,18 @@ export function Approve() {
     const { summary, undescribable, readFailed, readFailedWhy, req, dataSign } = phase;
     const describesTx = req.method === "signTx" || req.method === "submitTx";
     const confirmed = phase.confirmed ?? new Set<string>();
-    // Signing gives this wallet's authority to every withdrawal in the body,
-    // so `signTx` stays locked until each one that is not this wallet's has
-    // been ticked. `submitTx` adds no signature — the authority was given
+    // Signing gives this wallet's authority to every withdrawal and every
+    // created token in the body, so `signTx` stays locked until each
+    // withdrawal that is not this wallet's, and each created unit, has been
+    // ticked. `submitTx` adds no signature — the authority was given
     // when it was signed — and shows the same list without the lock.
     const signLocked = req.method === "signTx" && !!summary && unconfirmedForeignActions(summary, confirmed).length > 0;
-    const setConfirmed = (rewardAccountHex: string, checked: boolean) =>
+    const setConfirmed = (key: string, checked: boolean) =>
       setPhase((cur) => {
         if (cur.at !== "decide" || cur.req !== req) return cur;
         const next = new Set(cur.confirmed ?? []);
-        if (checked) next.add(rewardAccountHex);
-        else next.delete(rewardAccountHex);
+        if (checked) next.add(key);
+        else next.delete(key);
         return { ...cur, confirmed: next };
       });
     return (

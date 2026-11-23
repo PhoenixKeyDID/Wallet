@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { unconfirmedForeignActions, type TxSummary } from "../../src/lib/cardano/txSummary";
+import { mintConfirmKey, unconfirmedForeignActions, type TxSummary } from "../../src/lib/cardano/txSummary";
 import { assetLabel, formatAda } from "../../src/lib/cardano/provider";
 
 /**
@@ -30,13 +30,17 @@ export function TxSummaryView({
    * The list itself is still shown.
    */
   locks?: boolean;
-  /** Foreign withdrawals the person has confirmed, by reward account (hex). */
+  /**
+   * The entries the person has confirmed: foreign withdrawals by reward account
+   * (hex), created tokens by `mintConfirmKey(unit)`.
+   */
   confirmed?: ReadonlySet<string>;
   /**
-   * Record one confirmation. Absent: the boxes are shown but cannot be ticked,
-   * so a screen that forgets to wire this can never unlock signing.
+   * Record one confirmation, under the same key as `confirmed`. Absent: the
+   * boxes are shown but cannot be ticked, so a screen that forgets to wire this
+   * can never unlock signing.
    */
-  onConfirm?: (rewardAccountHex: string, checked: boolean) => void;
+  onConfirm?: (key: string, checked: boolean) => void;
 }) {
   const { t } = useTranslation("wallet");
   const awaiting = unconfirmedForeignActions(summary, confirmed);
@@ -200,12 +204,42 @@ export function TxSummaryView({
               </li>
             ))}
           </ul>
-          {locks && awaiting.length > 0 && (
-            <p className="approve-error" role="alert" data-testid="sign-locked">
-              {t("cip30_sign_locked")}
-            </p>
-          )}
         </>
+      )}
+      {/* Every token the transaction creates, one by one — by unit, not by
+          policy — each with its own box. The policy counts this signature as
+          its yes; this wallet cannot read what the policy checks or what the
+          token stands for, so the person decides each unit. */}
+      {summary.foreignMintList.length > 0 && (
+        <>
+          <p className="approve-heading">{t("cip30_mints_heading")}</p>
+          <p className="approve-note">{t("cip30_mints_note")}</p>
+          <ul data-testid="foreign-mint-list">
+            {summary.foreignMintList.map((m) => (
+              <li key={m.unit} className="approve-payout">
+                <b title={m.policyId}>{`${m.quantity.toString()} ${assetLabel(m)}`}</b>
+                {m.script && <span className="approve-error">{t("cip30_mint_script")}</span>}
+                {locks && (
+                <label>
+                  <input
+                    type="checkbox"
+                    data-testid={`confirm-mint-${m.unit}`}
+                    checked={confirmed.has(mintConfirmKey(m.unit))}
+                    disabled={!onConfirm}
+                    onChange={(e) => onConfirm?.(mintConfirmKey(m.unit), e.currentTarget.checked)}
+                  />
+                  {t("cip30_mint_confirm")}
+                </label>
+                )}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      {locks && awaiting.length > 0 && (
+        <p className="approve-error" role="alert" data-testid="sign-locked">
+          {t("cip30_sign_locked")}
+        </p>
       )}
     </div>
   );

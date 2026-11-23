@@ -76,7 +76,7 @@ A pull request that adds CIP-30 support is in preparation and moves methods from
 
 ### 3.5 User-facing screens that handle money or secrets
 
-- `src/components/wallet/`: in particular `LocalWalletPanel.tsx`, `SeedPhraseStep.tsx`, `ConfirmGate.tsx`, `SendPanel.tsx`, `StakingPanel.tsx`, `GovernancePanel.tsx`, `ReviewOutput.tsx`, `UncertainSubmitNotice.tsx`, `signError.ts`.
+- `src/components/wallet/`: in particular `LocalWalletPanel.tsx`, `PopupChrome.tsx` (the popup frame: Lock button, network badge), `SeedPhraseStep.tsx`, `ConfirmGate.tsx`, `SendPanel.tsx`, `StakingPanel.tsx`, `GovernancePanel.tsx`, `ReviewOutput.tsx`, `UncertainSubmitNotice.tsx`, `signError.ts`.
 - `src/components/CopyBtn.tsx`: the only component allowed to touch the clipboard.
 
 ### 3.6 The repository's own safeguards

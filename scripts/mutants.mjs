@@ -114,6 +114,8 @@ const TESTS = [
   "extension/src/__tests__/TxSummaryView.test.tsx",
   "src/components/wallet/__tests__/SeedPhraseStep.test.tsx",
   "src/components/wallet/__tests__/LocalWalletPanel.context.test.tsx",
+  "src/components/wallet/__tests__/LocalWalletPanel.popup.test.tsx",
+  "src/components/wallet/__tests__/Cip30Panel.balance.test.tsx",
   "scripts/__tests__/checkPopupCss.test.ts",
   "scripts/__tests__/checkLocales.test.ts",
   "extension/background/__tests__/pending.test.ts",
@@ -130,6 +132,7 @@ const TESTS = [
   "src/lib/keystore/__tests__/signForeign.test.ts",
   // Clear signing of foreign withdrawals, votes, proposals and script inputs.
   "src/lib/keystore/__tests__/foreignActions.test.ts",
+  "src/lib/keystore/__tests__/foreignMint.test.ts",
   // Conway sets read bare or under tag 258, on the screen and in the signer.
   "src/lib/keystore/__tests__/tag258Sets.test.ts",
   "extension/background/__tests__/worker.test.ts",
@@ -280,8 +283,77 @@ const MUTANTS = [
   {
     name: "the extension shows the web page's long risk paragraph again",
     file: PANEL,
-    from: "      {isExtensionContext() ? (",
-    to: "      {false ? (",
+    // The web layout's own branch. The popup layout has two more sites with
+    // the same condition, each its own mutant below — the line after the
+    // condition is what tells the three apart.
+    from: '      {isExtensionContext() ? (\n        <p className="rounded-brand',
+    to: '      {false ? (\n        <p className="rounded-brand',
+  },
+  {
+    name: "the popup's 'Learn more' body shows the web page's risk paragraphs again",
+    file: PANEL,
+    from: '          {isExtensionContext() ? (\n            <p>{t("local_risk_ext")}</p>',
+    to: '          {false ? (\n            <p>{t("local_risk_ext")}</p>',
+  },
+  {
+    name: "the popup's open risk notice shows the web page's risk paragraphs again",
+    file: PANEL,
+    from: '                    {isExtensionContext() ? (\n                      <p>{t("local_risk_ext")}</p>',
+    to: '                    {false ? (\n                      <p>{t("local_risk_ext")}</p>',
+  },
+  {
+    name: "the popup's 'Back to Account 0' on Home sets the field and stays put",
+    file: PANEL,
+    from: '                    if (layout === "popup") setPopupView("settings");',
+    to: '                    if (layout === "popup") void "settings";',
+  },
+  {
+    name: "the wallet picked while unlocking takes the opened wallet's name",
+    file: PANEL,
+    from: "    setActiveId(w.id);\n    // \"That password",
+    to: "    void w.id;\n    // \"That password",
+  },
+  {
+    name: "the popup's wallet picker stays open while a wallet is unlocking",
+    file: PANEL,
+    from: "                value={chosenId ?? \"\"}\n                disabled={busy}",
+    to: "                value={chosenId ?? \"\"}\n                disabled={false}",
+  },
+  {
+    name: "a browser wallet's balance card shows 0 ADA before its balance is read",
+    file: "src/components/wallet/Cip30Panel.tsx",
+    from: "settled={balanceRead && !balanceFailed}",
+    to: "settled={!balanceFailed}",
+  },
+  {
+    name: "a browser wallet's balance stays a dash after Refresh reads it",
+    file: "src/components/wallet/Cip30Panel.tsx",
+    from: "      // The first read may have failed; a Refresh that lands is the first read.\n      setBalanceRead(true);",
+    to: "      // The first read may have failed; a Refresh that lands is the first read.",
+  },
+  {
+    name: "a Refresh from the wallet before writes its balance under the wallet connected after",
+    file: "src/components/wallet/Cip30Panel.tsx",
+    from: "      if (session !== sessionRef.current) return;\n      setLovelace(bal.lovelace);",
+    to: "      setLovelace(bal.lovelace);",
+  },
+  {
+    name: "a failed Refresh from the wallet before marks the wallet connected after as unread",
+    file: "src/components/wallet/Cip30Panel.tsx",
+    from: "    } catch (err) {\n      if (session !== sessionRef.current) return;\n      setBalanceFailed(true);",
+    to: "    } catch (err) {\n      setBalanceFailed(true);",
+  },
+  {
+    name: "the popup flashes its welcome screen before the saved wallets are read",
+    file: PANEL,
+    from: "} else if (!listed) {",
+    to: "} else if (false) {",
+  },
+  {
+    name: "the top bar's wallet button loses the wallet's name to a fixed label",
+    file: "src/components/wallet/PopupChrome.tsx",
+    from: 'title={t("popup_wallet_menu")}',
+    to: 'aria-label={t("popup_wallet_menu")}',
   },
   {
     name: "the extension shows the web intro ('no extension needed') again",
@@ -1483,12 +1555,57 @@ const MUTANTS = [
     to: "if (false /* MUT_SF_CERT */) throw",
     marker: "MUT_SF_CERT",
   },
+  // ── Tokens a website's transaction creates: listed per unit, each one
+  // holding the signature until the person ticks that unit. foreignMint.test.ts
+  // pins the summary and the signer, TxSummaryView.test.tsx the boxes. ──
   {
-    name: "signer: a mint that creates tokens is signed",
+    name: "mint-confirm: the signer signs a created token nobody confirmed",
     file: SIGN_FOREIGN,
-    from: "if (!isNegativeInteger(qty)) throw",
-    to: "if (false /* MUT_SF_MINT */) throw",
-    marker: "MUT_SF_MINT",
+    from: "if (unconfirmedMints.length > 0) throw",
+    to: "if (false /* MUT_MINT_SIGNER */) throw",
+    marker: "MUT_MINT_SIGNER",
+  },
+  {
+    name: "mint-confirm: a created token does not hold the Sign button",
+    file: TX_SUMMARY,
+    from: "    ...summary.foreignMintList.map((m) => mintConfirmKey(m.unit)),\n",
+    to: "    /* MUT_MINT_SCREEN */\n",
+    marker: "MUT_MINT_SCREEN",
+  },
+  {
+    name: "mint-confirm: the created tokens are never shown",
+    file: TX_SUMMARY_VIEW,
+    from: "{summary.foreignMintList.length > 0 && (",
+    to: "{/* MUT_MINT_VIEW */ false && summary.foreignMintList.length > 0 && (",
+    marker: "MUT_MINT_VIEW",
+  },
+  {
+    name: "mint-confirm: one confirmation per policy instead of per unit",
+    file: TX_SUMMARY,
+    from: "export const mintConfirmKey = (unit: string): string => `mint:${unit}`;",
+    to: "export const mintConfirmKey = (unit: string): string => `mint:${unit.slice(0, 56)}`; /* MUT_MINT_POLICY */",
+    marker: "MUT_MINT_POLICY",
+  },
+  {
+    name: "mint-confirm: a token's confirmation shares its key with a withdrawal's",
+    file: TX_SUMMARY,
+    from: "export const mintConfirmKey = (unit: string): string => `mint:${unit}`;",
+    to: "export const mintConfirmKey = (unit: string): string => unit; /* MUT_MINT_SHARED_KEY */",
+    marker: "MUT_MINT_SHARED_KEY",
+  },
+  {
+    name: "mint-confirm: a mint redeemer is placed by body order, not ledger order",
+    file: TX_SUMMARY,
+    from: '.map((k) => Buffer.from(k as Uint8Array).toString("hex")).sort()',
+    to: '.map((k) => Buffer.from(k as Uint8Array).toString("hex")) /* MUT_MINT_ORDER */',
+    marker: "MUT_MINT_ORDER",
+  },
+  {
+    name: "mint-confirm: a mint of zero is described",
+    file: TX_SUMMARY,
+    from: "if (qty === BigInt(0)) bad(",
+    to: "if (false /* MUT_MINT_ZERO */) bad(",
+    marker: "MUT_MINT_ZERO",
   },
   {
     name: "signer: a body for another network is signed",
@@ -1542,13 +1659,6 @@ const MUTANTS = [
     from: 'if (n !== 0) bad("this transaction carries a certificate',
     to: 'if (false /* MUT_TS_CERT */) bad("this transaction carries a certificate',
     marker: "MUT_TS_CERT",
-  },
-  {
-    name: "screen: a mint that creates tokens is described",
-    file: TX_SUMMARY,
-    from: "if (qty >= BigInt(0)) bad(",
-    to: "if (false /* MUT_TS_MINT */) bad(",
-    marker: "MUT_TS_MINT",
   },
   {
     name: "screen: a body for another network is described",
@@ -2720,7 +2830,7 @@ const MUTANTS = [
   {
     name: "MUTCS-APPROVE-UNTICK: unticking a foreign withdrawal leaves it confirmed",
     file: APPROVE,
-    from: "        else next.delete(rewardAccountHex);\n",
+    from: "        else next.delete(key);\n",
     to: "        else void 0 /* MUTCS-APPROVE-UNTICK */;\n",
     marker: "MUTCS-APPROVE-UNTICK",
   },
@@ -2748,8 +2858,8 @@ const MUTANTS = [
   {
     name: "MUTCS-MINT-BOUND: a mint redeemer pointing past the last policy is accepted",
     file: TX_SUMMARY,
-    from: "if (r.index >= mintPolicies) bad(",
-    to: "if (false /* MUTCS-MINT-BOUND */) bad(",
+    from: 'if (policyId === undefined) bad("a script in this transaction points at a mint',
+    to: 'if (false /* MUTCS-MINT-BOUND */) bad("a script in this transaction points at a mint',
     marker: "MUTCS-MINT-BOUND",
   },
   {
@@ -2938,15 +3048,13 @@ const MUTANTS = [
     to: "/(?<![\\w./@:=-])(?!MUTSUBMITESCAPE)(?:(?:Shelley",
     marker: "MUTSUBMITESCAPE",
   },
+  // No MUT-SUBMIT-INNERDIGIT: letting digits into the inner capture only
+  // makes the captured word longer, and no longer word is a NESTING_WRAPPER,
+  // an UNPREFIXED_RULE or a name LEDGER_REASON accepts on its own, so no input
+  // can tell that mutant apart. `ConwayUtxowFailure (ConwayRelay01)` stays
+  // home through the closed sets; its case is kept.
   {
-    name: "MUT-SUBMIT-INNERDIGIT: a numbered host inside a ledger wrapper (ApplyTxError (ConwayRelay01)) reaches the site",
-    file: SUBMIT_ERROR,
-    from: " \\((?=([A-Z][A-Za-z]*)(?![\\w./@=-]|:\\w))/g;\n",
-    to: " \\((?=([A-Z][A-Za-z0-9]*)(?!MUTSUBMITINNERDIGIT)(?![\\w./@=-]|:\\w))/g;\n",
-    marker: "MUTSUBMITINNERDIGIT",
-  },
-  {
-    name: "MUT-SUBMIT-INNERCOLON: a `host:database` pair inside a ledger wrapper (ApplyTxError (PgPrimary:cexplorer)) reaches the site",
+    name: "MUT-SUBMIT-INNERCOLON: a `host:database` pair inside an earned ConwayUtxowFailure wrapper (ConwayUtxowFailure (PgPrimary:cexplorer)) reaches the site",
     file: SUBMIT_ERROR,
     from: " \\((?=([A-Z][A-Za-z]*)(?![\\w./@=-]|:\\w))/g;\n",
     to: " \\((?=([A-Z][A-Za-z]*)(?![\\w./@=-]|:\\d|MUTSUBMITINNERCOLON))/g;\n",
@@ -2956,18 +3064,46 @@ const MUTANTS = [
   // A provider word inside a lone `ApplyTxError (` wrapper, and the wrapper a
   // body earned that must still open.
   {
-    name: "MUT75-APPLYTX-GATE: a provider word inside a lone ApplyTxError wrapper (upstream ApplyTxError (KoiosPrimaryReplica)) reaches the site",
+    name: "MUT75-APPLYTX-GATE: a lone ApplyTxError opens its wrapper, so ApplyTxError (UtxoFailure (NoCollateralInputs)) reaches the site with its inner names",
     file: SUBMIT_ERROR,
-    from: "      if (m[1] === \"ApplyTxError\" && !shelleyAt.some((at) => at < m.index)) continue;\n",
-    to: "      if (false /* MUT75APPLYTXGATE */ && !shelleyAt.some((at) => at < m.index)) continue;\n",
+    from: "      if (m[1] === \"ApplyTxError\" && !APPLY_TX_ERROR_AHEAD.test(detail.slice(0, m.index))) continue;\n",
+    to: "      if (false /* MUT75APPLYTXGATE */ && !APPLY_TX_ERROR_AHEAD.test(detail.slice(0, m.index))) continue;\n",
     marker: "MUT75APPLYTXGATE",
   },
   {
     name: "MUT75-APPLYTX-EARNED: an ApplyTxError that follows ShelleyTxValidationError does not open its wrapper either",
     file: SUBMIT_ERROR,
-    from: "      if (m[1] === \"ApplyTxError\" && !shelleyAt.some((at) => at < m.index)) continue;\n",
+    from: "      if (m[1] === \"ApplyTxError\" && !APPLY_TX_ERROR_AHEAD.test(detail.slice(0, m.index))) continue;\n",
     to: "      if (m[1] === \"ApplyTxError\") continue; /* MUT75APPLYTXEARNED */\n",
     marker: "MUT75APPLYTXEARNED",
+  },
+  {
+    name: "MUT-SUBMIT-APPLYTXAHEAD: a ShelleyTxValidationError anywhere ahead in the body, with other text between, opens a lone ApplyTxError",
+    file: SUBMIT_ERROR,
+    from: "      if (m[1] === \"ApplyTxError\" && !APPLY_TX_ERROR_AHEAD.test(detail.slice(0, m.index))) continue;\n",
+    to: "      if (m[1] === \"ApplyTxError\" && !/ShelleyTxValidationError/.test(detail.slice(0, m.index) /* MUTSUBMITAPPLYTXAHEAD */)) continue;\n",
+    marker: "MUTSUBMITAPPLYTXAHEAD",
+  },
+  {
+    name: "MUT-SUBMIT-ERACLOSED: any letters after ShelleyBasedEra (ShelleyBasedEraKoios) open a lone ApplyTxError",
+    file: SUBMIT_ERROR,
+    from: "ShelleyTxValidationError ShelleyBasedEra(?:Shelley|Allegra|Mary|Alonzo|Babbage|Conway) \\($/;",
+    to: "ShelleyTxValidationError ShelleyBasedEra[A-Za-z]+ \\($/; /* MUTSUBMITERACLOSED */",
+    marker: "MUTSUBMITERACLOSED",
+  },
+  {
+    name: "MUT-SUBMIT-BRIDGECLOSED: any XInYUtxoPredFailure-shaped word (SecretInHostUtxoPredFailure) counts as a wrapper",
+    file: SUBMIT_ERROR,
+    from: "|AlonzoInBabbageUtxoPredFailure|AlonzoInBabbageUtxowPredFailure|ShelleyInAlonzoUtxowPredFailure)$/;",
+    to: "|[A-Z][a-z]+In[A-Z][a-z]+(?:Utxow|Utxos|Utxo)PredFailure)$/; /* MUTSUBMITBRIDGECLOSED */",
+    marker: "MUTSUBMITBRIDGECLOSED",
+  },
+  {
+    name: "MUT-SUBMIT-INNERKNOWN: a letters-only provider word inside an era-prefixed wrapper (ConwayUtxowFailure (KoiosPrimaryReplica)) reaches the site",
+    file: SUBMIT_ERROR,
+    from: "      if (!(NESTING_WRAPPER.test(inner) || UNPREFIXED_RULE.test(inner) || accepted.get(innerAt) === inner)) continue;\n",
+    to: "      if (false /* MUTSUBMITINNERKNOWN */) continue;\n",
+    marker: "MUTSUBMITINNERKNOWN",
   },
   {
     name: "MUT-SUBMIT-PURPOSE: a redeemer's purpose tag (ConwaySpending) counts as a ledger reason",

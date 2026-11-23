@@ -168,19 +168,21 @@ describe("drip-pot claim with one thing added: both layers refuse", () => {
       screen: /carries a certificate/,
     },
     {
-      name: "a positive mint next to the burn",
+      // A positive mint is no longer refused outright: it is listed and waits
+      // for a per-unit confirmation (`foreignMint.test.ts`). A zero quantity is.
+      name: "a zero-quantity mint next to the burn",
       opts: {
         extra: (b) =>
           b.set(
             9,
             new Map([
               [Buffer.from(AUTH_POLICY, "hex"), new Map([[Buffer.from(AUTH_NAME, "hex"), -1]])],
-              [Buffer.from("e1".repeat(28), "hex"), new Map([[Buffer.from("41", "hex"), 1]])],
+              [Buffer.from("e1".repeat(28), "hex"), new Map([[Buffer.from("41", "hex"), 0]])],
             ]),
           ),
       },
-      signer: /sign_foreign_mint/,
-      screen: /creates tokens/,
+      signer: /sign_foreign_mint: /,
+      screen: /mints zero/,
     },
     {
       name: "network_id naming mainnet on a testnet wallet",

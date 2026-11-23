@@ -260,9 +260,9 @@ export function SendPanel({
           <p className="mono text-xs uppercase tracking-wider text-text-hint">{t("recipients_title")}</p>
           {recipients.map((r, idx) => (
             <div key={r.id} className="rounded-brand-sm border border-border-soft bg-bg0 p-3 space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-text-hint">#{idx + 1}</span>
-                {recipients.length > 1 && (
+              {recipients.length > 1 && (
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-text-hint">#{idx + 1}</span>
                   <button
                     type="button"
                     onClick={() => removeRecipient(r.id)}
@@ -270,8 +270,8 @@ export function SendPanel({
                   >
                     {t("remove")}
                   </button>
-                )}
-              </div>
+                </div>
+              )}
               <label className="block">
                 <span className="text-xs text-text-hint">{t("send_to")}</span>
                 <input

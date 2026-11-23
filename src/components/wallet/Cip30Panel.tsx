@@ -48,6 +48,13 @@ export function Cip30Panel() {
    * is not enough to tell them apart.
    */
   const [balanceFailed, setBalanceFailed] = useState(false);
+  /**
+   * True once a balance read for the connected wallet has come back. `connect`
+   * shows the wallet before the read finishes, and until then the figures are
+   * the `0n` it reset them to — the same "0 ADA" an empty wallet shows. The
+   * balance card must not present that zero as measured.
+   */
+  const [balanceRead, setBalanceRead] = useState(false);
   const [assets, setAssets] = useState<
     { unit: string; policyId: string; assetNameHex: string; quantity: bigint }[]
   >([]);
@@ -69,6 +76,12 @@ export function Cip30Panel() {
    */
   const [slow, setSlow] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  /**
+   * Bumped on every connect and disconnect. A Refresh still in flight when the
+   * user disconnects and connects another wallet must not write the old
+   * wallet's balance under the new wallet's name.
+   */
+  const sessionRef = useRef(0);
 
   const connect = async (key: string, name: string) => {
     const ac = new AbortController();
@@ -81,6 +94,8 @@ export function Cip30Panel() {
     setLovelace(BigInt("0"));
     setAssets([]);
     setBalanceFailed(false);
+    setBalanceRead(false);
+    const session = ++sessionRef.current;
     try {
       const api = await enableWallet(key, {
         signal: ac.signal,
@@ -93,10 +108,13 @@ export function Cip30Panel() {
       setConn({ key, name, api, networkId, changeAddress });
       try {
         const bal = await readBalance(api);
+        if (session !== sessionRef.current) return;
         setLovelace(bal.lovelace);
         setAssets(bal.assets);
         setBalanceFailed(false);
+        setBalanceRead(true);
       } catch {
+        if (session !== sessionRef.current) return;
         // Connecting succeeded; only the balance read failed. Keep the session
         // and say so, instead of tearing down a working connection.
         setBalanceFailed(true);
@@ -149,12 +167,17 @@ export function Cip30Panel() {
 
   const refresh = async () => {
     if (!conn) return;
+    const session = sessionRef.current;
     try {
       const bal = await readBalance(conn.api);
+      if (session !== sessionRef.current) return;
       setLovelace(bal.lovelace);
       setAssets(bal.assets);
       setBalanceFailed(false);
+      // The first read may have failed; a Refresh that lands is the first read.
+      setBalanceRead(true);
     } catch (err) {
+      if (session !== sessionRef.current) return;
       setBalanceFailed(true);
       toastApiError(err);
     }
@@ -236,6 +259,7 @@ export function Cip30Panel() {
         <button
           type="button"
           onClick={() => {
+            sessionRef.current += 1;
             setConn(null);
             setLovelace(BigInt("0"));
             setAssets([]);
@@ -261,6 +285,7 @@ export function Cip30Panel() {
         network={conn.networkId === 1 ? 1 : 0}
         address={receiveAddress}
         showReceive={receiveAddress !== null}
+        settled={balanceRead && !balanceFailed}
       />
 
       <button
