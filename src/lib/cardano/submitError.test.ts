@@ -456,6 +456,25 @@ describe("submit > the reason a site receives for a rejection", () => {
     expect(reason).not.toContain(leak);
   });
 
+  // The word ahead must stand as a token of its own, by the same rule as a
+  // name anywhere in the body: glued to a prefix (`/var/…`) it is part of a
+  // path the provider's message carries, not the node's words, and it opens
+  // nothing. Issue #79, point 1: the lookbehind was the one half of this
+  // gate no test held — with it removed every test here stayed green, and
+  // this body opened the wrapper.
+  it("a ShelleyTxValidationError glued to a prefix does not open ApplyTxError", () => {
+    const reason = rejectionReasonForSite(
+      new SubmitRejectedError(
+        400,
+        "/var/ShelleyTxValidationError ShelleyBasedEraConway (ApplyTxError (UtxoFailure (NoCollateralInputs)))",
+        "Koios /submittx",
+      ),
+    );
+    expect(reason).toBe("HTTP 400: ApplyTxError");
+    expect(reason).not.toContain("UtxoFailure");
+    expect(reason).not.toContain("NoCollateralInputs");
+  });
+
   // Without the ShelleyTxValidationError ahead of it, the names that stand on
   // their own still travel: the chain re-enters at the era-prefixed wrapper.
   it("names that stand on their own still travel without a ShelleyTxValidationError ahead", () => {
