@@ -92,7 +92,10 @@ export async function signAndSubmitLocal(
     // outcome — nothing was recorded and no hash exists. Wrapping it as
     // uncertain locked the screen and sent the reader to look up a hash that is
     // on no explorer; the CIP-30 path already filtered its one equivalent case
-    // (`code === 1`, user declined) and this one filtered nothing.
+    // (`code === 1`, user declined) and this one filtered nothing. What counts
+    // as refused is `isDefiniteRejection`'s call, body included: a 400 that
+    // names no ledger rule may belong to bytes a node already read, so it goes
+    // below with the hash.
     if (isDefiniteRejection(err)) throw err;
     // Everything else: a submit whose outcome is unknown must hand back the
     // hash, because resending blind is how people pay twice. There is no "user

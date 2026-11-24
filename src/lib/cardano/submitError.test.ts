@@ -70,6 +70,22 @@ describe("submit > a rejection arrives as SubmitRejectedError, from either door"
       expect((err as SubmitRejectedError).status, door).toBe(503);
       expect(isDefiniteRejection(err), door).toBe(false);
     });
+
+    // Issue #71: a proxy can answer 400 for bytes a node already read, and
+    // the body is the only thing that can tell the two 400s apart. Reported
+    // as a rejection, the site is told the send failed, rebuilds the payment
+    // from other inputs, and the person pays twice.
+    it.each([
+      "upstream connect error or disconnect/reset before headers",
+      "<html><body>400 Bad Request</body></html>",
+      "malformed request: expected application/cbor",
+    ])(`${door}: a 400 whose body names no ledger rule is NOT definite: %s`, async (body) => {
+      stub(400, body);
+      const err = await call().catch((e: unknown) => e);
+      expect(err, door).toBeInstanceOf(SubmitRejectedError);
+      expect((err as SubmitRejectedError).status, door).toBe(400);
+      expect(isDefiniteRejection(err), door).toBe(false);
+    });
   }
 });
 
@@ -84,6 +100,26 @@ describe("submit > isDefiniteRejection says no to everything else", () => {
     expect(isDefiniteRejection(new TypeError("Failed to fetch"))).toBe(false);
     expect(isDefiniteRejection(undefined)).toBe(false);
     expect(isDefiniteRejection(null)).toBe(false);
+  });
+
+  // The measured pre-node 400 earns "definite" only as the measured body
+  // itself, from its start and closed at `does not exist`: quoted inside a
+  // longer proxy message, or cut short of its close, it is one of the
+  // unproven ones.
+  it("a 400 that quotes the measured socket words inside a longer proxy message is not definite", () => {
+    expect(
+      isDefiniteRejection(
+        new SubmitRejectedError(400, "proxy: TxCmdTxSubmitConnectionError: Network.Socket.connect: <socket: 14>: does not exist, retried upstream", "Koios /submittx"),
+      ),
+    ).toBe(false);
+  });
+
+  it("a 400 that stops short of the socket error's close is not definite", () => {
+    expect(
+      isDefiniteRejection(
+        new SubmitRejectedError(400, "TxCmdTxSubmitConnectionError: Network.Socket.connect: <socket: 14>: connection refused", "Koios /submittx"),
+      ),
+    ).toBe(false);
   });
 });
 
