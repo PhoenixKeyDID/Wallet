@@ -3091,6 +3091,17 @@ const MUTANTS = [
     to: "ShelleyTxValidationError ShelleyBasedEra[A-Za-z]+ \\($/; /* MUTSUBMITERACLOSED */",
     marker: "MUTSUBMITERACLOSED",
   },
+  // Issue #79, point 1: the lookbehind ahead of ShelleyTxValidationError was
+  // the one half of the gate above no test held — with it removed the whole
+  // suite stayed green, and a path the provider carried
+  // (`/var/ShelleyTxValidationError …`) opened the wrapper.
+  {
+    name: "MUT-SUBMIT-APPLYTXPREFIX: a prefix glued before ShelleyTxValidationError (/var/ShelleyTxValidationError…) opens a lone ApplyTxError",
+    file: SUBMIT_ERROR,
+    from: "/(?<![\\w./@:=\\\\&?-])ShelleyTxValidationError ShelleyBasedEra(?:Shelley|Allegra|Mary|Alonzo|Babbage|Conway) \\($/;",
+    to: "/ShelleyTxValidationError ShelleyBasedEra(?:Shelley|Allegra|Mary|Alonzo|Babbage|Conway) \\($/; /* MUTSUBMITAPPLYTXPREFIX */",
+    marker: "MUTSUBMITAPPLYTXPREFIX",
+  },
   {
     name: "MUT-SUBMIT-BRIDGECLOSED: any XInYUtxoPredFailure-shaped word (SecretInHostUtxoPredFailure) counts as a wrapper",
     file: SUBMIT_ERROR,

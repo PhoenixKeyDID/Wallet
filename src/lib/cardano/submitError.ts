@@ -116,6 +116,10 @@ export const PROVIDER_REFUSED_REASON = "the wallet's chain provider refused the 
  * (`rejectionReasonForSite`), never the text around them: a provider message
  * that happens to hold a rule-shaped word gives the site that one word, never
  * the address or path next to it.
+ *
+ * The era set here is one of three in this file that stop at Conway: a new
+ * epoch must join this one, `NESTING_WRAPPER` and `APPLY_TX_ERROR_AHEAD` in
+ * the same change, or the new epoch's rule names stay home.
  */
 const LEDGER_REASON =
   /(?<![\w./@:=\\&?-])(?:(?:Shelley|Allegra|Mary|Alonzo|Babbage|Conway)(?!(?:Spending|Minting|Certifying|Rewarding|Voting|Proposing)\b)(?![A-Za-z]*Era|[A-Za-z]*Value\b)[A-Z][A-Za-z]+|[A-Z][A-Za-z]*UTxO|[A-Z][A-Za-z]*[a-z](?:UTXOW|UTXOS|UTXO|DELEGS|DELEG|DELPL|POOL|GOVCERT|CERTS|CERT|GOV|LEDGERS|LEDGER|PPUP|MIR)|ApplyTxError|TxValidationError|ValidationTagMismatch|PlutusFailure)(?![\w./@=-]|:\w)/g;
@@ -141,9 +145,45 @@ export const SUBMIT_DETAIL_LIMIT = 300;
  * and a provider's own `…Failure` (`ConwayRelayFailure`, `DbFailure`) must not
  * open one. `ConwayMempoolFailure` is left out on purpose: it carries free
  * text, not a rule.
+ *
+ * The era set here is one of three in this file that stop at Conway: a new
+ * epoch must join this one, `LEDGER_REASON` and `APPLY_TX_ERROR_AHEAD` in the
+ * same change, or the new epoch's wrappers stop opening.
  */
 const NESTING_WRAPPER =
   /^(?:ApplyTxError|(?:Shelley|Allegra|Mary|Alonzo|Babbage|Conway)?(?:Utxow|Utxos|Utxo|Certs|Cert|Delegs|Deleg|Delpl|Pool|GovCert|Gov|Ledgers|Ledger|Ppup|Mir|Bbody)Failure|AlonzoInBabbageUtxoPredFailure|AlonzoInBabbageUtxowPredFailure|ShelleyInAlonzoUtxowPredFailure)$/;
+
+/**
+ * The ledger failures that carry no era prefix and no rule suffix, so
+ * `LEDGER_REASON` cannot see them: the only names read from inside a wrapper
+ * besides another wrapper and a name `LEDGER_REASON` accepts on its own.
+ * A closed set, as `NESTING_WRAPPER` is: a rule left out reaches the site as
+ * its wrapper alone, never as a provider's word.
+ *
+ * Every constructor of every `…PredFailure` type in cardano-ledger
+ * (`eras/<era>/impl/src`, commit eccb3eaaa53a49a078d9183563e952d67b8b52a0) that
+ * neither `LEDGER_REASON` nor `NESTING_WRAPPER` accepts, plus three names
+ * that commit no longer defines and nodes still running an older ledger
+ * print: `InvalidPolicyHash` (now `InvalidGuardrailsScriptHash`),
+ * `TriesToForgeADA` and `MissingRequiredSigners`. `PoolMedataHashTooBig` is
+ * spelled as the ledger spells it.
+ */
+const UNPREFIXED_RULE =
+  /^(?:BodyRefScriptsSizeTooBig|CollateralContainsNonADA|CollectErrors|ConflictingCommitteeUpdate|ConflictingMetadataHash|DelegAccountAlreadyRegistered|DisallowedProposalDuringBootstrap|DisallowedVoters|DisallowedVotesDuringBootstrap|DuplicateGenesisVRFDELEG|ExpirationEpochTooSmall|ExtraRedeemers|GovActionsDoNotExist|HeaderProtVerTooHigh|IncorrectTotalCollateralField|InsufficientCollateral|InvalidBodyHashBBODY|InvalidGuardrailsScriptHash|InvalidMetadata|InvalidPolicyHash|InvalidPrevGovActionId|MIRNegativeTransfer|MIRNegativesNotCurrentlyAllowed|MIRProducesNegativeUpdate|MIRTransferNotCurrentlyAllowed|MalformedProposal|MalformedReferenceScripts|MalformedScriptWitnesses|MissingRedeemers|MissingRequiredDatums|MissingRequiredSigners|MissingTxBodyMetadataHash|MissingTxMetadata|NoCollateralInputs|NotAllowedSupplementalDatums|OutputBootAddrAttrsTooBig|OutsideForecast|PPUpdateWrongEpoch|PPViewHashesDontMatch|PoolMedataHashTooBig|ProposalCantFollow|ProposalDepositIncorrect|ProposalProcedureNetworkIdMismatch|ProposalReturnAccountDoesNotExist|ScriptIntegrityHashMismatch|TooManyCollateralInputs|TooManyExUnits|TreasuryWithdrawalReturnAccountsDoNotExist|TreasuryWithdrawalsNetworkIdMismatch|TriesToForgeADA|UnelectedCommitteeVoters|UnspendableUTxONoDatumHash|UpdateFailure|VRFKeyHashAlreadyRegistered|VotersDoNotExist|VotingOnExpiredGovAction|WrongBlockBodySizeBBODY|WrongNetwork|WrongNetworkInTxBody|WrongNetworkWithdrawal|ZeroTreasuryWithdrawals)$/;
+
+/**
+ * How `ApplyTxError (` opens in a node body: right behind
+ * `ShelleyTxValidationError` and the era tag, nothing between. The era is a
+ * closed set, so `ShelleyBasedEraKoios (` opens nothing — and the era set is
+ * one of three in this file that stop at Conway: a new epoch must join this
+ * one, `LEDGER_REASON` and `NESTING_WRAPPER` in the same change, or the new
+ * epoch's `ApplyTxError (` stays closed. This is a test of shape, not of
+ * origin: a provider that writes the node's words exactly can still open the
+ * wrapper, and what keeps its own words home then is that a name inside must
+ * be a known rule.
+ */
+const APPLY_TX_ERROR_AHEAD =
+  /(?<![\w./@:=\\&?-])ShelleyTxValidationError ShelleyBasedEra(?:Shelley|Allegra|Mary|Alonzo|Babbage|Conway) \($/;
 
 /**
  * A name, then ` (`, then the constructor inside it. The inner name is a
@@ -171,35 +211,6 @@ const NESTING_WRAPPER =
  * `NESTING_WRAPPER`, or a name `LEDGER_REASON` accepts on its own:
  * `ConwayUtxowFailure (KoiosPrimaryReplica)` gives only the wrapper.
  */
-/**
- * The ledger failures that carry no era prefix and no rule suffix, so
- * `LEDGER_REASON` cannot see them: the only names read from inside a wrapper
- * besides another wrapper and a name `LEDGER_REASON` accepts on its own.
- * A closed set, as `NESTING_WRAPPER` is: a rule left out reaches the site as
- * its wrapper alone, never as a provider's word.
- *
- * Every constructor of every `…PredFailure` type in cardano-ledger
- * (`eras/<era>/impl/src`, commit eccb3eaaa53a49a078d9183563e952d67b8b52a0) that
- * neither `LEDGER_REASON` nor `NESTING_WRAPPER` accepts, plus three names
- * that commit no longer defines and nodes still running an older ledger
- * print: `InvalidPolicyHash` (now `InvalidGuardrailsScriptHash`),
- * `TriesToForgeADA` and `MissingRequiredSigners`. `PoolMedataHashTooBig` is
- * spelled as the ledger spells it.
- */
-const UNPREFIXED_RULE =
-  /^(?:BodyRefScriptsSizeTooBig|CollateralContainsNonADA|CollectErrors|ConflictingCommitteeUpdate|ConflictingMetadataHash|DelegAccountAlreadyRegistered|DisallowedProposalDuringBootstrap|DisallowedVoters|DisallowedVotesDuringBootstrap|DuplicateGenesisVRFDELEG|ExpirationEpochTooSmall|ExtraRedeemers|GovActionsDoNotExist|HeaderProtVerTooHigh|IncorrectTotalCollateralField|InsufficientCollateral|InvalidBodyHashBBODY|InvalidGuardrailsScriptHash|InvalidMetadata|InvalidPolicyHash|InvalidPrevGovActionId|MIRNegativeTransfer|MIRNegativesNotCurrentlyAllowed|MIRProducesNegativeUpdate|MIRTransferNotCurrentlyAllowed|MalformedProposal|MalformedReferenceScripts|MalformedScriptWitnesses|MissingRedeemers|MissingRequiredDatums|MissingRequiredSigners|MissingTxBodyMetadataHash|MissingTxMetadata|NoCollateralInputs|NotAllowedSupplementalDatums|OutputBootAddrAttrsTooBig|OutsideForecast|PPUpdateWrongEpoch|PPViewHashesDontMatch|PoolMedataHashTooBig|ProposalCantFollow|ProposalDepositIncorrect|ProposalProcedureNetworkIdMismatch|ProposalReturnAccountDoesNotExist|ScriptIntegrityHashMismatch|TooManyCollateralInputs|TooManyExUnits|TreasuryWithdrawalReturnAccountsDoNotExist|TreasuryWithdrawalsNetworkIdMismatch|TriesToForgeADA|UnelectedCommitteeVoters|UnspendableUTxONoDatumHash|UpdateFailure|VRFKeyHashAlreadyRegistered|VotersDoNotExist|VotingOnExpiredGovAction|WrongBlockBodySizeBBODY|WrongNetwork|WrongNetworkInTxBody|WrongNetworkWithdrawal|ZeroTreasuryWithdrawals)$/;
-
-/**
- * How `ApplyTxError (` opens in a node body: right behind
- * `ShelleyTxValidationError` and the era tag, nothing between. The era is a
- * closed set, so `ShelleyBasedEraKoios (` opens nothing. This is a test of
- * shape, not of origin: a provider that writes the node's words exactly can
- * still open the wrapper, and what keeps its own words home then is that a
- * name inside must be a known rule.
- */
-const APPLY_TX_ERROR_AHEAD =
-  /(?<![\w./@:=\\&?-])ShelleyTxValidationError ShelleyBasedEra(?:Shelley|Allegra|Mary|Alonzo|Babbage|Conway) \($/;
-
 const WRAPPED_RULE = /(?<![\w./@:=\\&?-])([A-Z][A-Za-z]*) \((?=([A-Z][A-Za-z]*)(?![\w./@=-]|:\w))/g;
 
 /**
