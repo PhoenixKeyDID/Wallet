@@ -3248,7 +3248,7 @@ const MUTANTS = [
   {
     name: "MUT66-LANDED: a read showing the target ends a send-back record",
     file: FEEDBACK,
-    from: "  if (sent.resend === true) return false;\n",
+    from: "  if (sent.resend === true && readAt - sent.sentAt < DELEGATION_UNSEEN_MS) return false;\n",
     to: "  /* MUT66-LANDED */\n",
     marker: "MUT66-LANDED",
   },
@@ -3300,6 +3300,64 @@ const MUTANTS = [
     from: "      o.drep.length === 0 ||\n",
     to: "      false /* MUT66-LEFT-SHAPE */ ||\n",
     marker: "MUT66-LEFT-SHAPE",
+  },
+  // ── Issue #74 (MUT74-*): a record carrying a field this build does not know
+  // is kept, not removed on read; a send-back record whose hash look-up is
+  // down or answers in an unknown shape is ended by a read past the unseen
+  // mark; the Staking tab's re-read-failed flag does not outlive the record it
+  // was about ──
+  {
+    name: "MUT74-UNKNOWN-FIELD: a record carrying a field this build does not know is removed again",
+    file: VOTE_STORE,
+    from: "  const o = v as Record<string, unknown>;\n  const { account, sentAt, txHash, drepBefore, target, resend } = o;\n",
+    to:
+      "  const o = v as Record<string, unknown>;\n" +
+      '  if (Object.keys(o).some((k) => !["account", "network", "sentAt", "txHash", "drepBefore", "target", "resend"].includes(k))) return null; /* MUT74-UNKNOWN-FIELD */\n' +
+      "  const { account, sentAt, txHash, drepBefore, target, resend } = o;\n",
+    marker: "MUT74-UNKNOWN-FIELD",
+  },
+  {
+    name: "MUT74-RESEND-FALLBACK: a send-back record is never ended by a read again (the /tx_status-down fallback is gone)",
+    file: FEEDBACK,
+    from: "  if (sent.resend === true && readAt - sent.sentAt < DELEGATION_UNSEEN_MS) return false;\n",
+    to: "  if (sent.resend === true) return false; /* MUT74-RESEND-FALLBACK */\n",
+    marker: "MUT74-RESEND-FALLBACK",
+  },
+  {
+    name: "MUT74-STAKE-READAT: the Staking tab judges every read by the record's own send time, so the fallback never fires",
+    file: STAKING,
+    from:
+      "    accountReadAt > sentVoteDelegation.sentAt &&\n" +
+      "    voteDelegationLanded(sentVoteDelegation, accountState.delegatedDRep, accountReadAt);",
+    to:
+      "    accountReadAt > sentVoteDelegation.sentAt &&\n" +
+      "    voteDelegationLanded(sentVoteDelegation, accountState.delegatedDRep, sentVoteDelegation.sentAt) /* MUT74-STAKE-READAT */;",
+    marker: "MUT74-STAKE-READAT",
+  },
+  {
+    name: "MUT74-GOV-READAT: the Governance tab judges every read by the record's own send time, so the fallback never fires",
+    file: GOV,
+    from:
+      "    currentReadAt > sentVoteDelegation.sentAt &&\n" +
+      "    voteDelegationLanded(sentVoteDelegation, current, currentReadAt);",
+    to:
+      "    currentReadAt > sentVoteDelegation.sentAt &&\n" +
+      "    voteDelegationLanded(sentVoteDelegation, current, sentVoteDelegation.sentAt) /* MUT74-GOV-READAT */;",
+    marker: "MUT74-GOV-READAT",
+  },
+  {
+    name: "MUT74-REREAD-CLEAR: the Staking tab's re-read-failed flag outlives the record it was about",
+    file: STAKING,
+    from:
+      "  useEffect(() => {\n" +
+      "    if (waiting || withdrawalWatched || voteWatch.kind !== \"none\") return;\n" +
+      "    setRereadFailed(false);\n" +
+      "    // Each term is the watch state the flag-setting reads above key on; the\n" +
+      "    // flag itself is the only thing moved.\n" +
+      "    // eslint-disable-next-line react-hooks/exhaustive-deps\n" +
+      "  }, [waiting, withdrawalWatched, voteWatch.kind]);\n",
+    to: "  void setRereadFailed; /* MUT74-REREAD-CLEAR */\n",
+    marker: "MUT74-REREAD-CLEAR",
   },
 ];
 
