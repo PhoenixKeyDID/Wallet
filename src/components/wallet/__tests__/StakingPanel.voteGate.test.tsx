@@ -1155,3 +1155,174 @@ describe("#66: a choice sent back inside the lag is ended only by its hash", () 
     await waitFor(() => expect(window.localStorage.getItem(storageKey())).toBeNull());
   });
 });
+
+/**
+ * #74. Three small gaps in the send-back record:
+ *   - a tab on an older build read a record carrying a field it did not know
+ *     (`resend` was one) as malformed and removed it, and the removal's
+ *     `storage` event dropped the pending line on every up-to-date tab;
+ *   - with `/tx_status` down, a send-back record waited out its whole watch
+ *     even though every account read showed the choice;
+ *   - the Staking tab's "re-read failed" flag outlived the record it was
+ *     about, so the next wait opened with the line already up.
+ */
+describe("#74: the send-back record, an unknown field, and a stale failure flag", () => {
+  const storageKey = () => voteDelegationKey(NETWORK, accountKeyFrom(CHANGE_HEX));
+  const OLD_DREP = "drep1olddrepidentifier000wxyz";
+  const drepState = (delegatedDRep: string | null) => ({ found: true, status: "registered", delegatedDRep });
+  const fire = (key: string | null, newValue: string | null) =>
+    act(() => {
+      window.dispatchEvent(new StorageEvent("storage", { key, newValue }));
+    });
+  const tick = () =>
+    act(async () => {
+      vi.advanceTimersByTime(20_000);
+    });
+
+  it("an unknown field does not remove the record: the up-to-date tab keeps its pending line", async () => {
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, null));
+    render(wrap(<WalletTabs port={makePort()} changeAddress={CHANGE_HEX} network={NETWORK} />));
+    fireEvent.click(stakingTab());
+    expect(await screen.findByRole("button", { name: en.withdraw_abstain_button })).toBeTruthy();
+
+    // Written by a newer build: a field this build has never heard of.
+    const record = JSON.stringify({
+      account: ACCOUNT,
+      network: NETWORK,
+      sentAt: Date.now(),
+      txHash: "ab".repeat(32),
+      drepBefore: null,
+      target: "drep_always_abstain",
+      drepAfter: "drep1future",
+    });
+    window.localStorage.setItem(storageKey(), record);
+    await fire(storageKey(), record);
+    expect(await screen.findByText(en.vote_delegation_pending)).toBeTruthy();
+    expect(abstainButton()).toBeNull();
+    expect(window.localStorage.getItem(storageKey())).not.toBeNull();
+  });
+
+  it("Staking: with /tx_status down, a send-back record is ended by a read past the unseen mark", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    const t0 = Date.now();
+    // The account reads X throughout; the hash look-up never answers.
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, DREP));
+    m.fetchTxSeen.mockRejectedValue(new Error("/tx_status down"));
+    render(wrap(<WalletTabs port={makePort()} changeAddress={CHANGE_HEX} network={NETWORK} />));
+    fireEvent.click(stakingTab());
+    await screen.findByRole("button", { name: en.withdraw_rewards });
+
+    // X → Y landed, X sent back one minute ago, in another tab. The account
+    // has a DRep, so nothing is shown as waiting — only the hash look-up and
+    // the re-read run, and the hash look-up is down.
+    const sentAt = t0 + 60_000;
+    vi.setSystemTime(sentAt + 1_000);
+    const record = JSON.stringify({
+      account: ACCOUNT,
+      network: NETWORK,
+      sentAt,
+      txHash: "cd".repeat(32),
+      drepBefore: OLD_DREP,
+      target: DREP,
+      resend: true,
+    });
+    window.localStorage.setItem(storageKey(), record);
+    await fire(storageKey(), record);
+    await act(async () => {});
+    expect(m.fetchTxSeen).toHaveBeenCalledWith(NETWORK, "cd".repeat(32));
+    expect(window.localStorage.getItem(storageKey())).not.toBeNull();
+
+    // Past the unseen mark the look-up timer's re-read still shows X: that
+    // read, not the hash, ends the record.
+    vi.setSystemTime(sentAt + DELEGATION_UNSEEN_MS + 5_000);
+    await tick();
+    await waitFor(() => expect(window.localStorage.getItem(storageKey())).toBeNull());
+  });
+
+  it("Governance: with /tx_status down, a send-back record is ended by a DRep read past the unseen mark", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    const t0 = Date.now();
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, DREP));
+    m.getVoteDelegationState.mockResolvedValue(drepState(DREP));
+    m.fetchTxSeen.mockRejectedValue(new Error("/tx_status down"));
+    render(wrap(<WalletTabs port={makePort()} changeAddress={CHANGE_HEX} network={NETWORK} />));
+    fireEvent.click(governanceTab());
+    await waitFor(() => expect(m.getVoteDelegationState).toHaveBeenCalled());
+    await act(async () => {});
+
+    // X → Y landed, X sent back one minute ago. The DRep read shows X — from
+    // an instance that has not applied X → Y, or X landed: too young to say.
+    const sentAt = t0 + 60_000;
+    vi.setSystemTime(sentAt + 1_000);
+    const record = JSON.stringify({
+      account: ACCOUNT,
+      network: NETWORK,
+      sentAt,
+      txHash: "cd".repeat(32),
+      drepBefore: OLD_DREP,
+      target: DREP,
+      resend: true,
+    });
+    window.localStorage.setItem(storageKey(), record);
+    await fire(storageKey(), record);
+    expect(await screen.findByText(en.gov_delegate_pending)).toBeTruthy();
+    await act(async () => {});
+    expect(window.localStorage.getItem(storageKey())).not.toBeNull();
+
+    // Past the unseen mark a read showing X says it is X on chain: the record
+    // goes even though the hash look-up never answered.
+    vi.setSystemTime(sentAt + DELEGATION_UNSEEN_MS + 5_000);
+    await tick();
+    await waitFor(() => expect(window.localStorage.getItem(storageKey())).toBeNull());
+    expect(screen.queryByText(en.gov_delegate_pending)).toBeNull();
+  });
+
+  it("Staking: a failed re-read does not stain the next wait", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, null));
+    render(wrap(<WalletTabs port={makePort()} changeAddress={CHANGE_HEX} network={NETWORK} />));
+    fireEvent.click(stakingTab());
+    expect(await screen.findByRole("button", { name: en.withdraw_abstain_button })).toBeTruthy();
+
+    // A first record; its timed re-read fails, and the line says so.
+    const first = JSON.stringify({
+      account: ACCOUNT,
+      network: NETWORK,
+      sentAt: Date.now(),
+      txHash: "ab".repeat(32),
+      drepBefore: null,
+      target: "drep_always_abstain",
+    });
+    window.localStorage.setItem(storageKey(), first);
+    await fire(storageKey(), first);
+    expect(await screen.findByText(en.vote_delegation_pending)).toBeTruthy();
+    m.getStakeAccountState.mockRejectedValue(new Error("koios down"));
+    await tick();
+    expect(await screen.findByText(en.stake_reread_failed)).toBeTruthy();
+
+    // The record goes (landed in another tab): nothing is waited on here, and
+    // the failure flag must go with it, not sit armed for the next arrival.
+    window.localStorage.removeItem(storageKey());
+    await fire(storageKey(), null);
+    expect(await screen.findByRole("button", { name: en.withdraw_abstain_button })).toBeTruthy();
+    expect(screen.queryByText(en.stake_reread_failed)).toBeNull();
+
+    // The next record arrives. No read of it has failed: the line must not be
+    // up before one does, and the first read works, so it never comes up.
+    m.getStakeAccountState.mockResolvedValue(account(REWARDS, null));
+    const second = JSON.stringify({
+      account: ACCOUNT,
+      network: NETWORK,
+      sentAt: Date.now(),
+      txHash: "cd".repeat(32),
+      drepBefore: null,
+      target: "drep_always_abstain",
+    });
+    window.localStorage.setItem(storageKey(), second);
+    await fire(storageKey(), second);
+    expect(await screen.findByText(en.vote_delegation_pending)).toBeTruthy();
+    expect(screen.queryByText(en.stake_reread_failed)).toBeNull();
+    await tick();
+    expect(screen.queryByText(en.stake_reread_failed)).toBeNull();
+  });
+});
