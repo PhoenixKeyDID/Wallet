@@ -111,7 +111,6 @@ describe("voteDelegationStore", () => {
       JSON.stringify({ ...SENT, account: "" }),
       JSON.stringify({ ...SENT, network: 2 }),
       JSON.stringify({ ...SENT, drepBefore: 5 }),
-      JSON.stringify({ ...SENT, extra: true }),
       JSON.stringify({ account: SENT.account, network: 0, txHash: HASH }),
       // A send time further ahead than the whole window: not this clock's.
       JSON.stringify({ ...SENT, sentAt: T0 + 2 * VOTE_DELEGATION_WATCH_LIMIT_MS }),
@@ -121,6 +120,30 @@ describe("voteDelegationStore", () => {
       store.setItem(key, raw);
       expect(readSentVote(store, 0, ACCT_KEY, T0), raw).toEqual({ kind: "none" });
       expect(store.data.has(key), raw).toBe(false);
+    }
+  });
+
+  it("#74: a record carrying a field this build does not know is read, not removed", () => {
+    // A tab on an older build treated such a record as malformed and removed
+    // it; the removal's `storage` event then dropped the pending line on every
+    // up-to-date tab while the transaction was still on its way. Same story
+    // as when `drepBefore` and `target` were added.
+    const key = voteDelegationKey(0, ACCT_KEY);
+    const cases: [Record<string, unknown>, SentVoteDelegation][] = [
+      [{ futureMark: true }, { ...SENT, drepBefore: null }],
+      [{ drepBefore2: null, note: "x" }, { ...SENT, drepBefore: null }],
+      // A known optional field alongside an unknown one: both read as they are.
+      [{ resend: true, later: 3 }, { ...SENT, drepBefore: null, resend: true }],
+    ];
+    for (const [extra, want] of cases) {
+      const store = memStore();
+      store.setItem(
+        key,
+        JSON.stringify({ account: SENT.account, network: 0, sentAt: T0, txHash: HASH, drepBefore: null, ...extra }),
+      );
+      expect(readSentVote(store, 0, ACCT_KEY, T0), JSON.stringify(extra)).toEqual({ kind: "live", sent: want });
+      // Not removed by the read.
+      expect(store.data.has(key), JSON.stringify(extra)).toBe(true);
     }
   });
 

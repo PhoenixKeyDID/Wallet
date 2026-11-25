@@ -335,8 +335,9 @@ export function WalletTabs({
       // The hash is held lower-case, as the store and the indexer hold it.
       const record: SentVoteDelegation = { ...sent, txHash: sent.txHash.toLowerCase() };
       // Sending back the choice this account last moved away from (X → Y
-      // landed, then X): marked, so no account read ends it — a lagging
-      // instance still shows X (`voteDelegationLanded`). Only the hash does.
+      // landed, then X): marked, so no account read inside the first ten
+      // minutes ends it — a lagging instance still shows X
+      // (`voteDelegationLanded`). Inside that window only the hash does.
       const left = readLeftVote(store, sent.network, accountKey, sent.sentAt);
       if (left !== null && sent.target !== undefined && sameVoteTarget(left, sent.target)) record.resend = true;
       writeSentVote(store, accountKey, record);

@@ -24,10 +24,15 @@
  * ## Failure
  *
  * A read that throws returns "none" — the screen is then no worse than before
- * this module existed. A stored value that is not exactly the record's shape
- * is removed and treated as none: no field is guessed, because a guessed
- * `sentAt` or `account` would hide the Abstain offer on the wrong account or
- * for the wrong length of time.
+ * this module existed. A stored value that is not the record's shape in the
+ * fields this build knows is removed and treated as none: no field is guessed,
+ * because a guessed `sentAt` or `account` would hide the Abstain offer on the
+ * wrong account or for the wrong length of time. A field this build does not
+ * know is skipped instead of fatal: the record was written by a newer build of
+ * this wallet (`resend` was one, `drepBefore` and `target` before it), and a
+ * tab on the older build reading it as malformed removed it — which fired a
+ * `storage` event, so every up-to-date tab dropped its pending line while the
+ * transaction was still on its way.
  */
 
 import type { PhoenixNetwork } from "@/lib/cardano";
@@ -46,12 +51,18 @@ export type StoredVoteDelegation =
   | { kind: "live"; sent: SentVoteDelegation }
   | { kind: "expired"; sent: SentVoteDelegation };
 
-const FIELDS = new Set(["account", "network", "sentAt", "txHash", "drepBefore", "target", "resend"]);
-
 /**
  * The stored text as a record for `network`, or `null` if it is anything else.
- * Exact shape only: an unknown field, a missing one, or a record for another
- * network is "not ours".
+ * The fields this build knows (the ones named below), exactly: a missing one,
+ * one with the wrong shape, or a record for another network is "not ours".
+ *
+ * A field this build does not know is skipped, not fatal: the record was
+ * written by a newer build of this wallet (`resend` was one such field,
+ * `drepBefore` and `target` before it), and a tab on the older build reading
+ * it as malformed removed it — the `storage` event that fires on removal then
+ * dropped the pending line on every up-to-date tab while the transaction was
+ * still on its way. The skipped field is not guessed at and not rewritten:
+ * this build keeps only what it understands.
  *
  * `target` is optional on read: records written before it existed (at most
  * one watch window, two hours, old) are still read, and judged by the older
@@ -70,7 +81,6 @@ function parseRecord(raw: string, network: number): SentVoteDelegation | null {
   }
   if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
   const o = v as Record<string, unknown>;
-  if (Object.keys(o).some((k) => !FIELDS.has(k))) return null;
   const { account, sentAt, txHash, drepBefore, target, resend } = o;
   if (typeof account !== "string" || account.length === 0) return null;
   if (o.network !== network || (network !== 0 && network !== 1 && network !== 2)) return null;
