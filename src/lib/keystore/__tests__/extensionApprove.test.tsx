@@ -444,6 +444,13 @@ describe("submitTx is described, then sent — or refused with TxSendError.Refus
   it.each([
     ["a dropped connection", () => new TypeError("Failed to fetch")],
     ["a 503 from the node's proxy", () => new SubmitRejectedError(503, "upstream timeout", "Koios /submittx")],
+    // Issue #71: the status alone cannot say the node never read the bytes.
+    // A proxy answered 400 after they left; a rejection answer here gets the
+    // same payment built again from other inputs.
+    [
+      "a 400 whose body names no ledger rule",
+      () => new SubmitRejectedError(400, "upstream connect error or disconnect/reset before headers", "Koios /submittx"),
+    ],
     ["a reply with no hash", () => new Error("Koios /submittx returned no tx hash: <html>")],
   ])("%s is 'result unknown' with the id to look up, on the site and on screen", async (_name, err) => {
     mocks.fetchUtxos.mockResolvedValue(ourInputs());

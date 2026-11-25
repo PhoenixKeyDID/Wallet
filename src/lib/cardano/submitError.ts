@@ -25,17 +25,22 @@
  *
  * ## The 4xx / 5xx line
  *
- * Every `4xx` is *answered* as this transaction did not get in: usually the
- * node saying no, sometimes the provider failing before it reached one. Only
- * one 400 of that second kind has been measured as never reaching a node (see
- * `rejectionReasonForSite`); the rest are not proven pre-node either way, and
- * whether they should keep the id to look up instead is the open question in
- * issue #71. `5xx` is the node or a proxy failing, and a
- * failure on the way back cannot tell you whether the transaction got through
- * on the way in — so `5xx` stays **unknown**, along with timeouts and dropped
- * connections. The split is deliberately on the side of caution: a rejection
- * misread as unknown costs one confusing screen, while an unknown misread as a
+ * A `5xx` is the node or a proxy failing, and a failure on the way back
+ * cannot tell you whether the transaction got through on the way in — so
+ * `5xx` stays **unknown**, along with timeouts and dropped connections. The
+ * split is deliberately on the side of caution: a rejection misread as
+ * unknown costs one confusing screen, while an unknown misread as a
  * rejection invites a second payment.
+ *
+ * Within `4xx`, the same caution splits the statuses (issue #71):
+ * `401/402/403/429` are the provider refusing the person's account before
+ * forwarding anything — definite. A `400` is definite only when its body
+ * names a ledger rule (the same `LEDGER_REASON` match the site's reason
+ * reads), or is the one non-ledger 400 measured as pre-node (see
+ * `MEASURED_PRE_NODE_400`): every other 400 body is unproven either way — a
+ * proxy can answer `400` (`upstream connect error or disconnect/reset before
+ * headers`) for bytes a node already read — so it counts as **unknown**, and
+ * the hash is handed back to look up.
  */
 export class SubmitRejectedError extends Error {
   constructor(
@@ -61,14 +66,41 @@ export class SubmitRejectedError extends Error {
 }
 
 /**
+ * The one non-ledger 400 measured as never reaching a node (Koios,
+ * `submittx`): its own backend failing to connect to one —
+ * `TxCmdTxSubmitConnectionError: Network.Socket.connect: <socket: 14>: does
+ * not exist (No such file or directory)` — for the same bytes that, a moment
+ * earlier, got a real `ConwayIncompleteWithdrawals`. That body is definite:
+ * the bytes were refused before any node read them.
+ *
+ * Anchored at the start and closed at `does not exist`, because it earns
+ * "definite" only as the measured body itself: a proxy message that merely
+ * quotes the words is one of the unproven ones.
+ */
+const MEASURED_PRE_NODE_400 =
+  /^TxCmdTxSubmitConnectionError: Network\.Socket\.connect: .* does not exist/;
+
+/**
  * True when this error means the node definitively refused the transaction.
  *
  * A function rather than a bare `instanceof` at each call site: the status
  * check belongs with the type, and a caller that forgets it would treat a 5xx
  * as a rejection, which is the direction that loses money.
+ *
+ * The `400` half is decided by the body, not the status alone: a 400 body that
+ * names no ledger rule and is not the one measured pre-node error
+ * (`MEASURED_PRE_NODE_400`) may belong to bytes a node already read — a proxy
+ * answering 400 after forwarding them. Reporting that as a rejection tells
+ * the site the send failed, the site rebuilds the payment from other inputs,
+ * and the person pays twice (issue #71). `401/402/403/429` stay definite:
+ * those statuses are the provider refusing the person's account before
+ * forwarding anything.
  */
 export function isDefiniteRejection(err: unknown): err is SubmitRejectedError {
-  return err instanceof SubmitRejectedError && err.status >= 400 && err.status < 500;
+  if (!(err instanceof SubmitRejectedError)) return false;
+  if (err.status < 400 || err.status >= 500) return false;
+  if (err.status !== 400) return true;
+  return MEASURED_PRE_NODE_400.test(err.detail) || ledgerNames(err.detail).length > 0;
 }
 
 /**
@@ -291,12 +323,10 @@ function ledgerNames(detail: string): string[] {
  * `message` stays available to the wallet's own code.
  *
  * This shapes the text only. Whether an error is a rejection at all is still
- * `isDefiniteRejection`'s call, made before this is reached. That call stays on
- * the status. Only the socket 400 above was measured as never reaching a
- * node; other non-ledger 400s are not proven pre-node either way — they are
- * still answered as a rejection, just not with the provider's words, and
- * whether they should keep the id to look up instead is the open question in
- * issue #71. A ledger refusal that a proxy turns into a 5xx
+ * `isDefiniteRejection`'s call, made before this is reached, and that call
+ * reads the body of a 400, not the status alone: a 400 that names no ledger
+ * rule and is not the measured socket error is *unknown* and never reaches
+ * here. A ledger refusal that a proxy turns into a 5xx
  * stays *unknown* — the direction that cannot cost a second payment.
  */
 export function rejectionReasonForSite(err: SubmitRejectedError): string {

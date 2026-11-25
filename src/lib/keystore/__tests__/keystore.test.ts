@@ -459,6 +459,34 @@ describe("local signing", () => {
     expect((err as Error).message).toContain("BadInputsUTxO");
   });
 
+  it("calls a 400 with no ledger rule unknown — a proxy can answer it after the bytes reached a node", async () => {
+    // Issue #71: the status alone cannot say the node never read the bytes.
+    // Rethrowing this one as the node's own refusal tells the caller the send
+    // failed; the payment gets built again from other inputs, and the person
+    // pays twice.
+    const { account, built } = await walletWithFunds();
+    const err = await signAndSubmitLocal(built, account, NETWORK, async () => {
+      throw new SubmitRejectedError(400, "upstream connect error or disconnect/reset before headers", "Koios /submittx");
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(SubmitUncertainError);
+    expect((err as SubmitUncertainError).txHash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("still calls the measured socket 400 a rejection — the bytes were refused before any node read them", async () => {
+    // The one non-ledger 400 measured as pre-node (Koios's own backend
+    // failing to connect to a node). It is as definite as a ledger refusal.
+    const { account, built } = await walletWithFunds();
+    const err = await signAndSubmitLocal(built, account, NETWORK, async () => {
+      throw new SubmitRejectedError(
+        400,
+        "TxCmdTxSubmitConnectionError: Network.Socket.connect: <socket: 14>: does not exist (No such file or directory)",
+        "Koios /submittx",
+      );
+    }).catch((e) => e);
+    expect(err).toBeInstanceOf(SubmitRejectedError);
+    expect(err).not.toBeInstanceOf(SubmitUncertainError);
+  });
+
   it("still calls a 5xx unknown — a failure on the way back says nothing about the way in", async () => {
     // The boundary, from the other side. `SubmitRejectedError` alone is not the
     // test: a gateway that dies after forwarding the transaction produces one

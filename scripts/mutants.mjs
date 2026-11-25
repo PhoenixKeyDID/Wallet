@@ -721,8 +721,41 @@ const MUTANTS = [
   {
     name: "a 5xx counts as the node saying no (invites a second payment)",
     file: "src/lib/cardano/submitError.ts",
-    from: "  return err instanceof SubmitRejectedError && err.status >= 400 && err.status < 500;",
-    to: "  return err instanceof SubmitRejectedError;",
+    from: [
+      "  if (!(err instanceof SubmitRejectedError)) return false;",
+      "  if (err.status < 400 || err.status >= 500) return false;",
+    ].join("\n"),
+    to: "  if (!(err instanceof SubmitRejectedError)) return false;",
+  },
+  {
+    // Issue #71: the 400 half of the guard. Reverted to the status alone, a
+    // proxy's 400 for bytes a node already read is answered as the node's own
+    // refusal — the site rebuilds the payment, the person pays twice.
+    name: "a 400 counts as definite again, whatever its body says",
+    file: "src/lib/cardano/submitError.ts",
+    from: [
+      "  if (err.status !== 400) return true;",
+      "  return MEASURED_PRE_NODE_400.test(err.detail) || ledgerNames(err.detail).length > 0;",
+    ].join("\n"),
+    to: "  return true;",
+  },
+  {
+    // The one measured pre-node 400: without its branch, every non-ledger
+    // 400 — this one included — is unknown, and a refusal that never reached
+    // a node locks the screen over a hash that exists nowhere.
+    name: "the measured socket 400 no longer counts as definite",
+    file: "src/lib/cardano/submitError.ts",
+    from: "  return MEASURED_PRE_NODE_400.test(err.detail) || ledgerNames(err.detail).length > 0;",
+    to: "  return ledgerNames(err.detail).length > 0;",
+  },
+  {
+    // The ledger-rule branch: without it, a real ledger refusal (BadInputsUTxO,
+    // fee too low) is unknown, and the screen sends the reader to look up a
+    // hash that is on no explorer.
+    name: "a 400 that names a ledger rule no longer counts as definite",
+    file: "src/lib/cardano/submitError.ts",
+    from: "  return MEASURED_PRE_NODE_400.test(err.detail) || ledgerNames(err.detail).length > 0;",
+    to: "  return MEASURED_PRE_NODE_400.test(err.detail);",
   },
   {
     name: "Send review prints the bare token name again (policy id dropped on the last screen)",
