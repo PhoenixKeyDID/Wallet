@@ -2503,14 +2503,14 @@ const MUTANTS = [
     name: "MUT57-DROP: a later read showing another balance than the amount withdrawn does not open the door",
     file: FEEDBACK,
     from:
-      "  if (\n    readAt !== null &&\n    readAt > sent.sentAt &&\n    rewardsAvailable !== undefined &&\n" +
+      "  if (\n    readSeq !== null &&\n    readSeq > sent.readSeq &&\n    rewardsAvailable !== undefined &&\n" +
       '    rewardsAvailable !== sent.amount\n  )\n    return "open";\n',
     to: "  /* MUT57-DROP */\n",
   },
   {
     name: "MUT57-READAT: a read started before (or as) the withdrawal was sent releases the hold",
     file: FEEDBACK,
-    from: "    readAt > sent.sentAt &&\n",
+    from: "    readSeq > sent.readSeq &&\n",
     to: "    /* MUT57-READAT */\n",
   },
   {
@@ -2524,20 +2524,20 @@ const MUTANTS = [
     file: FEEDBACK,
     from:
       '  if (sent === null || sent.account !== account || sent.network !== network) return "none";\n' +
-      "  if (now - sent.sentAt >= WITHDRAWAL_WATCH_LIMIT_MS)",
+      "  if (nowMono - sent.sentMono >= WITHDRAWAL_WATCH_LIMIT_MS)",
     to:
       '  if (sent === null /* MUT57-ACCOUNT */ || sent.network !== network) return "none";\n' +
-      "  if (now - sent.sentAt >= WITHDRAWAL_WATCH_LIMIT_MS)",
+      "  if (nowMono - sent.sentMono >= WITHDRAWAL_WATCH_LIMIT_MS)",
   },
   {
     name: "MUT57-NETWORK: a withdrawal sent on another network is held on this one",
     file: FEEDBACK,
     from:
       '  if (sent === null || sent.account !== account || sent.network !== network) return "none";\n' +
-      "  if (now - sent.sentAt >= WITHDRAWAL_WATCH_LIMIT_MS)",
+      "  if (nowMono - sent.sentMono >= WITHDRAWAL_WATCH_LIMIT_MS)",
     to:
       '  if (sent === null || sent.account !== account /* MUT57-NETWORK */) return "none";\n' +
-      "  if (now - sent.sentAt >= WITHDRAWAL_WATCH_LIMIT_MS)",
+      "  if (nowMono - sent.sentMono >= WITHDRAWAL_WATCH_LIMIT_MS)",
   },
   {
     name: "MUT57-READ-ORDER: an account read that answers late lays an older balance over a newer one",
@@ -2555,7 +2555,7 @@ const MUTANTS = [
   {
     name: "MUT57-TTL: a held withdrawal outlives the transaction's validity window",
     file: FEEDBACK,
-    from: '  if (now - sent.sentAt >= WITHDRAWAL_WATCH_LIMIT_MS) return "released";\n',
+    from: '  if (nowMono - sent.sentMono >= WITHDRAWAL_WATCH_LIMIT_MS) return "released";\n',
     to: "  /* MUT57-TTL */\n",
   },
   {
@@ -2583,7 +2583,7 @@ const MUTANTS = [
   {
     name: "MUT57-UNSEEN: a withdrawal not in a block long past the threshold holds the door for the whole validity window",
     file: FEEDBACK,
-    from: '  if (answer !== null && !answer.seen && answer.askedAt - sent.sentAt > DELEGATION_UNSEEN_MS) return "unseen";\n',
+    from: '  if (answer !== null && !answer.seen && answer.askedAt - sent.sentMono > DELEGATION_UNSEEN_MS) return "unseen";\n',
     to: "  /* MUT57-UNSEEN */\n",
   },
   {
@@ -2604,8 +2604,8 @@ const MUTANTS = [
   {
     name: "MUT57-UNSEEN-ASKED: a 'not in a block' asked before the threshold still says 'not seen' after it",
     file: FEEDBACK,
-    from: "answer.askedAt - sent.sentAt > DELEGATION_UNSEEN_MS",
-    to: "now - sent.sentAt > DELEGATION_UNSEEN_MS /* MUT57-UNSEEN-ASKED */",
+    from: "answer.askedAt - sent.sentMono > DELEGATION_UNSEEN_MS",
+    to: "nowMono - sent.sentMono > DELEGATION_UNSEEN_MS /* MUT57-UNSEEN-ASKED */",
   },
   {
     name: "MUT57-SEEN: a transaction found in a block can still be called 'not seen'",
@@ -2622,8 +2622,41 @@ const MUTANTS = [
   {
     name: "MUT57-SEQ: account reads are ordered by the wall clock, so a clock stepped back drops every later read",
     file: STAKING,
-    from: "  const startRead = (): AccountRead => ({ seq: ++readSeqRef.current, at: Date.now() });\n",
+    from: "  const startRead = (): AccountRead => ({ seq: ++accountReadSeqCounter, at: Date.now() });\n",
     to: "  const startRead = (): AccountRead => ({ seq: Date.now() /* MUT57-SEQ */, at: Date.now() });\n",
+  },
+  // ── Issue #72 (MUT72-*): the held-withdrawal door waits on the wall clock
+  // no longer — "a read after the send" is counted, the window is counted on
+  // the monotonic clock, Confirm re-checks `held`, and `open` ticks its own
+  // clock so the record can reach `released` on an open panel ──
+  {
+    name: "MUT72-SEQ: a read counted before (or as) the withdrawal was sent releases the hold",
+    file: FEEDBACK,
+    from: "    readSeq > sent.readSeq &&\n",
+    to: "    readSeq >= 0 /* MUT72-SEQ */ &&\n",
+  },
+  {
+    name: "MUT72-MONO: the validity window is counted on the wall clock, so a step back after the send holds the door for the length of the step",
+    file: FEEDBACK,
+    from: '  if (nowMono - sent.sentMono >= WITHDRAWAL_WATCH_LIMIT_MS) return "released";\n',
+    to: '  if (nowMono - sent.sentAt >= WITHDRAWAL_WATCH_LIMIT_MS) return "released"; /* MUT72-MONO */\n',
+  },
+  {
+    name: "MUT72-CONFIRM: Confirm on the review screen sends a second withdrawal behind a door that went back to held",
+    file: STAKING,
+    from:
+      '    if (withdrawal === "held") {\n' +
+      "      setWithdrawReview(null);\n" +
+      "      setChecked(false);\n" +
+      '      return toastError(t("withdraw_sent_waiting"));\n' +
+      "    }\n",
+    to: "    /* MUT72-CONFIRM */\n",
+  },
+  {
+    name: "MUT72-OPEN-TICK: nothing ticks the clock in `open`, so the record never reaches `released` on an open panel",
+    file: STAKING,
+    from: '    if (withdrawal !== "open") return;\n',
+    to: "    if (true /* MUT72-OPEN-TICK */) return;\n",
   },
   // ── The confirm gate re-arms inside the commit, so a tick right after a review
   // appears is not undone, and still re-arms when the destination changes ──

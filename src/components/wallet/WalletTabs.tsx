@@ -285,9 +285,10 @@ export function WalletTabs({
    * above: the indexer keeps reporting the old reward balance after it lands,
    * and a trip to another tab and back must not bring the withdraw button back
    * with that balance on it. Released by the Staking tab when the
-   * transaction's validity window has closed (`withdrawalWatch`) — it reads
-   * the clock on mount, so a record that outlives its window on another tab
-   * goes the moment Staking opens. A read showing another balance opens the
+   * transaction's validity window has closed (`withdrawalWatch`, counted on
+   * the monotonic clock, and ticked while the Staking tab stays open) — it
+   * reads the clock on mount, so a record that outlives its window on another
+   * tab goes the moment Staking opens. A read showing another balance opens the
    * door without dropping the record, so a lagging read of the old balance
    * afterwards still holds it. Only the record for that hash goes.
    *
