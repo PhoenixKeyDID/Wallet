@@ -3425,6 +3425,86 @@ const MUTANTS = [
     to: "  void setRereadFailed; /* MUT74-REREAD-CLEAR */\n",
     marker: "MUT74-REREAD-CLEAR",
   },
+  // ── Issue #59 (MUT59-*): the CIP-30 review's leftovers — the idle lock
+  // over a request on screen, translated refusals, the method's own decline on
+  // a closed window, one foreign-inputs block, and Plutus data the ledger
+  // allows ──
+  {
+    name: "MUT59-LOCK-CANCEL: the idle lock drops a request on screen without telling the site or the person",
+    file: APPROVE,
+    from:
+      "      if (\n        !busyRef.current &&\n        decidingRef.current &&\n" +
+      '        (onScreen.at === "decide" || onScreen.at === "connect")\n      ) {\n',
+    to: "      if (false /* MUT59-LOCK-CANCEL */) {\n",
+  },
+  {
+    name: "MUT59-DECLINE: a window closed mid-request answers every method with the generic refusal",
+    file: WORKER,
+    from:
+      '  if (method === "signTx") return declined(info);\n' +
+      '  if (method === "submitTx") return sendRefused(info);\n' +
+      '  if (method === "signData") return dataSignError(DATA_SIGN_ERROR.UserDeclined, info);\n',
+    to: "  /* MUT59-DECLINE */\n",
+  },
+  {
+    name: "MUT59-CLOSED-TEXT: the closed-window sentence goes to the site in fixed English again",
+    file: WORKER,
+    from: 'siteText("cip30_window_closed")',
+    to: '"The wallet window was closed." /* MUT59-CLOSED-TEXT */',
+  },
+  {
+    name: "MUT59-ONE-AT-A-TIME: the second-request refusal goes to the site in fixed English again",
+    file: APPROVE,
+    from:
+      "        if (decidingRef.current) {\n" +
+      "          p.postMessage({\n" +
+      "            type: \"result\",\n" +
+      "            id: req.id,\n" +
+      '            result: { ok: false, error: refused(tRef.current("cip30_one_at_a_time")) },\n' +
+      "          });\n" +
+      "          return;\n" +
+      "        }\n" +
+      "        decidingRef.current = true;\n" +
+      "        setLockCancelled(null);\n" +
+      '        setPhase({ at: "decide", req });\n',
+    to:
+      "        if (decidingRef.current) {\n" +
+      "          p.postMessage({\n" +
+      "            type: \"result\",\n" +
+      "            id: req.id,\n" +
+      '            result: { ok: false, error: refused("another request is already on screen" /* MUT59-ONE-AT-A-TIME */) },\n' +
+      "          });\n" +
+      "          return;\n" +
+      "        }\n" +
+      "        decidingRef.current = true;\n" +
+      "        setLockCancelled(null);\n" +
+      '        setPhase({ at: "decide", req });\n',
+  },
+  {
+    name: "MUT59-FOREIGN-BLOCKS: the contract explanation is a second red block, not a grey note",
+    file: TX_SUMMARY_VIEW,
+    from: '<p className="approve-note" data-testid="foreign-inputs-note">',
+    to: '<p className="approve-error" data-testid="foreign-inputs-note">',
+  },
+  {
+    name: "MUT59-PLUTUS-DATA: the walk descends into plutus_data values for keys again",
+    file: CBOR_DUP,
+    from: '  if (ctx === "plutus-data") return "skip";\n',
+    to: '  if (ctx === "plutus-data") return "strict" /* MUT59-PLUTUS-DATA */;\n',
+  },
+  {
+    name: "MUT59-INLINE-DATUM: the walk descends into an output's inline datum for keys again",
+    file: CBOR_DUP,
+    from: '    return uintAt(bytes, first) === 1 ? "skip" : "strict";\n',
+    to: '    return "strict" /* MUT59-INLINE-DATUM */;\n',
+  },
+  {
+    name: "MUT59-REDEEMER-DATA: the walk descends into a redeemer's data for keys again",
+    file: CBOR_DUP,
+    from: '  if (ctx === "redeemer-item") return index === 2 ? "skip" : "strict";\n',
+    to: '  if (ctx === "redeemer-item") return "strict" /* MUT59-REDEEMER-DATA */;\n',
+  },
+
 ];
 
 /**

@@ -744,7 +744,10 @@ export function summariseTx(
   // empty duplicate. The same move hides mint (9), network id (15), outputs (1)
   // and collateral (13). The Conway ledger rejects duplicate keys, but that is
   // the node's refusal, after this wallet would already have signed what the
-  // screen described wrong, so it is refused here.
+  // screen described wrong, so it is refused here. The walk covers the
+  // transaction's LEDGER structure; Plutus data values (an inline datum, a
+  // `plutus_data` value, a redeemer's data) are not walked for keys, because
+  // the ledger allows a datum's map to repeat one.
   try {
     assertNoDuplicateMapKeys(txBytes);
   } catch (e) {

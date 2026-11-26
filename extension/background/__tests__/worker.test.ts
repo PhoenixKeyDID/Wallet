@@ -13,6 +13,7 @@
  */
 import { describe, it, expect, beforeAll } from "vitest";
 import { CHANNEL, WALLET_PORT } from "../../src/rpc/protocol";
+import enWallet from "../../../locales/en/wallet.json";
 
 const EXT = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
 const SITES = {
@@ -22,6 +23,7 @@ const SITES = {
   web: "https://web.example",
   window: "https://dex.example",
   noWindowId: "https://noid.example",
+  closedWindow: "https://closed-window.example",
 } as const;
 
 /** What `chrome.windows.create` answers; a test may swap it. */
@@ -130,4 +132,81 @@ describe("a window the browser opened without an id", () => {
       }
     });
   }
+});
+
+// Issue #59: a window closed mid-request settles with the method's own decline
+// code — the same its Reject button would have answered — and the sentences a
+// site reads come from the locale files, not fixed English. A generic
+// `APIError.Refused` reads as "the wallet disconnected" to some dApps, which
+// answer it by asking `enable` again instead of showing the person anything.
+describe("a window closed mid-request answers the method's own decline", () => {
+  /** Attach an approval window for `origin` that answers nothing, and how to close it. */
+  function attachWindow(origin: string): { close: () => void; requests: unknown[] } {
+    const requests: unknown[] = [];
+    let disconnect: () => void = () => {};
+    let toWindow: (m: unknown) => void = () => {};
+    const port = {
+      name: WALLET_PORT,
+      sender: { url: `${EXT}/approve.html?origin=${encodeURIComponent(origin)}` },
+      postMessage: (m: unknown) => void requests.push(m),
+      onMessage: { addListener: (cb: (m: unknown) => void) => void (toWindow = cb) },
+      onDisconnect: { addListener: (cb: () => void) => void (disconnect = cb) },
+    };
+    onConnect(port);
+    // The window's hello goes down the port, as the browser would deliver it.
+    toWindow({ type: "hello", origin });
+    return { close: () => disconnect(), requests };
+  }
+
+  /** One site request through the worker, resolved with what the page is told. */
+  function siteRequest(
+    origin: string,
+    method: string,
+  ): Promise<{ ok: boolean; error?: { code: number; info: string } }> {
+    return new Promise((resolve) => {
+      const kept = onMessage(
+        { channel: CHANNEL, kind: "req", id: `close-${method}`, method, params: ["00"] },
+        { origin, frameId: 0 },
+        (r) => resolve(r as { ok: boolean; error?: { code: number; info: string } }),
+      );
+      expect(kept).toBe(true);
+    });
+  }
+
+  for (const [method, code] of [
+    ["signTx", 2], // TxSignError.UserDeclined
+    ["submitTx", 1], // TxSendError.Refused
+    ["signData", 3], // DataSignError.UserDeclined
+  ] as const) {
+    it(`closing the window during ${method} answers code ${code}, with the translated window-closed sentence`, async () => {
+      const origin = SITES.closedWindow;
+      const win = attachWindow(origin);
+      const answer = siteRequest(origin, method);
+      // The request reached the window before it closed.
+      await new Promise((r) => setTimeout(r, 20));
+      expect(win.requests.length).toBe(1); // the forwarded request, still unanswered
+      win.close();
+      expect(await answer).toMatchObject({
+        ok: false,
+        error: { code, info: enWallet.cip30_window_closed },
+      });
+    });
+  }
+
+  it("a site that never connected is refused with the translated sentence", async () => {
+    // The grants store answers nothing for this origin, so the worker refuses
+    // before any window is asked.
+    (globalThis as unknown as { chrome: { storage: { session: { get: unknown } } } }).chrome.storage.session.get =
+      async () => ({});
+    try {
+      const answer = siteRequest("https://never-connected.example", "getUtxos");
+      expect(await answer).toMatchObject({
+        ok: false,
+        error: { code: -3, info: enWallet.cip30_not_connected },
+      });
+    } finally {
+      (globalThis as unknown as { chrome: { storage: { session: { get: unknown } } } }).chrome.storage.session.get =
+        async (key: string) => ({ [key]: Object.fromEntries(Object.values(SITES).map((o) => [o, true])) });
+    }
+  });
 });

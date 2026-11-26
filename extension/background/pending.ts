@@ -28,10 +28,16 @@
 /** The part of a `chrome.runtime.Port` this file needs. */
 export type WindowPort = { postMessage(m: unknown): void };
 
-type Waiting = { port: WindowPort; settle: (result: unknown) => void };
+type Waiting = { port: WindowPort; method: string; settle: (result: unknown) => void };
 
-/** What a window's request is settled with when the window goes away first. */
-export type ClosedAnswer = () => unknown;
+/**
+ * What a window's request is settled with when the window goes away first.
+ * Handed the request's METHOD, because the answer is the method's own decline:
+ * a window closed during `signTx` answers what its Reject button would have
+ * (`TxSignError.UserDeclined`), not a generic refusal some dApps read as
+ * "disconnected" and answer by asking `enable` again.
+ */
+export type ClosedAnswer = (method: string) => unknown;
 
 function randomId(): string {
   // `crypto.randomUUID` exists in service workers and in Node ≥19; a fallback
@@ -84,7 +90,7 @@ export function createRegistry(closedAnswer: ClosedAnswer, newId: () => string =
       // Unique within the worker, not just unlikely to collide.
       while (waiting.has(id)) id = newId();
       return new Promise((resolve) => {
-        waiting.set(id, { port, settle: resolve });
+        waiting.set(id, { port, method, settle: resolve });
         port.postMessage({ type: "request", id, origin, method, params });
       });
     },
@@ -107,7 +113,7 @@ export function createRegistry(closedAnswer: ClosedAnswer, newId: () => string =
       for (const [id, w] of waiting) {
         if (w.port !== port) continue;
         waiting.delete(id);
-        w.settle(closedAnswer());
+        w.settle(closedAnswer(w.method));
       }
       if (origin !== null && windows.get(origin) === port) windows.delete(origin);
     },

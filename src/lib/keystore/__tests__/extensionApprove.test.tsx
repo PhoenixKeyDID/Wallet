@@ -1083,3 +1083,67 @@ describe("signTx with tokens a website's transaction creates", () => {
     ]);
   });
 });
+
+// Issue #59, points 1 and 3: an idle lock while a request is on screen
+// cancels it and says so — to the site, with the lock's own translated
+// sentence, and to the person, once they come back and unlock; the refusals a
+// site reads come from the locale files, not fixed English.
+describe("#59: the idle lock over a request on screen, and translated refusals", () => {
+  it("cancels the request, tells the site with cip30_window_locked, and says so after unlocking", async () => {
+    mocks.fetchUtxos.mockResolvedValue(ourInputs());
+    const { port, view } = await unlocked();
+    act(() => port.deliver({ type: "request", id: "lock1", origin: ORIGIN, method: "signTx", params: [SIGNED_TX] }));
+    // The request is on screen, described.
+    await view.findByText(en.cip30_leaves_wallet);
+
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      fireEvent.mouseDown(window);
+      act(() => void vi.advanceTimersByTime(DEFAULT_LOCK_TIMEOUT_MS + 1));
+    } finally {
+      vi.useRealTimers();
+    }
+
+    // The site is told at once, with the lock's own sentence — not left
+    // waiting on a request whose screen is gone.
+    const told = port.sent.find((m) => m.type === "result" && m.id === "lock1");
+    expect(told?.result).toMatchObject({ ok: false, error: { code: -3, info: en.cip30_window_locked } });
+
+    // The locked screen says what happened to the request, not just "unlock".
+    const notice = en.cip30_lock_cancelled.replace("{{origin}}", "dex.example");
+    expect(await view.findByText(notice)).toBeTruthy();
+
+    // And it is still said after unlocking, on the "Connected" screen the
+    // person comes back to — which otherwise reads as if nothing had been asked.
+    const pw = await view.findByPlaceholderText(en.local_password);
+    fireEvent.change(pw, { target: { value: PASSWORD } });
+    fireEvent.click(view.getByText(en.local_unlock_cta));
+    await waitFor(() => expect(view.getByText(en.cip30_connected)).toBeTruthy(), { timeout: 20_000 });
+    expect(view.getByText(notice)).toBeTruthy();
+  });
+
+  it("refuses a second request while one is on screen, with the translated sentence", async () => {
+    mocks.fetchUtxos.mockResolvedValue(ourInputs());
+    const { port, view } = await unlocked();
+    act(() => port.deliver({ type: "request", id: "one1", origin: ORIGIN, method: "signTx", params: [SIGNED_TX] }));
+    await view.findByText(en.cip30_leaves_wallet);
+    act(() => port.deliver({ type: "request", id: "one2", origin: ORIGIN, method: "signTx", params: [SIGNED_TX] }));
+    await waitFor(() => {
+      const res = port.sent.find((m) => m.type === "result" && m.id === "one2");
+      expect(res?.result).toMatchObject({ ok: false, error: { code: -3, info: en.cip30_one_at_a_time } });
+    });
+    // The first request is untouched on screen.
+    expect(view.getByText(en.cip30_leaves_wallet)).toBeTruthy();
+  });
+
+  it("refuses a request naming another site, with the translated sentence", async () => {
+    const { port } = await unlocked();
+    act(() =>
+      port.deliver({ type: "request", id: "mm1", origin: "https://other.example", method: "getUtxos", params: [] }),
+    );
+    await waitFor(() => {
+      const res = port.sent.find((m) => m.type === "result" && m.id === "mm1");
+      expect(res?.result).toMatchObject({ ok: false, error: { code: -3, info: en.cip30_origin_mismatch } });
+    });
+  });
+});

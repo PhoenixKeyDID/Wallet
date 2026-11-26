@@ -37,12 +37,20 @@ import {
   refused,
   internal,
   invalid,
+  declined,
+  sendRefused,
+  dataSignError,
+  DATA_SIGN_ERROR,
   type ApiError,
   type Request,
   WALLET_PORT,
   type Response as RpcResponse,
 } from "../src/rpc/protocol";
 import { createRegistry, type WindowPort } from "./pending";
+import enWallet from "../../locales/en/wallet.json";
+import viWallet from "../../locales/vi/wallet.json";
+import jaWallet from "../../locales/ja/wallet.json";
+import zhWallet from "../../locales/zh/wallet.json";
 
 // Only what is used, structurally typed — this repo does not carry
 // `@types/chrome`, and a hand-written surface is one a reviewer can check.
@@ -55,6 +63,7 @@ type Port = {
   onDisconnect: { addListener(cb: () => void): void };
 };
 type Chrome = {
+  i18n?: { getUILanguage(): string };
   runtime: {
     onMessage: {
       addListener(
@@ -101,6 +110,45 @@ async function grant(origin: string): Promise<void> {
   await chrome.storage.session.set({ [GRANTS_KEY]: all });
 }
 
+// ─── What a site is told, in the browser's own language ─────────────────────
+//
+// A service worker has no DOM and no i18next; the sentences a site reads off
+// `error.info` still follow the browser's language, because many dApps print
+// `info` as is. The locale JSON is imported, not fetched — the manifest's CSP
+// forbids remote code, and a worker that needs the network to say "the window
+// was closed" says nothing when the network is the problem.
+const SITE_TEXT: Record<string, Record<string, string>> = {
+  en: enWallet,
+  vi: viWallet,
+  ja: jaWallet,
+  zh: zhWallet,
+};
+
+/** One site-facing sentence, in the browser's UI language, English otherwise. */
+function siteText(key: string): string {
+  let lang = "en";
+  try {
+    lang = (chrome.i18n?.getUILanguage() ?? "en").slice(0, 2).toLowerCase();
+  } catch {
+    lang = "en";
+  }
+  const table = SITE_TEXT[lang] ?? SITE_TEXT.en!;
+  return table[key] ?? SITE_TEXT.en![key] ?? key;
+}
+
+/**
+ * The answer a closed window settles a request with: the method's own decline
+ * code, the same its Reject button would have answered. A generic
+ * `APIError.Refused` reads as "the wallet disconnected" to some dApps, which
+ * answer it by asking `enable` again instead of showing the person anything.
+ */
+function declinedFor(method: string, info: string): ApiError {
+  if (method === "signTx") return declined(info);
+  if (method === "submitTx") return sendRefused(info);
+  if (method === "signData") return dataSignError(DATA_SIGN_ERROR.UserDeclined, info);
+  return refused(info);
+}
+
 // ─── The open wallet windows, by origin ──────────────────────────────────────
 
 /**
@@ -108,10 +156,9 @@ async function grant(origin: string): Promise<void> {
  * rules — unguessable ids, an answer only counts on the port the request went
  * down — live in `pending.ts`, where they are tested.
  */
-const registry = createRegistry(() => ({
-  ok: false,
-  error: refused("The wallet window was closed."),
-}));
+const registry = createRegistry(
+  (method) => ({ ok: false, error: declinedFor(method, siteText("cip30_window_closed")) }),
+);
 /** Requests to open a window that have not been answered yet. */
 const opening = new Map<string, Promise<WindowPort | null>>();
 
@@ -241,11 +288,11 @@ async function handle(req: Request, sender: { origin?: string; frameId?: number 
   }
 
   if (need !== "enable" && !granted) {
-    return fail(refused("This site has not been connected to the wallet."));
+    return fail(refused(siteText("cip30_not_connected")));
   }
 
   const w = await walletWindow(origin);
-  if (!w) return fail(refused("The wallet window could not be opened."));
+  if (!w) return fail(refused(siteText("cip30_window_open_failed")));
 
   const raw = (await registry.ask(w, origin, req.method, req.params)) as
     | { ok: true; value: unknown }

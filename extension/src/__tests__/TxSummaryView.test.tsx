@@ -71,6 +71,37 @@ function shown(overrides: Partial<TxSummary> = {}) {
   return container.textContent ?? "";
 }
 
+/** The red blocks the same render produced, as elements — for counting them. */
+function shown2(overrides: Partial<TxSummary> = {}): HTMLElement[] {
+  const summary: TxSummary = {
+    net: [],
+    toOthers: [],
+    toSelfWithDatum: [],
+    fee: BigInt(170_000),
+    ownInputs: 1,
+    totalInputs: 1,
+    foreignInputs: 0,
+    burns: [],
+    foreignMintList: [],
+    collateral: null,
+    withdrawals: 0,
+    foreignWithdrawals: 0,
+    ownRewardKeyHashes: [],
+    withdrawalLovelace: BigInt(0),
+    foreignInputList: [],
+    foreignWithdrawalList: [],
+    redeemers: [],
+    scriptDataCommitted: false,
+    ...overrides,
+  };
+  const { container } = render(
+    <I18nextProvider i18n={i18n}>
+      <TxSummaryView summary={summary} />
+    </I18nextProvider>,
+  );
+  return Array.from(container.querySelectorAll("p.approve-error"));
+}
+
 const SCRIPT_REWARD = "f0" + "5c".repeat(28);
 const KEY_REWARD = "e0" + "01".repeat(28);
 const foreignWd = (rewardAccountHex: string, redeemer: boolean, lovelace = BigInt(0)) => ({
@@ -187,15 +218,21 @@ describe("TxSummaryView — what the approval window shows", () => {
   // An input that is not this wallet's can be unlocked by this wallet's
   // signature (a Plutus or a native script), and its value is not in the
   // amount on screen.
-  it("warns, with the count, when the transaction spends inputs that are not this wallet's", () => {
+  it("warns once, with the count, when the transaction spends inputs that are not this wallet's", () => {
     const text = shown({ ownInputs: 1, totalInputs: 3, foreignInputs: 2 });
     expect(text).toContain(en.cip30_foreign_inputs.replace("{{n}}", "2"));
-    expect(shown({ ownInputs: 1, totalInputs: 1 })).not.toContain(en.cip30_foreign_inputs.split("{{n}}")[0]!);
-  });
-
-  it("says when it recognised only some of the inputs", () => {
-    const text = shown({ ownInputs: 1, totalInputs: 3 });
-    expect(text).toContain("1 of 3");
+    expect(text).toContain(en.cip30_foreign_inputs_note);
+    // One red block, not two: `ownInputs < totalInputs` and `foreignInputs > 0`
+    // are the same fact, and the old screen printed it twice on every contract
+    // swap or claim (issue #59). The contract explanation is the grey note
+    // under the red line, not a second red line.
+    const errors = shown2({ ownInputs: 1, totalInputs: 3, foreignInputs: 2 });
+    expect(errors).toHaveLength(1);
+    const notes = document.querySelectorAll("p.approve-note");
+    expect(Array.from(notes).some((n) => n.textContent === en.cip30_foreign_inputs_note)).toBe(true);
+    const plain = shown({ ownInputs: 1, totalInputs: 1 });
+    expect(plain).not.toContain("not this wallet's");
+    expect(plain).not.toContain(en.cip30_foreign_inputs_note);
   });
 
   // "Your staking rewards" is a claim about whose money it is. It holds only

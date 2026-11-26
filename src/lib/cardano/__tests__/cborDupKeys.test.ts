@@ -191,3 +191,86 @@ describe("cborDupKeys — normalization never refuses what the decoder keeps apa
     });
   }
 });
+
+// Issue #59, point 4: the ledger allows a Plutus datum's map to repeat a key
+// (an `AssocMap` built from an unsorted list of pairs), so the walk stops
+// descending into Plutus data VALUES — an output's inline datum, a
+// `plutus_data` value, a redeemer's data — while everything around them stays
+// strict. Each `hex` below is hand-built.
+describe("cborDupKeys — Plutus data the ledger allows, and the structure around it", () => {
+  // A datum whose map repeats key 1: a legitimate `AssocMap`.
+  const dupKeyDatum = "a2" + "01" + "02" + "01" + "03";
+  // A tx-shaped array [body, witness set]; the body's one output carries the
+  // datum inline (datum option `[1, data]`).
+  const txWithInlineDatum =
+    "82" + // array(2): [body, witness set]
+    "a1" + // body map(1)
+    "01" + "81" + // 1: outputs: [one output]
+    "a3" + // output map(3)
+    "00" + "581c" + "aa".repeat(28) + // 0: an address-sized byte string
+    "01" + "01" + // 1: a value this walker need not understand
+    "03" + "82" + "01" + dupKeyDatum + // 3: datum option [1, inline datum]
+    "a0"; // witness set map(0)
+  // The witness set's `plutus_data` (field 4): script-hash keys, datum values.
+  const txWithPlutusData =
+    "82" +
+    "a0" + // body map(0)
+    "a1" + // witness set map(1)
+    "04" + "a1" + "581c" + "bb".repeat(28) + dupKeyDatum; // 4: plutus_data {script hash: datum}
+
+  it("accepts a transaction whose output's inline datum repeats a map key", () => {
+    expect(() => walk(txWithInlineDatum)).not.toThrow();
+  });
+
+  it("accepts a transaction whose plutus_data value repeats a map key", () => {
+    expect(() => walk(txWithPlutusData)).not.toThrow();
+  });
+
+  it("accepts a redeemer datum that repeats a map key, in the Alonzo array encoding", () => {
+    // witness set {5: [[tag, index, data, ex_units]]} — element 2 is the data.
+    const hex = "82" + "a0" + "a1" + "05" + "81" + "84" + "00" + "00" + dupKeyDatum + "a0";
+    expect(() => walk(hex)).not.toThrow();
+  });
+
+  it("accepts a redeemer datum that repeats a map key, in the Conway map encoding", () => {
+    // witness set {5: {[tag, index]: [data, ex_units]}} — value element 0 is the data.
+    const hex = "82" + "a0" + "a1" + "05" + "a1" + "82" + "00" + "00" + "82" + dupKeyDatum + "a0";
+    expect(() => walk(hex)).not.toThrow();
+  });
+
+  it("refuses the same datum shape outside Plutus data: a body map that repeats a key", () => {
+    // The ledger has no room for a repeated field in the body itself.
+    const hex = "82" + "a2" + "01" + "80" + "01" + "81" + "00" + "a0";
+    expect(() => walk(hex)).toThrow(DuplicateMapKeyError);
+  });
+
+  it("refuses a script hash given twice in plutus_data: the keys stay strict", () => {
+    const hex =
+      "82" +
+      "a0" +
+      "a1" +
+      "04" +
+      "a2" + // plutus_data map(2) with the same script hash twice
+      "581c" + "bb".repeat(28) + "01" +
+      "581c" + "bb".repeat(28) + "02";
+    expect(() => walk(hex)).toThrow(DuplicateMapKeyError);
+  });
+
+  it("refuses a repeated key inside a redeemer's ex_units: the structure around the data stays strict", () => {
+    // Alonzo redeemer [tag, index, data, ex_units]: element 3 is ledger
+    // structure, and a map there may not repeat a key.
+    const hex = "82" + "a0" + "a1" + "05" + "81" + "84" + "00" + "00" + "01" + "a2" + "01" + "01" + "01" + "02";
+    expect(() => walk(hex)).toThrow(DuplicateMapKeyError);
+  });
+
+  it("refuses a repeated field in an output map, datum or not", () => {
+    // The output map itself is ledger structure: key 1 twice is refused.
+    const hex =
+      "82" +
+      "a1" +
+      "01" + "81" +
+      "a2" + "01" + "01" + "01" + "02" +
+      "a0";
+    expect(() => walk(hex)).toThrow(DuplicateMapKeyError);
+  });
+});
