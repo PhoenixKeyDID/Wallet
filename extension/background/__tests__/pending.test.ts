@@ -103,6 +103,27 @@ describe("pending requests belong to the window they were sent to", () => {
     expect(await p).toEqual({ ok: true, value: 1 });
   });
 
+  it("a window that goes away first settles each request with its own method's decline", async () => {
+    // Issue #59: the closed-window answer is handed the request's method, so
+    // the worker can answer `signTx` with `TxSignError.UserDeclined` — the
+    // same code its Reject button would have — instead of one generic refusal
+    // for every method.
+    const seen: string[] = [];
+    const reg = createRegistry((method) => {
+      seen.push(method);
+      return { ok: false, error: { code: method === "signTx" ? 2 : -3, info: method } };
+    });
+    const w = fakePort();
+    reg.attach(ORIGIN, w);
+    const signTx = reg.ask(w, ORIGIN, "signTx", ["84a4"]);
+    const getUtxos = reg.ask(w, ORIGIN, "getUtxos", []);
+    expect(seen).toEqual([]); // nothing settled while the window is alive
+    reg.detach(w, ORIGIN);
+    expect(await signTx).toEqual({ ok: false, error: { code: 2, info: "signTx" } });
+    expect(await getUtxos).toEqual({ ok: false, error: { code: -3, info: "getUtxos" } });
+    expect(seen).toEqual(["signTx", "getUtxos"]);
+  });
+
   it("whenAttached resolves with the window that says hello, and cancel stops it", async () => {
     const reg = createRegistry(() => CLOSED);
     const w = fakePort();

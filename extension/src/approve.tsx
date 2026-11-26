@@ -272,6 +272,17 @@ export function Approve() {
   const [err, setErr] = useState<string | null>(null);
   const [account, setAccount] = useState<Account | null>(null);
   const [port, setPort] = useState<Port | null>(null);
+  /** `port` as of the latest render, for the idle timer's closure. */
+  const portRef = useRef<Port | null>(null);
+  portRef.current = port;
+  /**
+   * A request was on screen when the idle deadline locked this window, so it
+   * was cancelled and the site was told. Kept until the next request arrives,
+   * because the screen that follows the lock (locked, then unlocked again)
+   * otherwise reads as if nothing had been asked: the person comes back to
+   * "Connected" with no word of why their request is gone.
+   */
+  const [lockCancelled, setLockCancelled] = useState<string | null>(null);
   const [phase, setPhase] = useState<Phase>({ at: "unlock" });
   /** `phase` as of the latest render, for answers that land after an await. */
   const phaseRef = useRef<Phase>(phase);
@@ -339,6 +350,27 @@ export function Approve() {
       // private key in memory for no reason the send had.
       accountRef.current = null;
       account.wipe();
+      // A request on screen and NOT being answered right now is cancelled by
+      // the lock. The site is told at once, with the lock's own sentence —
+      // otherwise it waits on a request whose screen is gone; and the person
+      // is told after unlocking, because a screen that goes back to
+      // "Connected" with no word of the cancellation reads as if nothing had
+      // been asked. A send that is out is NOT cancelled: the port stays for it
+      // below, and its answer still reaches the site.
+      const onScreen = phaseRef.current;
+      if (
+        !busyRef.current &&
+        decidingRef.current &&
+        (onScreen.at === "decide" || onScreen.at === "connect")
+      ) {
+        portRef.current?.postMessage({
+          type: "result",
+          id: onScreen.req.id,
+          result: { ok: false, error: refused(tRef.current("cip30_window_locked")) },
+        });
+        setLockCancelled(onScreen.req.origin);
+        decidingRef.current = false;
+      }
       // But the port stays while a send is out. Closing it makes the worker
       // tell the site "refused" for bytes that may already be at the node —
       // the answer that gets the same payment built and sent twice. The screen
@@ -405,7 +437,7 @@ export function Approve() {
       // not something to reconcile — this window can only honestly describe one
       // site, so it answers for one site.
       if (req.origin !== origin) {
-        p.postMessage({ type: "result", id: req.id, result: { ok: false, error: refused("origin mismatch") } });
+        p.postMessage({ type: "result", id: req.id, result: { ok: false, error: refused(tRef.current("cip30_origin_mismatch")) } });
         return;
       }
       if (req.method === "signData") {
@@ -431,11 +463,12 @@ export function Approve() {
           p.postMessage({
             type: "result",
             id: req.id,
-            result: { ok: false, error: refused("another request is already on screen") },
+            result: { ok: false, error: refused(tRef.current("cip30_one_at_a_time")) },
           });
           return;
         }
         decidingRef.current = true;
+        setLockCancelled(null);
         setPhase({ at: "decide", req, dataSign: planned.plan });
         return;
       }
@@ -451,11 +484,12 @@ export function Approve() {
           p.postMessage({
             type: "result",
             id: req.id,
-            result: { ok: false, error: refused("another request is already on screen") },
+            result: { ok: false, error: refused(tRef.current("cip30_one_at_a_time")) },
           });
           return;
         }
         decidingRef.current = true;
+        setLockCancelled(null);
         setPhase({ at: "decide", req });
         return;
       }
@@ -467,11 +501,12 @@ export function Approve() {
           p.postMessage({
             type: "result",
             id: req.id,
-            result: { ok: false, error: refused("another request is already on screen") },
+            result: { ok: false, error: refused(tRef.current("cip30_one_at_a_time")) },
           });
           return;
         }
         decidingRef.current = true;
+        setLockCancelled(null);
         setPhase({ at: "connect", req });
         return;
       }
@@ -769,6 +804,11 @@ export function Approve() {
           }}
         />
         {err && <p className="approve-error">{err}</p>}
+        {lockCancelled && (
+          <p className="approve-error" role="alert">
+            {t("cip30_lock_cancelled", { origin: displayOrigin(lockCancelled) })}
+          </p>
+        )}
         <button disabled={busy || !pw || !pickedId} onClick={() => void unlock()}>
           {busy ? t("local_unlocking") : t("local_unlock_cta")}
         </button>
@@ -911,6 +951,11 @@ export function Approve() {
       <p className="mono approve-account">{primaryAddress(account)}</p>
       <UnknownSend />
       <p>{t("cip30_connected")}</p>
+      {lockCancelled && (
+        <p className="approve-error" role="alert">
+          {t("cip30_lock_cancelled", { origin: displayOrigin(lockCancelled) })}
+        </p>
+      )}
       <p className="approve-note">{t("cip30_close_to_disconnect")}</p>
       <p className="approve-note mono">{t("cip30_address_count", { n: allAddresses(account).length })}</p>
     </div>

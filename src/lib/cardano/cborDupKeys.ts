@@ -50,17 +50,18 @@
  *
  * ## Scope
  *
- * It walks the whole value recursively, so a duplicate anywhere — the body, a
- * map-form output, an auxiliary-data map, a witness map — is caught, not only
- * the top level.
+ * It walks the transaction recursively, so a duplicate anywhere the LEDGER
+ * has structure — the body, a map-form output, an auxiliary-data map, the
+ * witness set's own fields — is caught, not only the top level.
  *
- * That is stricter than the ledger. Plutus data (`plutus_data` in the witness
- * set, redeemer data) is a list of pairs on chain, and a contract may build a
- * map that repeats a key (`AssocMap` from an unsorted list, Aiken `Pairs`). A
- * transaction carrying such a datum is valid, and this walker refuses it: the
- * person sees "a field is given twice" and no signature is made. The refusal
- * costs availability, never funds, and is kept deliberately until the walk can
- * be narrowed to the ledger's own structures without opening a gap.
+ * It stops descending into Plutus DATA values: an output's inline datum, a
+ * `plutus_data` value in the witness set, a redeemer's data. On chain those
+ * are lists of pairs, and a contract may legitimately build a map that
+ * repeats a key (`AssocMap` from an unsorted list, Aiken `Pairs`), so the
+ * ledger accepts them and the walker must too. The keys AROUND the data stay
+ * strict — a script hash given twice in `plutus_data` collapses in the decoder
+ * the same way a body field does — only the data value itself is walked for
+ * shape, not for keys.
  */
 
 /** Thrown when a map carries the same key twice. The callers translate it. */
@@ -214,13 +215,85 @@ function keyIdentity(bytes: Uint8Array, start: number, end: number): string {
 }
 
 /**
- * Walk one CBOR item at `pos`, returning the offset just past it. Throws
- * `DuplicateMapKeyError` on the first map with a repeated key, and a plain
- * `Error` on bytes that are not CBOR this walker can follow (a shape the
- * decoders would reject anyway — the callers already refuse what they cannot
- * read).
+ * The unsigned integer a well-formed CBOR head at `start` encodes, or `null`
+ * for anything else (another major, an indefinite head). Used only to read
+ * FIELD NUMBERS the walk routes on — never as a key identity.
  */
-function walk(bytes: Uint8Array, pos: number): number {
+function uintAt(bytes: Uint8Array, start: number): number | null {
+  const initial = bytes[start] as number;
+  if ((initial >> 5) !== 0) return null;
+  const ai = initial & 0x1f;
+  if (ai === 31) return null;
+  const argStart = start + 1;
+  const width = ai < 24 ? 0 : ai === 24 ? 1 : ai === 25 ? 2 : ai === 26 ? 4 : 8;
+  let v = ai < 24 ? ai : 0;
+  for (let i = 0; i < width; i += 1) v = v * 256 + (bytes[argStart + i] as number);
+  return v;
+}
+
+/**
+ * Where the item being walked sits inside a transaction — which is what
+ * decides whether a duplicate key inside it is the ledger's business or a
+ * Plutus datum's.
+ *
+ * - `tx`: the transaction itself, `[body, witness set, is_valid, auxiliary
+ *   data]` (or a map over the same fields).
+ * - `body`: the transaction body. Its output list (field 1) is routed on;
+ *   everything else in it is ledger structure and stays strict.
+ * - `outputs` / `output` / `datum-option`: the body's outputs, one output, and
+ *   an output's datum option `[0, hash] | [1, inline datum]`. The datum flag
+ *   is read; a `1` means the item beside it is Plutus data.
+ * - `witness`: the witness set. Its `plutus_data` (field 4) and redeemers
+ *   (field 5) carry Plutus data and are routed on; the signature lists and
+ *   scripts are ledger structure and stay strict.
+ * - `plutus-data`: the `plutus_data` map. Its keys are script hashes and stay
+ *   strict; its VALUES are Plutus data and are not descended into for keys.
+ * - `redeemers` / `redeemer-item` / `redeemer-value`: the redeemers in either
+ *   encoding the ledger accepts — Alonzo's array `[tag, index, data,
+ *   ex_units]*` (one `redeemer-item` each) or Conway's map `{[tag, index]:
+ *   [data, ex_units]}` (one `redeemer-value` each). Everything but the data
+ *   element stays strict.
+ * - `skip`: a Plutus data value. Walked for shape only, so the walk can find
+ *   its end and go on; its keys are the datum's own business.
+ * - `strict`: everywhere else. Every map inside is checked.
+ */
+type Ctx =
+  | "tx"
+  | "body"
+  | "outputs"
+  | "output"
+  | "datum-option"
+  | "witness"
+  | "plutus-data"
+  | "redeemers"
+  | "redeemer-item"
+  | "redeemer-value"
+  | "skip"
+  | "strict";
+
+/** The context for the VALUE a map field holds, given the map's own context
+ * and the field number on its key. `null` means the key is not an integer
+ * field number — nothing is routed on it. */
+function valueCtx(ctx: Ctx, field: number | null): Ctx {
+  if (ctx === "skip") return "skip";
+  if (ctx === "tx") return field === 0 ? "body" : field === 1 ? "witness" : "strict";
+  if (ctx === "body") return field === 1 ? "outputs" : "strict";
+  if (ctx === "witness") return field === 4 ? "plutus-data" : field === 5 ? "redeemers" : "strict";
+  if (ctx === "output") return field === 3 ? "datum-option" : "strict";
+  if (ctx === "plutus-data") return "skip";
+  if (ctx === "redeemers") return "redeemer-value"; // the Conway map: key [tag, index], value [data, ex_units]
+  return "strict";
+}
+
+/**
+ * Walk one CBOR item at `pos`, returning the offset just past it. Throws
+ * `DuplicateMapKeyError` on the first map with a repeated key — except inside
+ * a Plutus data value, where the ledger allows one (see the file header) —
+ * and a plain `Error` on bytes that are not CBOR this walker can follow (a
+ * shape the decoders would reject anyway — the callers already refuse what
+ * they cannot read).
+ */
+function walk(bytes: Uint8Array, pos: number, ctx: Ctx): number {
   if (pos >= bytes.length) throw new Error("CBOR ends early");
   const initial = bytes[pos] as number;
   const major = initial >> 5;
@@ -280,25 +353,34 @@ function walk(bytes: Uint8Array, pos: number): number {
           if (bytes[p] === 0xff) return p + 1;
           const chunkMajor = (bytes[p] as number) >> 5;
           if (chunkMajor !== major) throw new Error("CBOR bad indefinite string chunk");
-          p = walk(bytes, p);
+          p = walk(bytes, p, "strict");
         }
       }
       if (p + argument > bytes.length) throw new Error("CBOR ends early");
       return p + argument;
     case 4: // array
       if (argument === null) {
+        let first = -1;
         for (;;) {
           if (p >= bytes.length) throw new Error("CBOR ends early");
           if (bytes[p] === 0xff) return p + 1;
-          p = walk(bytes, p);
+          if (first < 0) first = p;
+          p = walk(bytes, p, elemCtx(bytes, ctx, null, first));
         }
       }
-      for (let i = 0; i < argument; i += 1) p = walk(bytes, p);
+      {
+        const first = argument > 0 ? p : -1;
+        for (let i = 0; i < argument; i += 1) {
+          p = walk(bytes, p, elemCtx(bytes, ctx, i, first));
+        }
+      }
       return p;
     case 5: {
       // map — the whole point. Each key's NORMALIZED identity must be unique;
       // the normalization is what lets this catch a duplicate the decoder would
-      // collapse behind two different encodings (see the file header).
+      // collapse behind two different encodings (see the file header). Inside
+      // a Plutus data value (`skip`) the ledger allows a repeat, so the keys
+      // there are walked for shape only.
       const seen = new Set<string>();
       const note = (keyStart: number, keyEnd: number): void => {
         const id = keyIdentity(bytes, keyStart, keyEnd);
@@ -307,37 +389,60 @@ function walk(bytes: Uint8Array, pos: number): number {
         }
         seen.add(id);
       };
+      const pair = (): void => {
+        const keyStart = p;
+        p = walk(bytes, p, "strict");
+        const keyEnd = p;
+        if (ctx !== "skip") note(keyStart, keyEnd);
+        const field = uintAt(bytes, keyStart);
+        p = walk(bytes, p, valueCtx(ctx, field));
+      };
       if (argument === null) {
         for (;;) {
           if (p >= bytes.length) throw new Error("CBOR ends early");
           if (bytes[p] === 0xff) return p + 1;
-          const keyStart = p;
-          p = walk(bytes, p);
-          note(keyStart, p);
-          p = walk(bytes, p);
+          pair();
         }
       }
-      for (let i = 0; i < argument; i += 1) {
-        const keyStart = p;
-        p = walk(bytes, p);
-        note(keyStart, p);
-        p = walk(bytes, p);
-      }
+      for (let i = 0; i < argument; i += 1) pair();
       return p;
     }
     case 6: // tag — one item follows
-      return walk(bytes, p);
+      return walk(bytes, p, ctx);
     default:
       throw new Error(`CBOR major type ${major}`);
   }
 }
 
 /**
- * Throw if any map inside this CBOR value has a duplicate key. Returns normally
- * when there is none. Only the duplicate-key case is a `DuplicateMapKeyError`;
- * bytes that cannot be walked raise a plain `Error`, which the callers treat the
- * same as any other unreadable transaction.
+ * The context for ELEMENT `index` of an array whose own context is `ctx`.
+ * `first` is where the array's first element starts (negative for an empty
+ * array), because one case reads it: a datum option `[0, hash] | [1, inline
+ * datum]` is routed by the FLAG in element 0, which sits beside the data.
+ * Positional, because the encodings routed on here are arrays with fixed
+ * positions, not maps with field numbers.
+ */
+function elemCtx(bytes: Uint8Array, ctx: Ctx, index: number | null, first: number): Ctx {
+  if (ctx === "skip") return "skip";
+  if (ctx === "tx") return index === 0 ? "body" : index === 1 ? "witness" : "strict";
+  if (ctx === "outputs") return "output";
+  if (ctx === "datum-option") {
+    if (index === 0 || index === null || first < 0) return "strict";
+    return uintAt(bytes, first) === 1 ? "skip" : "strict";
+  }
+  if (ctx === "redeemers") return "redeemer-item"; // the Alonzo array: [tag, index, data, ex_units]
+  if (ctx === "redeemer-item") return index === 2 ? "skip" : "strict";
+  if (ctx === "redeemer-value") return index === 0 ? "skip" : "strict";
+  return "strict";
+}
+
+/**
+ * Throw if any map inside this CBOR value has a duplicate key the ledger
+ * itself would not allow. Returns normally when there is none. Only the
+ * duplicate-key case is a `DuplicateMapKeyError`; bytes that cannot be walked
+ * raise a plain `Error`, which the callers treat the same as any other
+ * unreadable transaction.
  */
 export function assertNoDuplicateMapKeys(bytes: Uint8Array): void {
-  walk(bytes, 0);
+  walk(bytes, 0, "tx");
 }

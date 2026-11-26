@@ -66,22 +66,24 @@ export function TxSummaryView({
           {t("cip30_withdrawal")}: {formatAda(summary.withdrawalLovelace)} ADA
         </p>
       )}
-      {summary.ownInputs < summary.totalInputs && (
-        <p className="approve-error">
-          {t("cip30_unknown_inputs", {
-            known: summary.ownInputs,
-            total: summary.totalInputs,
-          })}
-        </p>
-      )}
       {/* The transaction spends inputs that are not this wallet's: a script
           (Plutus or native, possibly supplied by a reference input) may be
           what this signature unlocks, and their value is not in the amount
-          above. Shown, not refused — a drip-pot claim is this shape. */}
+          above. One block, not two: `ownInputs < totalInputs` and
+          `foreignInputs > 0` are the same fact (`foreignInputs` is the count
+          of inputs this wallet does not hold), and the old pair printed it
+          twice red on every contract swap or claim. Shown, not refused — a
+          drip-pot claim is this shape. The short line is the fact; the
+          contract explanation rides under it as a grey note. */}
       {summary.foreignInputs > 0 && (
-        <p className="approve-error" data-testid="foreign-inputs">
-          {t("cip30_foreign_inputs", { n: summary.foreignInputs })}
-        </p>
+        <>
+          <p className="approve-error" data-testid="foreign-inputs">
+            {t("cip30_foreign_inputs", { n: summary.foreignInputs })}
+          </p>
+          <p className="approve-note" data-testid="foreign-inputs-note">
+            {t("cip30_foreign_inputs_note")}
+          </p>
+        </>
       )}
       {/* Each of them by name, and whether a Plutus script runs for it. */}
       {summary.foreignInputList.length > 0 && (
