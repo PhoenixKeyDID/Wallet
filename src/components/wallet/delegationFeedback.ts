@@ -319,16 +319,29 @@ export type SentWithdrawal = {
   network: PhoenixNetwork;
   /** Lovelace withdrawn: the whole balance the indexer reported at build time. */
   amount: bigint;
-  /** `Date.now()` at submit. */
+  /**
+   * `Date.now()` at submit. Wall-clock, kept for the record only: no watch
+   * below counts it, because a clock stepped back after the send (NTP, a
+   * laptop waking) would make every later comparison say "not yet sent".
+   */
   sentAt: number;
+  /** `performance.now()` at submit: monotonic, what the watch's window counts. */
+  sentMono: number;
+  /**
+   * The account-read counter (`StakingPanel`'s `readSeqRef`) at the send. A
+   * read with a GREATER counter started after the send, whatever any clock
+   * says; one at or below it predates the send and says nothing about it.
+   */
+  readSeq: number;
   /** Hash of the submitted transaction, lower-case. */
   txHash: string;
 };
 
 /**
  * How long a sent withdrawal is held. It cannot land after its TTL
- * (`WITHDRAWAL_TTL_SLOTS`, one second per slot), and `sentAt` is taken after
- * the tip that TTL was counted from was read, so this is an upper bound.
+ * (`WITHDRAWAL_TTL_SLOTS`, one second per slot), and the send's monotonic
+ * stamp is taken after the tip that TTL was counted from was read, so this is
+ * an upper bound.
  */
 export const WITHDRAWAL_WATCH_LIMIT_MS = WITHDRAWAL_TTL_SLOTS * 1000;
 
@@ -336,9 +349,11 @@ export const WITHDRAWAL_WATCH_LIMIT_MS = WITHDRAWAL_TTL_SLOTS * 1000;
  * What a look-up of the sent withdrawal by hash ({@link SentWithdrawal.txHash},
  * `fetchTxSeen`) last said, for that hash. Only a definite answer is kept: a
  * failed look-up is "not known" and leaves this as it was. `askedAt` is
- * `Date.now()` taken before the request went out. Once a look-up has found the
- * transaction in a block, `seen` stays true for that hash: a later "not in a
- * block" from an indexer instance that has not caught up does not undo it.
+ * `performance.now()` taken before the request went out: monotonic, so a wall
+ * clock stepped back after the send cannot un-ask it. Once a look-up has
+ * found the transaction in a block, `seen` stays true for that hash: a later
+ * "not in a block" from an indexer instance that has not caught up does not
+ * undo it.
  */
 export type WithdrawalTxAnswer = { txHash: string; seen: boolean; askedAt: number };
 
@@ -368,12 +383,18 @@ export type WithdrawalTxAnswer = { txHash: string; seen: boolean; askedAt: numbe
  * the balance moved before it landed, so the node can no longer accept it.
  * Either way the balance on screen is what can be withdrawn.
  *
- * Only a read started after `sentAt` says that: `readAt` is `Date.now()` taken
- * before that read's request went out. A read started earlier (or in the same
- * millisecond) can predate the withdrawal and says nothing about it, nor does
+ * Only a read started after the send says that, and "started after" is
+ * counted, not timed: the read's counter is greater than the send's
+ * {@link SentWithdrawal.readSeq}. A clock stepped back after the send cannot
+ * make a later read read as earlier, and a read counted before the send can
+ * predate the withdrawal and says nothing about it. Nor does
  * `rewardsAvailable` undefined (not read, or the read failed) — the record
- * stays held. Found in a block, the withdrawal makes every read of exactly the
- * amount stale until the window closes, whatever else was read before.
+ * stays held. Found in a block, the withdrawal makes every read of exactly
+ * the amount stale until the window closes, whatever else was read before.
+ *
+ * The window itself is counted on the monotonic clock (`nowMono`, the send's
+ * `sentMono`): a wall clock stepped back after the send must not hold the
+ * door for the length of the step.
  */
 export type WithdrawalWatch = "none" | "held" | "open" | "unseen" | "released";
 
@@ -382,21 +403,21 @@ export function withdrawalWatch(
   account: string | null,
   network: PhoenixNetwork,
   rewardsAvailable: bigint | undefined,
-  readAt: number | null,
+  readSeq: number | null,
   tx: WithdrawalTxAnswer | null,
-  now: number,
+  nowMono: number,
 ): WithdrawalWatch {
   if (sent === null || sent.account !== account || sent.network !== network) return "none";
-  if (now - sent.sentAt >= WITHDRAWAL_WATCH_LIMIT_MS) return "released";
+  if (nowMono - sent.sentMono >= WITHDRAWAL_WATCH_LIMIT_MS) return "released";
   if (
-    readAt !== null &&
-    readAt > sent.sentAt &&
+    readSeq !== null &&
+    readSeq > sent.readSeq &&
     rewardsAvailable !== undefined &&
     rewardsAvailable !== sent.amount
   )
     return "open";
   const answer = tx !== null && tx.txHash === sent.txHash ? tx : null;
-  if (answer !== null && !answer.seen && answer.askedAt - sent.sentAt > DELEGATION_UNSEEN_MS) return "unseen";
+  if (answer !== null && !answer.seen && answer.askedAt - sent.sentMono > DELEGATION_UNSEEN_MS) return "unseen";
   return "held";
 }
 

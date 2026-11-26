@@ -96,6 +96,13 @@ export type DelegationSentProps = {
 /** How often the account is re-read while a delegation waits to be recorded. */
 const PENDING_POLL_MS = 20_000;
 
+// The account-read counter behind `AccountRead.seq`: module scope, so the
+// count keeps growing across the panel unmounting on a tab switch. A
+// withdrawal record held by the parent compares its send's count against the
+// next mount's reads; a per-mount counter would reset and read the fresh
+// reads as predating the send.
+let accountReadSeqCounter = 0;
+
 /** One account read: `seq` orders it among this mount's reads, `at` is the wall clock when it started. */
 type AccountRead = { seq: number; at: number };
 
@@ -147,6 +154,10 @@ export function StakingPanel({
   // one started earlier can show the very DRep a later record targets without
   // that record having landed (see `voteLandedByRead`).
   const [accountReadAt, setAccountReadAt] = useState<number | null>(null);
+  // The counter of the read behind `accountState` (see `startRead`): what the
+  // sent-withdrawal watch counts "a read started after the send" by, so a wall
+  // clock stepped back cannot make a later read read as earlier.
+  const [accountReadSeq, setAccountReadSeq] = useState<number | null>(null);
   // The network the read above belongs to. The picker can switch without this
   // panel remounting, and the load effect below clears the old answer only
   // after the first render on the new network. Preprod and preview give one key
@@ -161,6 +172,7 @@ export function StakingPanel({
     setAccountNetwork(network);
     setAccountState(null);
     setAccountReadAt(null);
+    setAccountReadSeq(null);
   }
   const [loadingAccount, setLoadingAccount] = useState(true);
   // Distinguish "couldn't read stake status" from a genuine "not delegated / 0
@@ -189,6 +201,10 @@ export function StakingPanel({
   // "waiting" instead of the stale "Not delegated". `now` moves with the poll,
   // which is what lets "waiting" turn into "not seen" when it has gone on too long.
   const [now, setNow] = useState(() => Date.now());
+  // The monotonic twin of `now`, for the sent-withdrawal window below: a wall
+  // clock stepped back after the send must not hold the door for the length
+  // of the step. `performance.now()` never steps back.
+  const [nowMono, setNowMono] = useState(() => performance.now());
   const watch = delegationWatch(
     sentDelegation,
     rewardAddressBech32,
@@ -204,19 +220,20 @@ export function StakingPanel({
   // the hold, and laying its old balance over that offers the same withdrawal
   // again. An answer to a read started before the one on screen is dropped.
   //
-  // "Before" is counted, not timed: `seq` grows by one per read started on
-  // this mount. Ordered by `Date.now()`, a clock stepped back (NTP, a laptop
-  // waking, the user) dropped every read made after the step until the clock
-  // caught up. `at` (`Date.now()`) is kept only to compare with a record's
-  // `sentAt`, which is a wall-clock time from the parent.
-  const readSeqRef = useRef(0);
-  const startRead = (): AccountRead => ({ seq: ++readSeqRef.current, at: Date.now() });
+  // "Before" is counted, not timed: `seq` grows by one per read started, on a
+  // counter at module scope, so it also survives this panel unmounting on a
+  // tab switch — a withdrawal record held by the parent must still tell the
+  // next mount's reads from ones that predate the send. Ordered by
+  // `Date.now()`, a clock stepped back (NTP, a laptop waking, the user)
+  // dropped every read made after the step until the clock caught up.
+  const startRead = (): AccountRead => ({ seq: ++accountReadSeqCounter, at: Date.now() });
   const appliedReadSeqRef = useRef(0);
   const applyAccountRead = (state: StakeAccountState, read: AccountRead): boolean => {
     if (read.seq < appliedReadSeqRef.current) return false;
     appliedReadSeqRef.current = read.seq;
     setAccountState(state);
     setAccountReadAt(read.at);
+    setAccountReadSeq(read.seq);
     return true;
   };
 
@@ -332,9 +349,9 @@ export function StakingPanel({
     rewardAddressBech32,
     network,
     accountState?.rewardsAvailable,
-    accountReadAt,
+    accountReadSeq,
     withdrawalTx,
-    now,
+    nowMono,
   );
   useEffect(() => {
     if (withdrawal === "released" && sentWithdrawal !== null) onWithdrawalSettled(sentWithdrawal.txHash);
@@ -344,6 +361,17 @@ export function StakingPanel({
 
   const withdrawalWatched = withdrawal === "held" || withdrawal === "unseen";
   const rereading = waiting || withdrawalWatched;
+
+  // In `open` nothing else moves the clock: the re-read above runs only while
+  // the record is held or unseen, so without this the record could never
+  // reach `released` while the panel stays open, and the parent would carry it
+  // until the next mount. Ticks the monotonic clock only; the balance is
+  // already the real one on screen.
+  useEffect(() => {
+    if (withdrawal !== "open") return;
+    const timer = setInterval(() => setNowMono(performance.now()), PENDING_POLL_MS);
+    return () => clearInterval(timer);
+  }, [withdrawal]);
 
   // The look-up by hash, on the same period as the re-read, and once as soon
   // as the watch starts. Only a definite answer is kept: a failed look-up is
@@ -356,7 +384,7 @@ export function StakingPanel({
     const lookUp = () => {
       const sent = withdrawalTxRef.current;
       if (sent === null) return;
-      const askedAt = Date.now();
+      const askedAt = performance.now();
       fetchTxSeen(sent.network, sent.txHash).then(
         (seen) => {
           if (!cancelled) setWithdrawalTx((cur) => withdrawalTxAnswered(cur, sent.txHash, seen, askedAt));
@@ -377,6 +405,7 @@ export function StakingPanel({
     const timer = setInterval(() => {
       const read = startRead();
       setNow(read.at);
+      setNowMono(performance.now());
       getStakeAccountState(network, rewardAddressBech32)
         .then((state) => {
           if (cancelled) return;
@@ -688,6 +717,16 @@ export function StakingPanel({
 
   const confirmWithdraw = async () => {
     if (!withdrawReview) return;
+    // `reviewWithdraw` refused while a sent withdrawal was held, but the door
+    // can go BACK to held while this review sits open: the hash look-up that
+    // had said "not seen" finds the transaction in a block, or a record from
+    // the Governance tab (or another browser tab, through the `storage`
+    // event) lands. A second withdrawal the node would refuse is not sent.
+    if (withdrawal === "held") {
+      setWithdrawReview(null);
+      setChecked(false);
+      return toastError(t("withdraw_sent_waiting"));
+    }
     if (uncertainHash !== null) return toastError(t("uncertain_blocked"));
     setBusy(true);
     try {
@@ -695,12 +734,19 @@ export function StakingPanel({
       toastSuccess("withdraw_submitted", { hash: hash.slice(0, 12) });
       if (rewardAddressBech32) {
         const sentAt = Date.now();
+        const sentMono = performance.now();
         setNow(sentAt);
+        setNowMono(sentMono);
         onWithdrawalSent({
           account: rewardAddressBech32,
           network,
           amount: withdrawReview.amount,
+          // Wall clock for the record; the watch's window counts `sentMono`,
+          // and "a read after the send" counts `readSeq`, both immune to a
+          // clock stepped back after the send.
           sentAt,
+          sentMono,
+          readSeq: accountReadSeqCounter,
           txHash: hash.toLowerCase(),
         });
       }
